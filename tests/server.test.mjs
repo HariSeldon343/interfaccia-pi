@@ -1703,7 +1703,7 @@ test("import_jsonl non puo cambiare la cwd canonica della scheda", async (t) => 
   });
   assert.equal(cwdEsatta.risposta.status, 200);
   await attendi(50);
-  assert.equal(ambiente.ponte.sessioni.get(sessionId).cartella, cartella);
+  assert.equal(ambiente.ponte.sessioni.get(sessionId).cartella, await realpath(cartella));
 });
 
 test("import_jsonl non sovrascrive sessioni correnti, archiviate o hardlink e rispetta le riserve", async (t) => {
@@ -1843,7 +1843,8 @@ test("changelog, fiducia e condivisione usano workflow HTTP autenticati e confin
 
   const lettura = await ambiente.post("/api/fiducia-progetto", { sessionId });
   assert.equal(lettura.dati.decision, null);
-  assert.equal(lettura.dati.cwd, cartella);
+  const cartellaCanonica = await realpath(cartella);
+  assert.equal(lettura.dati.cwd, cartellaCanonica);
   const decisioneAmbigua = await ambiente.post("/api/fiducia-progetto", {
     sessionId, decision: "true",
   });
@@ -1855,7 +1856,7 @@ test("changelog, fiducia e condivisione usano workflow HTTP autenticati e confin
   const salvataggio = await ambiente.post("/api/fiducia-progetto", { sessionId, decision: true });
   assert.equal(salvataggio.risposta.status, 200);
   assert.equal(salvataggio.dati.decision, true);
-  assert.deepEqual([...decisioni.entries()], [[cartella, true]]);
+  assert.deepEqual([...decisioni.entries()], [[cartellaCanonica, true]]);
 
   const senzaConferma = await ambiente.post("/api/condividi", { sessionId, confirmed: false });
   assert.equal(senzaConferma.risposta.status, 400);
@@ -2233,7 +2234,10 @@ test("due cartelle mantengono due processi pi indipendenti", async (t) => {
   assert.notEqual(uno.dati.id, due.dati.id);
   const stato = await (await fetch(ambiente.base + "/api/stato")).json();
   assert.equal(stato.sessioni.length, 2);
-  assert.deepEqual(new Set(stato.sessioni.map((sessione) => sessione.cartella)), new Set([prima, seconda]));
+  assert.deepEqual(
+    new Set(stato.sessioni.map((sessione) => sessione.cartella)),
+    new Set([await realpath(prima), await realpath(seconda)]),
+  );
 });
 
 test("il passaggio al terminale riserva il JSONL fino alla chiusura del TUI", async (t) => {
@@ -2265,7 +2269,7 @@ test("il passaggio al terminale riserva il JSONL fino alla chiusura del TUI", as
 
   const handoff = await ambiente.post("/api/handoff-terminale", { sessionId: sessione.id });
   assert.equal(handoff.risposta.status, 200);
-  assert.equal(apertura.cartella, cartella);
+  assert.equal(apertura.cartella, await realpath(cartella));
   assert.equal(apertura.sessionPath, fileSessione);
   assert.match(apertura.directorySessioni, /terminali/);
   assert.equal(ambiente.ponte.sessioni.has(sessione.id), false);
