@@ -71,7 +71,13 @@ test("la UI offre e avvia automaticamente una chat senza cartella", async () => 
 });
 
 test("API: avvio senza cartella nasconde la directory tecnica e non rompe il flusso classico", async (t) => {
-  const radiceTest = await mkdtemp(join(tmpdir(), "pi-gui-no-workspace-"));
+  // Su GitHub Actions il workspace temporaneo puo vivere su D:, un volume che
+  // la policy fail-closed puo classificare diversamente. LOCALAPPDATA e la
+  // radice locale e scrivibile usata davvero dall'app Windows.
+  const baseTemporanea = process.platform === "win32"
+    ? process.env.LOCALAPPDATA || tmpdir()
+    : tmpdir();
+  const radiceTest = await mkdtemp(join(baseTemporanea, "pi-gui-no-workspace-"));
   const home = join(radiceTest, "home");
   const radiceNeutra = join(radiceTest, "neutral");
   const cartellaUtente = join(radiceTest, "workspace");

@@ -772,18 +772,22 @@ async function controllaAssenzaDatiUtente(radice) {
         await visita(percorso);
       } else if (voce.isFile()) {
         const info = await stat(percorso);
-        // La ricerca e byte-per-byte anche nei binari: evita che un file con
-        // estensione inattesa eluda il controllo e non richiede di interpretare
-        // dati arbitrari come testo. I pochi file oltre il limite sono binari
-        // ufficiali gia coperti dai digest dell'archivio e del manifesto.
+        // I segreti restano cercati byte-per-byte in ogni file. I percorsi del
+        // profilo vengono invece cercati nei file non nativi: PE e moduli .node
+        // ufficiali possono contenere il percorso di compilazione del runner.
+        // Quei binari provengono da pacchetti con integrity bloccata e vengono
+        // inoltre coperti dal digest individuale nel manifesto del runtime.
         if (info.size > 32 * 1024 * 1024) continue;
         const contenuto = await readFile(percorso);
-        const testoMinuscolo = contenuto.toString("utf8").toLowerCase();
-        for (const percorsoUtente of percorsiUtente) {
-          const normale = percorsoUtente.replaceAll("/", "\\").toLowerCase();
-          const alternativo = percorsoUtente.replaceAll("\\", "/").toLowerCase();
-          if (testoMinuscolo.includes(normale) || testoMinuscolo.includes(alternativo)) {
-            throw new Error(`Percorso del profilo utente rilevato nel bundle: ${relativo}`);
+        const binarioNativoVerificato = /\.(?:dll|exe|lib|node|pdb)$/i.test(voce.name);
+        if (!binarioNativoVerificato) {
+          const testoMinuscolo = contenuto.toString("utf8").toLowerCase();
+          for (const percorsoUtente of percorsiUtente) {
+            const normale = percorsoUtente.replaceAll("/", "\\").toLowerCase();
+            const alternativo = percorsoUtente.replaceAll("\\", "/").toLowerCase();
+            if (testoMinuscolo.includes(normale) || testoMinuscolo.includes(alternativo)) {
+              throw new Error(`Percorso del profilo utente rilevato nel bundle: ${relativo}`);
+            }
           }
         }
         for (const [nome, valore] of segreti) {

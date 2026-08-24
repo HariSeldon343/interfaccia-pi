@@ -17,6 +17,8 @@
   vero reload di Pi riscopre anche le skill installate dopo l'avvio;
 - accesso diretto dalla barra Strumenti all'albero della conversazione, per
   tornare a un passaggio precedente senza cancellare il ramo successivo;
+- preparazione del runtime e workflow Windows resi riproducibili e fail-fast
+  anche sui runner GitHub ospitati;
 - suite di regressione estesa e smoke test con il runtime Pi incluso.
 
 ## 2.3.1 — 2026-08-23

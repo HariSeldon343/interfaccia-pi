@@ -29,6 +29,8 @@ jobs:
       - name: Rust MSVC
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           rustup toolchain install "${env:RUST_VERSION}-x86_64-pc-windows-msvc" --profile minimal --no-self-update
           rustup default "${env:RUST_VERSION}-x86_64-pc-windows-msvc"
 
@@ -39,21 +41,31 @@ jobs:
           key: pi-runtime-${{ runner.os }}-${{ hashFiles('scripts/vendor-pi-runtime.mjs', 'scripts/patches/**', 'package-lock.json') }}
 
       - name: Dipendenze e runtime
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm run vendor:pi
           npm run vendor:pi:check
           npm run release:check
 
       - name: Verifica completa
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           npm run check
           npm test
           npm run test:smoke
           cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Compila EXE e MSI
-        run: npm run build:desktop:offline
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run build:desktop:offline
 
       - name: Hash SHA-256
         shell: pwsh

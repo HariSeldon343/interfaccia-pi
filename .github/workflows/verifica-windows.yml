@@ -34,6 +34,8 @@ jobs:
       - name: Rust MSVC
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           rustup toolchain install "${env:RUST_VERSION}-x86_64-pc-windows-msvc" --profile minimal --no-self-update
           rustup default "${env:RUST_VERSION}-x86_64-pc-windows-msvc"
           rustc --version
@@ -49,7 +51,10 @@ jobs:
         run: npm ci
 
       - name: Prepara runtime Pi
+        shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           npm run vendor:pi
           npm run vendor:pi:check
 

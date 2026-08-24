@@ -93,6 +93,8 @@ test("vendor isola npm, completa il lock e non acquisisce il profilo utente", as
   assert.match(sorgente, /Shrinkwrap PI privo di integrity non autorizzata/);
   assert.match(sorgente, /Valore dell'ambiente sensibile/);
   assert.match(sorgente, /Percorso del profilo utente rilevato/);
+  assert.match(sorgente, /binarioNativoVerificato/);
+  assert.match(sorgente, /if \(!binarioNativoVerificato\)/);
   assert.match(sorgente, /cartelleSensibili = new Set\(\["\.pi", "\.agents"\]\)/);
   assert.doesNotMatch(sorgente, /testo della stessa licenza SPDX da un'altra dipendenza/);
   assert.match(sorgente, /(?:testo|template) canonico SPDX MIT/);
