@@ -1604,9 +1604,10 @@ async function aggiornaTipiUnitaWindows() {
       processo.kill();
       termina(false);
     // Il primo avvio di Windows PowerShell sui runner ospitati e su macchine
-    // molto cariche puo superare 2,5 secondi. Restiamo fail-closed, ma evitiamo
-    // di classificare come sconosciuto un disco locale solo per cold start.
-    }, 6000);
+    // molto cariche puo superare anche 6 secondi. Restiamo fail-closed, ma
+    // lasciamo terminare la classificazione nativa prima di dichiarare
+    // sconosciuto (e quindi non locale) un disco realmente locale.
+    }, 15_000);
     processo.stdout.setEncoding("utf8");
     processo.stdout.on("data", (pezzo) => {
       uscita += pezzo;

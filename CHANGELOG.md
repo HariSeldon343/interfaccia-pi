@@ -23,7 +23,8 @@
 - preparazione del runtime e workflow Windows resi riproducibili e fail-fast
   anche sui runner GitHub ospitati;
 - percorsi Windows confrontati nella forma canonica e rilevamento dei dischi
-  locali tollerante al primo avvio lento di PowerShell, restando fail-closed;
+  locali tollerante anche ai cold-start molto lenti di PowerShell, restando
+  fail-closed;
 - suite di regressione estesa e smoke test con il runtime Pi incluso.
 
 ## 2.3.1 — 2026-08-23
