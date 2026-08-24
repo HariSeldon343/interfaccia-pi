@@ -1,0 +1,675 @@
+diff --git a/dist/modes/rpc/rpc-mode.js b/dist/modes/rpc/rpc-mode.js
+index a739ca7..73e3071 100644
+--- a/dist/modes/rpc/rpc-mode.js
++++ b/dist/modes/rpc/rpc-mode.js
+@@ -10,6 +10,9 @@
+  * - Events: AgentSessionEvent objects streamed as they occur
+  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
+  */
+ import * as crypto from "node:crypto";
++import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
++import { basename, resolve } from "node:path";
++import { configureHttpDispatcher } from "../../core/http-dispatcher.js";
+ import { flushRawStdout, takeOverStdout, waitForRawStdoutBackpressure, writeRawStdout, } from "../../core/output-guard.js";
+ import { killTrackedDetachedChildren } from "../../utils/shell.js";
+@@ -37,8 +40,10 @@ export async function runRpcMode(runtimeHost) {
+     const error = (id, command, message) => {
+         return { id, type: "response", command, success: false, error: message };
+     };
+     // Pending extension UI requests waiting for response
+     const pendingExtensionRequests = new Map();
++    // Host-owned cancellation for the single provider login allowed in RPC mode.
++    let activeProviderLogin = null;
+     // Shutdown request flag
+     let shutdownRequested = false;
+     let shuttingDown = false;
+@@ -80,10 +85,10 @@ export async function runRpcMode(runtimeHost) {
+     /**
+      * Create an extension UI context that uses the RPC protocol.
+      */
+-    const createExtensionUIContext = () => ({
+-        select: (title, options, opts) => createDialogPromise(opts, undefined, { method: "select", title, options, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
+-        confirm: (title, message, opts) => createDialogPromise(opts, false, { method: "confirm", title, message, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
+-        input: (title, placeholder, opts) => createDialogPromise(opts, undefined, { method: "input", title, placeholder, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
++    const createExtensionUIContext = (requestMetadata = {}) => ({
++        select: (title, options, opts) => createDialogPromise(opts, undefined, { ...requestMetadata, method: "select", title, options, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
++        confirm: (title, message, opts) => createDialogPromise(opts, false, { ...requestMetadata, method: "confirm", title, message, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false),
++        input: (title, placeholder, opts) => createDialogPromise(opts, undefined, { ...requestMetadata, method: "input", title, placeholder, timeout: opts?.timeout }, (r) => "cancelled" in r && r.cancelled ? undefined : "value" in r ? r.value : undefined),
+         notify(message, type) {
+             // Fire and forget - no response needed
+             output({
+@@ -225,41 +230,43 @@ export async function runRpcMode(runtimeHost) {
+     runtimeHost.setRebindSession(async () => {
+         await rebindSession();
+     });
+-    const rebindSession = async () => {
++    const rebindSession = async ({ bindExtensions = true } = {}) => {
+         session = runtimeHost.session;
+-        await session.bindExtensions({
+-            uiContext: createExtensionUIContext(),
+-            mode: "rpc",
+-            commandContextActions: {
+-                waitForIdle: () => session.waitForIdle(),
+-                newSession: async (options) => runtimeHost.newSession(options),
+-                fork: async (entryId, forkOptions) => {
+-                    const result = await runtimeHost.fork(entryId, forkOptions);
+-                    return { cancelled: result.cancelled };
+-                },
+-                navigateTree: async (targetId, options) => {
+-                    const result = await session.navigateTree(targetId, {
+-                        summarize: options?.summarize,
+-                        customInstructions: options?.customInstructions,
+-                        replaceInstructions: options?.replaceInstructions,
+-                        label: options?.label,
+-                    });
+-                    return { cancelled: result.cancelled };
++        if (bindExtensions) {
++            await session.bindExtensions({
++                uiContext: createExtensionUIContext(),
++                mode: "rpc",
++                commandContextActions: {
++                    waitForIdle: () => session.waitForIdle(),
++                    newSession: async (options) => runtimeHost.newSession(options),
++                    fork: async (entryId, forkOptions) => {
++                        const result = await runtimeHost.fork(entryId, forkOptions);
++                        return { cancelled: result.cancelled };
++                    },
++                    navigateTree: async (targetId, options) => {
++                        const result = await session.navigateTree(targetId, {
++                            summarize: options?.summarize,
++                            customInstructions: options?.customInstructions,
++                            replaceInstructions: options?.replaceInstructions,
++                            label: options?.label,
++                        });
++                        return { cancelled: result.cancelled };
++                    },
++                    switchSession: async (sessionPath, options) => {
++                        return runtimeHost.switchSession(sessionPath, options);
++                    },
++                    reload: async () => {
++                        await session.reload();
++                    },
+                 },
+-                switchSession: async (sessionPath, options) => {
+-                    return runtimeHost.switchSession(sessionPath, options);
++                shutdownHandler: () => {
++                    shutdownRequested = true;
+                 },
+-                reload: async () => {
+-                    await session.reload();
++                onError: (err) => {
++                    output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+                 },
+-            },
+-            shutdownHandler: () => {
+-                shutdownRequested = true;
+-            },
+-            onError: (err) => {
+-                output({ type: "extension_error", extensionPath: err.extensionPath, event: err.event, error: err.error });
+-            },
+-        });
++            });
++        }
+         unsubscribe?.();
+         unsubscribeBackpressure?.();
+         unsubscribe = session.subscribe((event) => {
+@@ -355,6 +362,13 @@ export async function runRpcMode(runtimeHost) {
+                     autoCompactionEnabled: session.autoCompactionEnabled,
+                     messageCount: session.messages.length,
+                     pendingMessageCount: session.pendingMessageCount,
++                    scopedModels: session.scopedModels.slice(0, 256).map((scoped) => ({
++                        provider: String(scoped.model.provider).slice(0, 200),
++                        modelId: String(scoped.model.id).slice(0, 1000),
++                        ...(scoped.thinkingLevel === undefined
++                            ? {}
++                            : { thinkingLevel: String(scoped.thinkingLevel).slice(0, 20) }),
++                    })),
+                 };
+                 return success(id, "get_state", state);
+             }
+@@ -381,6 +395,361 @@ export async function runRpcMode(runtimeHost) {
+                 const models = session.modelRuntime.getAvailableSnapshot();
+                 return success(id, "get_available_models", { models });
+             }
++            // PI_GUI_RPC_ADAPTER_V1: trusted GUI parity commands for pinned PI 0.84.2.
++            case "set_scoped_models": {
++                if (!Array.isArray(command.models) || command.models.length > 256) {
++                    return error(id, "set_scoped_models", "models must be an array with at most 256 entries");
++                }
++                const validThinkingLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
++                const availableModels = session.modelRuntime.getAvailableSnapshot();
++                const scopedModels = [];
++                const serializedModels = [];
++                const seenModels = new Set();
++                for (const reference of command.models) {
++                    if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
++                        return error(id, "set_scoped_models", "each model must be an object");
++                    }
++                    const provider = typeof reference.provider === "string" ? reference.provider.trim() : "";
++                    const modelId = typeof reference.modelId === "string" ? reference.modelId.trim() : "";
++                    if (!provider || !modelId || provider.length > 200 || modelId.length > 1000) {
++                        return error(id, "set_scoped_models", "each model requires valid provider and modelId strings");
++                    }
++                    if (reference.thinkingLevel !== undefined
++                        && (typeof reference.thinkingLevel !== "string" || !validThinkingLevels.has(reference.thinkingLevel))) {
++                        return error(id, "set_scoped_models", `Invalid thinking level for ${provider}/${modelId}`);
++                    }
++                    const key = `${provider}/${modelId}`;
++                    if (seenModels.has(key)) {
++                        return error(id, "set_scoped_models", `Duplicate model: ${key}`);
++                    }
++                    const model = availableModels.find((candidate) => candidate.provider === provider && candidate.id === modelId);
++                    if (!model) {
++                        return error(id, "set_scoped_models", `Model not found: ${key}`);
++                    }
++                    seenModels.add(key);
++                    const scoped = { model };
++                    const serialized = { provider, modelId };
++                    if (reference.thinkingLevel !== undefined) {
++                        scoped.thinkingLevel = reference.thinkingLevel;
++                        serialized.thinkingLevel = reference.thinkingLevel;
++                    }
++                    scopedModels.push(scoped);
++                    serializedModels.push(serialized);
++                }
++                const availableModelKeys = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
++                const selectedModelKeys = new Set(serializedModels.map((model) => `${model.provider}/${model.modelId}`));
++                const allModelsEnabled = serializedModels.length === 0
++                    || (selectedModelKeys.size === availableModelKeys.size
++                        && [...availableModelKeys].every((key) => selectedModelKeys.has(key)));
++                const effectiveScopedModels = allModelsEnabled ? [] : scopedModels;
++                const effectiveSerializedModels = allModelsEnabled ? [] : serializedModels;
++                // Match the TUI /scoped-models persistence contract: thinking
++                // levels remain session-only; global settings store provider/id.
++                session.settingsManager.setEnabledModels(allModelsEnabled
++                    ? undefined
++                    : serializedModels.map((model) => `${model.provider}/${model.modelId}`));
++                await session.settingsManager.flush();
++                session.setScopedModels(effectiveScopedModels);
++                return success(id, "set_scoped_models", { models: effectiveSerializedModels });
++            }
++            case "refresh_models": {
++                const controller = new AbortController();
++                let timedOut = false;
++                let timeout;
++                try {
++                    const timeoutResult = new Promise((resolveTimeout) => {
++                        timeout = setTimeout(() => {
++                            timedOut = true;
++                            controller.abort(new Error("Model refresh timed out"));
++                            resolveTimeout({ kind: "timeout" });
++                        }, 15_000);
++                        timeout.unref?.();
++                    });
++                    const refreshResult = session.modelRuntime.refresh({
++                        force: true,
++                        signal: controller.signal,
++                    }).then((result) => ({ kind: "result", result }), (refreshError) => ({ kind: "error", refreshError }));
++                    const outcome = await Promise.race([refreshResult, timeoutResult]);
++                    if (outcome.kind === "timeout") {
++                        return success(id, "refresh_models", {
++                            aborted: true,
++                            timedOut: true,
++                            errors: [{ providerId: "*", message: "Model refresh timed out after 15000 ms" }],
++                            modelCount: session.modelRuntime.getAvailableSnapshot().length,
++                        });
++                    }
++                    if (outcome.kind === "error") {
++                        throw outcome.refreshError;
++                    }
++                    const result = outcome.result;
++                    const errors = [...result.errors.entries()].slice(0, 64).map(([providerId, refreshError]) => ({
++                        providerId: String(providerId).slice(0, 200),
++                        message: String(refreshError instanceof Error ? refreshError.message : refreshError).slice(0, 2000),
++                    }));
++                    return success(id, "refresh_models", {
++                        aborted: Boolean(result.aborted),
++                        timedOut,
++                        errors,
++                        modelCount: session.modelRuntime.getAvailableSnapshot().length,
++                    });
++                }
++                catch (refreshError) {
++                    return success(id, "refresh_models", {
++                        aborted: controller.signal.aborted,
++                        timedOut,
++                        errors: [{
++                                providerId: "*",
++                                message: String(refreshError instanceof Error ? refreshError.message : refreshError).slice(0, 2000),
++                            }],
++                        modelCount: session.modelRuntime.getAvailableSnapshot().length,
++                    });
++                }
++                finally {
++                    clearTimeout(timeout);
++                }
++            }
++            // =================================================================
++            // Agent-affecting settings (TUI-only presentation settings omitted)
++            // =================================================================
++            case "get_rpc_settings": {
++                const settings = session.settingsManager;
++                return success(id, "get_rpc_settings", {
++                    schemaVersion: 1,
++                    settings: {
++                        autoCompaction: session.autoCompactionEnabled,
++                        autoRetry: session.autoRetryEnabled,
++                        steeringMode: session.steeringMode,
++                        followUpMode: session.followUpMode,
++                        blockImages: settings.getBlockImages(),
++                        autoResizeImages: settings.getImageAutoResize(),
++                        enableSkillCommands: settings.getEnableSkillCommands(),
++                        transport: settings.getTransport(),
++                        httpIdleTimeoutMs: settings.getHttpIdleTimeoutMs(),
++                    },
++                });
++            }
++            case "set_rpc_setting": {
++                const name = command.name;
++                const value = command.value;
++                const settings = session.settingsManager;
++                const requireBoolean = () => {
++                    if (typeof value !== "boolean") {
++                        throw new Error(`${name} requires a boolean value`);
++                    }
++                };
++                switch (name) {
++                    case "autoCompaction":
++                        requireBoolean();
++                        session.setAutoCompactionEnabled(value);
++                        break;
++                    case "autoRetry":
++                        requireBoolean();
++                        session.setAutoRetryEnabled(value);
++                        break;
++                    case "steeringMode":
++                        if (value !== "all" && value !== "one-at-a-time") {
++                            return error(id, "set_rpc_setting", "steeringMode must be 'all' or 'one-at-a-time'");
++                        }
++                        session.setSteeringMode(value);
++                        break;
++                    case "followUpMode":
++                        if (value !== "all" && value !== "one-at-a-time") {
++                            return error(id, "set_rpc_setting", "followUpMode must be 'all' or 'one-at-a-time'");
++                        }
++                        session.setFollowUpMode(value);
++                        break;
++                    case "blockImages":
++                        requireBoolean();
++                        settings.setBlockImages(value);
++                        break;
++                    case "autoResizeImages":
++                        requireBoolean();
++                        settings.setImageAutoResize(value);
++                        break;
++                    case "enableSkillCommands":
++                        requireBoolean();
++                        settings.setEnableSkillCommands(value);
++                        break;
++                    case "transport":
++                        if (!["sse", "websocket", "websocket-cached", "auto"].includes(value)) {
++                            return error(id, "set_rpc_setting", "transport is not supported");
++                        }
++                        settings.setTransport(value);
++                        session.agent.transport = value;
++                        break;
++                    case "httpIdleTimeoutMs":
++                        if (![0, 30_000, 60_000, 120_000, 300_000].includes(value)) {
++                            return error(id, "set_rpc_setting", "httpIdleTimeoutMs is not a supported TUI value");
++                        }
++                        settings.setHttpIdleTimeoutMs(value);
++                        configureHttpDispatcher(value);
++                        break;
++                    default:
++                        return error(id, "set_rpc_setting", "Unknown or presentation-only setting");
++                }
++                await settings.flush();
++                return success(id, "set_rpc_setting", { name, value });
++            }
++            // =================================================================
++            // Authentication
++            // =================================================================
++            case "get_auth_providers": {
++                const credentials = await session.modelRuntime.listCredentials({ signal: AbortSignal.timeout(15_000) });
++                const credentialTypes = new Map(credentials.map((credential) => [credential.providerId, credential.type]));
++                const providers = session.modelRuntime.getProviders().map((provider) => ({
++                    id: provider.id,
++                    name: provider.name,
++                    methods: {
++                        apiKey: typeof provider.auth?.apiKey?.login === "function",
++                        oauth: provider.auth?.oauth !== undefined,
++                    },
++                    credentialType: credentialTypes.get(provider.id) ?? null,
++                }));
++                return success(id, "get_auth_providers", { providers });
++            }
++            case "login_provider": {
++                const providerId = typeof command.providerId === "string" ? command.providerId.trim() : "";
++                const authType = command.authType;
++                if (!providerId || providerId.length > 200 || (authType !== "api_key" && authType !== "oauth")) {
++                    return error(id, "login_provider", "providerId and authType ('api_key' or 'oauth') are required");
++                }
++                const provider = session.modelRuntime.getProvider(providerId);
++                if (!provider) {
++                    return error(id, "login_provider", `Provider not found: ${providerId}`);
++                }
++                if (authType === "api_key" && typeof provider.auth?.apiKey?.login !== "function") {
++                    return error(id, "login_provider", `API-key login is not available for ${providerId}`);
++                }
++                if (authType === "oauth" && !provider.auth?.oauth) {
++                    return error(id, "login_provider", `OAuth login is not available for ${providerId}`);
++                }
++                if (activeProviderLogin) {
++                    return error(id, "login_provider", "Another provider login is already in progress");
++                }
++                const loginController = new AbortController();
++                activeProviderLogin = { commandId: id, controller: loginController };
++                const loginCommandId = typeof id === "string"
++                    ? id.slice(0, 500)
++                    : typeof id === "number" && Number.isFinite(id)
++                        ? id
++                        : undefined;
++                const authPromptMetadata = {
++                    loginCommandId,
++                    authEvent: { type: "prompt", loginCommandId },
++                };
++                const ui = createExtensionUIContext(authPromptMetadata);
++                const prompt = async (request) => {
++                    loginController.signal.throwIfAborted();
++                    const promptSignal = request.signal
++                        ? AbortSignal.any([loginController.signal, request.signal])
++                        : loginController.signal;
++                    let value;
++                    if (request.type === "select") {
++                        const labels = request.options.map((option) => option.label);
++                        const selected = await ui.select(request.message, labels, { signal: promptSignal });
++                        value = request.options.find((option) => option.label === selected)?.id;
++                    }
++                    else if (request.type === "secret") {
++                        value = await createDialogPromise({ signal: promptSignal }, undefined, {
++                            ...authPromptMetadata,
++                            method: "input",
++                            title: request.message,
++                            placeholder: request.placeholder,
++                            sensitive: true,
++                        }, (response) => "cancelled" in response && response.cancelled
++                            ? undefined
++                            : "value" in response
++                                ? response.value
++                                : undefined);
++                    }
++                    else {
++                        value = await ui.input(request.message, request.placeholder, { signal: promptSignal });
++                    }
++                    if (value === undefined) {
++                        throw new Error("Login cancelled");
++                    }
++                    return value;
++                };
++                const notify = (event) => {
++                    if (loginController.signal.aborted) {
++                        return;
++                    }
++                    const bounded = (value, max) => typeof value === "string" ? value.slice(0, max) : undefined;
++                    const authEvent = { type: bounded(event.type, 100) ?? "progress", loginCommandId };
++                    let message;
++                    if (event.type === "auth_url") {
++                        authEvent.url = bounded(event.url, 4096);
++                        authEvent.instructions = bounded(event.instructions, 16 * 1024);
++                        message = [authEvent.instructions, authEvent.url].filter(Boolean).join("\n");
++                    }
++                    else if (event.type === "device_code") {
++                        authEvent.userCode = bounded(event.userCode, 256);
++                        authEvent.verificationUri = bounded(event.verificationUri, 4096);
++                        authEvent.intervalSeconds = Number.isFinite(event.intervalSeconds)
++                            ? Math.max(0, Math.min(Number(event.intervalSeconds), 24 * 60 * 60))
++                            : undefined;
++                        authEvent.expiresInSeconds = Number.isFinite(event.expiresInSeconds)
++                            ? Math.max(0, Math.min(Number(event.expiresInSeconds), 7 * 24 * 60 * 60))
++                            : undefined;
++                        message = `Open ${authEvent.verificationUri ?? "the verification page"}\nCode: ${authEvent.userCode ?? ""}`;
++                    }
++                    else if (event.type === "info") {
++                        authEvent.message = bounded(event.message, 16 * 1024);
++                        authEvent.links = Array.isArray(event.links)
++                            ? event.links.slice(0, 32).map((link) => ({
++                                label: bounded(link?.label, 1000) ?? "Link",
++                                url: bounded(link?.url, 4096) ?? "",
++                            }))
++                            : [];
++                        const links = authEvent.links.map((link) => `${link.label}: ${link.url}`);
++                        message = [authEvent.message, ...links].filter(Boolean).join("\n");
++                    }
++                    else {
++                        authEvent.message = bounded(event.message, 16 * 1024);
++                        message = authEvent.message ?? "Authentication in progress";
++                    }
++                    output({
++                        type: "extension_ui_request",
++                        id: crypto.randomUUID(),
++                        method: "notify",
++                        message: bounded(message, 32 * 1024) ?? "Authentication update",
++                        notifyType: "info",
++                        loginCommandId,
++                        authEvent,
++                    });
++                };
++                try {
++                    await session.modelRuntime.login(providerId, authType, {
++                        prompt,
++                        notify,
++                        signal: loginController.signal,
++                    });
++                    return success(id, "login_provider", { providerId, authType });
++                }
++                finally {
++                    if (activeProviderLogin?.commandId === id) {
++                        activeProviderLogin = null;
++                    }
++                }
++            }
++            case "abort_login_provider": {
++                if (command.loginCommandId === undefined || command.loginCommandId !== activeProviderLogin?.commandId) {
++                    return error(id, "abort_login_provider", "The requested provider login is not active");
++                }
++                activeProviderLogin.controller.abort(new Error("Provider login cancelled by host"));
++                return success(id, "abort_login_provider", {
++                    loginCommandId: command.loginCommandId,
++                    cancelled: true,
++                });
++            }
++            case "logout_provider": {
++                const providerId = typeof command.providerId === "string" ? command.providerId.trim() : "";
++                if (!providerId || providerId.length > 200 || !session.modelRuntime.getProvider(providerId)) {
++                    return error(id, "logout_provider", `Provider not found: ${providerId || "<empty>"}`);
++                }
++                await session.modelRuntime.logout(providerId, { signal: AbortSignal.timeout(15_000) });
++                return success(id, "logout_provider", { providerId });
++            }
+             // =================================================================
+             // Thinking
+             // =================================================================
+@@ -431,8 +800,12 @@ export async function runRpcMode(runtimeHost) {
+             case "abort_retry": {
+                 session.abortRetry();
+                 return success(id, "abort_retry");
+             }
++            case "abort_branch_summary": {
++                session.abortBranchSummary();
++                return success(id, "abort_branch_summary", { requested: true });
++            }
+             // =================================================================
+             // Bash
+             // =================================================================
+             case "bash": {
+@@ -470,6 +843,66 @@ export async function runRpcMode(runtimeHost) {
+                 const path = await session.exportToHtml(command.outputPath);
+                 return success(id, "export_html", { path });
+             }
++            case "export_jsonl": {
++                if (command.outputPath !== undefined
++                    && (typeof command.outputPath !== "string" || !command.outputPath.trim() || command.outputPath.length > 32_767)) {
++                    return error(id, "export_jsonl", "outputPath must be a non-empty path string when provided");
++                }
++                const path = session.exportToJsonl(command.outputPath);
++                return success(id, "export_jsonl", { path });
++            }
++            case "import_jsonl": {
++                const inputPath = typeof command.inputPath === "string" ? command.inputPath.trim() : "";
++                const cwdOverride = command.cwdOverride === undefined
++                    ? undefined
++                    : typeof command.cwdOverride === "string"
++                        ? command.cwdOverride.trim()
++                        : "";
++                if (!inputPath || inputPath.length > 32_767) {
++                    return error(id, "import_jsonl", "inputPath must be a non-empty path string");
++                }
++                if (command.cwdOverride !== undefined && (!cwdOverride || cwdOverride.length > 32_767)) {
++                    return error(id, "import_jsonl", "cwdOverride must be a non-empty path string when provided");
++                }
++                const sourcePath = realpathSync(inputPath);
++                const sessionDir = session.sessionManager.getSessionDir();
++                if (!existsSync(sessionDir)) {
++                    mkdirSync(sessionDir, { recursive: true });
++                }
++                const destinationPath = resolve(sessionDir, basename(sourcePath));
++                const samePath = (left, right) => process.platform === "win32"
++                    ? left.toLowerCase() === right.toLowerCase()
++                    : left === right;
++                const currentPath = session.sessionFile && existsSync(session.sessionFile)
++                    ? realpathSync(session.sessionFile)
++                    : session.sessionFile
++                        ? resolve(session.sessionFile)
++                        : undefined;
++                if (currentPath && samePath(currentPath, sourcePath)) {
++                    return error(id, "import_jsonl", "Cannot import the session file that is currently open");
++                }
++                let importedPath = sourcePath;
++                if (!samePath(sourcePath, destinationPath)) {
++                    if (existsSync(destinationPath)) {
++                        return error(id, "import_jsonl", "A session with the same file name already exists; no file was overwritten");
++                    }
++                    try {
++                        copyFileSync(sourcePath, destinationPath, fsConstants.COPYFILE_EXCL);
++                    }
++                    catch (copyError) {
++                        if (copyError?.code === "EEXIST") {
++                            return error(id, "import_jsonl", "A session with the same file name appeared during import; no file was overwritten");
++                        }
++                        throw copyError;
++                    }
++                    importedPath = destinationPath;
++                }
++                const result = await runtimeHost.importFromJsonl(importedPath, cwdOverride);
++                if (!result.cancelled) {
++                    await rebindSession();
++                }
++                return success(id, "import_jsonl", { cancelled: result.cancelled, path: importedPath });
++            }
+             case "switch_session": {
+                 const result = await runtimeHost.switchSession(command.sessionPath);
+                 if (!result.cancelled) {
+@@ -515,6 +948,73 @@ export async function runRpcMode(runtimeHost) {
+                 const sessionManager = session.sessionManager;
+                 return success(id, "get_tree", { tree: sessionManager.getTree(), leafId: sessionManager.getLeafId() });
+             }
++            case "navigate_tree": {
++                if (session.isStreaming || session.isCompacting || session.isBashRunning) {
++                    return error(id, "navigate_tree", "Cannot navigate the session tree while work is in progress");
++                }
++                const entryId = typeof command.entryId === "string" ? command.entryId.trim() : "";
++                const options = command.options ?? {};
++                if (!entryId || entryId.length > 200 || !options || typeof options !== "object" || Array.isArray(options)) {
++                    return error(id, "navigate_tree", "entryId and an optional options object are required");
++                }
++                const allowedOptionKeys = new Set(["summarize", "customInstructions", "replaceInstructions", "label"]);
++                if (Object.keys(options).some((key) => !allowedOptionKeys.has(key))) {
++                    return error(id, "navigate_tree", "options contains an unsupported field");
++                }
++                if (options.summarize !== undefined && typeof options.summarize !== "boolean") {
++                    return error(id, "navigate_tree", "options.summarize must be boolean");
++                }
++                if (options.replaceInstructions !== undefined && typeof options.replaceInstructions !== "boolean") {
++                    return error(id, "navigate_tree", "options.replaceInstructions must be boolean");
++                }
++                if (options.customInstructions !== undefined
++                    && (typeof options.customInstructions !== "string" || options.customInstructions.length > 2 * 1024 * 1024)) {
++                    return error(id, "navigate_tree", "options.customInstructions must be a string no larger than 2 MiB");
++                }
++                if (options.label !== undefined
++                    && (typeof options.label !== "string" || options.label.length > 1000)) {
++                    return error(id, "navigate_tree", "options.label must be a string no larger than 1000 characters");
++                }
++                const result = await session.navigateTree(entryId, {
++                    summarize: options.summarize,
++                    customInstructions: options.customInstructions,
++                    replaceInstructions: options.replaceInstructions,
++                    label: options.label,
++                });
++                return success(id, "navigate_tree", {
++                    cancelled: result.cancelled,
++                    aborted: result.aborted ?? false,
++                    editorText: result.editorText,
++                    summaryEntryId: result.summaryEntry?.id,
++                });
++            }
++            case "set_label": {
++                if (session.isStreaming || session.isCompacting) {
++                    return error(id, "set_label", "Cannot change a label while work is in progress");
++                }
++                const entryId = typeof command.entryId === "string" ? command.entryId.trim() : "";
++                const rawLabel = command.label;
++                if (!entryId || entryId.length > 200) {
++                    return error(id, "set_label", "entryId must be a non-empty string");
++                }
++                if (rawLabel !== undefined && rawLabel !== null
++                    && (typeof rawLabel !== "string" || rawLabel.length > 1000)) {
++                    return error(id, "set_label", "label must be a string, null, or omitted");
++                }
++                const label = typeof rawLabel === "string" && rawLabel.trim() ? rawLabel.trim() : undefined;
++                session.sessionManager.appendLabelChange(entryId, label);
++                return success(id, "set_label", { entryId, label: label ?? null });
++            }
++            case "reload": {
++                if (session.isStreaming || session.isCompacting || session.isBashRunning) {
++                    return error(id, "reload", "Cannot reload while work is in progress");
++                }
++                await session.reload();
++                // reload() keeps the AgentSession but replaces its agent/extension runner.
++                // Refresh stream subscriptions without emitting session_start a second time.
++                await rebindSession({ bindExtensions: false });
++                return success(id, "reload");
++            }
+             case "get_last_assistant_text": {
+                 const text = session.getLastAssistantText();
+                 return success(id, "get_last_assistant_text", { text });
+@@ -554,13 +1054,15 @@ export async function runRpcMode(runtimeHost) {
+                         sourceInfo: template.sourceInfo,
+                     });
+                 }
+-                for (const skill of session.resourceLoader.getSkills().skills) {
+-                    commands.push({
+-                        name: `skill:${skill.name}`,
+-                        description: skill.description,
+-                        source: "skill",
+-                        sourceInfo: skill.sourceInfo,
+-                    });
++                if (session.settingsManager.getEnableSkillCommands()) {
++                    for (const skill of session.resourceLoader.getSkills().skills) {
++                        commands.push({
++                            name: `skill:${skill.name}`,
++                            description: skill.description,
++                            source: "skill",
++                            sourceInfo: skill.sourceInfo,
++                        });
++                    }
+                 }
+                 return success(id, "get_commands", { commands });
+             }
+@@ -651,4 +1153,4 @@ export async function runRpcMode(runtimeHost) {
+     // Keep process alive forever
+     return new Promise(() => { });
+ }
+-//# sourceMappingURL=rpc-mode.js.map
+\ No newline at end of file
++//# sourceMappingURL=rpc-mode.js.map

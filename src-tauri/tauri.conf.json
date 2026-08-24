@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Interfaccia pi",
+  "version": "2.4.0",
+  "identifier": "it.amodeo.interfaccia-pi",
+  "build": {
+    "frontendDist": "../app/public"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Interfaccia pi",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' http://localhost:4666; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' http://localhost:4666; img-src 'self' data: blob:; style-src 'self'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "publisher": "Antonio Amodeo",
+    "copyright": "Antonio Amodeo",
+    "category": "DeveloperTool",
+    "shortDescription": "Interfaccia grafica completa per l'agente pi",
+    "longDescription": "Interfaccia accessibile e autocontenuta per usare pi con il mouse: include Node.js, PI, npm e gli strumenti di ricerca, con più cartelle in schede indipendenti e conversazioni salvate.",
+    "resources": {
+      "../app/server.mjs": "app/server.mjs",
+      "../app/no-workspace-guard.mjs": "app/no-workspace-guard.mjs",
+      "../app/public/index.html": "app/public/index.html",
+      "../app/public/stile.css": "app/public/stile.css",
+      "../app/public/auth-flow-core.js": "app/public/auth-flow-core.js",
+      "../app/public/palette-core.js": "app/public/palette-core.js",
+      "../app/public/app.js": "app/public/app.js",
+      "../vendor/pi-runtime/node": "runtime/node",
+      "../vendor/pi-runtime/pi": "runtime/pi",
+      "../vendor/pi-runtime/tools": "runtime/tools",
+      "../vendor/pi-runtime/manifest.json": "runtime/manifest.json",
+      "../vendor/pi-runtime/THIRD-PARTY-NOTICES.txt": "runtime/THIRD-PARTY-NOTICES.txt",
+      "../licenses": "licenses"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Italian",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

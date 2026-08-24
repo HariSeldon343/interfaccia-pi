@@ -1,0 +1,10 @@
+# Artefatti generati: il grafo descrive il sorgente, non copie di build.
+src-tauri/target/
+src-tauri/target-*/
+release/
+
+# Runtime di terze parti vendorizzato e gia descritto da manifest/licenze.
+vendor/pi-runtime/
+
+# Risultati e memoria del grafo stesso.
+graphify-out/

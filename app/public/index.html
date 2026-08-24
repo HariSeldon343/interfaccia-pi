@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interfaccia pi</title>
+  <link rel="stylesheet" href="/stile.css">
+</head>
+<body>
+  <a class="salta" id="salta-input" href="#conversazione">Vai alla conversazione e alla scrittura</a>
+
+  <header class="barra">
+    <button class="solo-icona menu-toggle" id="btn-menu" type="button"
+            aria-label="Apri azioni e comandi" aria-controls="pannello-laterale" aria-expanded="false">☰</button>
+    <div class="marchio" aria-label="pi">
+      <span aria-hidden="true">π</span>
+      <span class="marchio-nome">pi</span>
+    </div>
+
+    <nav class="schede" id="schede" aria-label="Conversazioni aperte"></nav>
+    <button class="apri-cartella" id="btn-nuova-chat" type="button" aria-label="Nuova chat senza cartella">
+      <span aria-hidden="true">✎</span><span>Nuova chat</span>
+    </button>
+    <button class="apri-cartella" id="btn-apri-cartella" type="button" aria-label="Apri una cartella">
+      <span aria-hidden="true">＋</span><span>Apri cartella</span>
+    </button>
+
+    <div class="spazio"></div>
+
+    <div class="controlli-testata" aria-label="Modello e stato">
+      <button class="pillola" id="btn-modello" type="button" disabled
+              aria-haspopup="dialog" title="Scegli quale modello risponde">
+        <span class="pillola-etichetta">Modello</span>
+        <span class="pillola-valore" id="eti-modello">nessuno</span>
+      </button>
+
+      <button class="pillola" id="btn-ragionamento" type="button" disabled
+              aria-haspopup="dialog" title="Scegli quanto deve ragionare il modello">
+        <span class="pillola-etichetta">Ragionamento</span>
+        <span class="pillola-valore" id="eti-ragionamento">—</span>
+      </button>
+
+      <button class="solo-icona" id="btn-controlli" type="button" disabled
+              aria-label="Apri controlli avanzati" title="Controlli avanzati">⚙</button>
+
+      <button class="ferma-top" id="btn-ferma-top" type="button" hidden>
+        <span aria-hidden="true">■</span> Ferma
+      </button>
+
+      <div class="stato" id="stato" role="status" aria-live="polite">
+        <span class="spia" id="spia" aria-hidden="true"></span>
+        <span id="eti-stato">avvio…</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="corpo">
+    <aside class="lato" id="pannello-laterale" aria-label="Azioni e comandi">
+      <section class="gruppo gruppo-cartella">
+        <h2>Contesto di lavoro</h2>
+        <div class="cartella-attiva">
+          <span class="cartella-icona" aria-hidden="true">▱</span>
+          <span class="cartella-testo">
+            <strong id="eti-cartella">nessuna cartella</strong>
+            <small id="eti-percorso">Puoi iniziare comunque</small>
+          </span>
+        </div>
+      </section>
+
+      <nav class="gruppo navigazione-principale" aria-label="Conversazione">
+        <button class="voce voce-primaria" type="button" data-azione="nuova">
+          <span class="ico" aria-hidden="true">✎</span>
+          <span class="voce-testo"><strong>Nuova conversazione</strong><small>continua con o senza cartella</small></span>
+        </button>
+        <button class="voce" type="button" data-azione="cartella">
+          <span class="ico" aria-hidden="true">▱</span>
+          <span class="voce-testo"><strong>Apri una cartella</strong><small>aggiunge uno spazio di lavoro</small></span>
+        </button>
+        <button class="voce" type="button" data-azione="conversazioni">
+          <span class="ico" aria-hidden="true">◷</span>
+          <span class="voce-testo"><strong>Conversazioni salvate</strong><small>riapri un lavoro precedente</small></span>
+        </button>
+      </nav>
+
+      <details class="gruppo pannello-ripiegabile" id="gruppo-comandi">
+        <summary>
+          <span class="ico" aria-hidden="true">◇</span>
+          <span class="riepilogo-testo">
+            <strong>Skills</strong>
+            <small>comandi spiegati in linguaggio naturale</small>
+          </span>
+          <span class="freccia-riepilogo" aria-hidden="true">›</span>
+        </summary>
+        <div class="contenuto-ripiegabile">
+          <div class="titolo-riga">
+            <h2>Skills disponibili</h2>
+            <div class="azioni-titolo">
+              <button
+                class="testo-bottone"
+                id="btn-aggiorna-skill"
+                type="button"
+                aria-label="Aggiorna le skill installate"
+                disabled
+              >Aggiorna skill</button>
+              <button class="testo-bottone" id="btn-cerca-comandi" type="button" hidden>Cerca</button>
+            </div>
+          </div>
+          <p class="nota" id="nota-comandi">Si caricano quando avvii una conversazione.</p>
+          <div id="lista-comandi" class="lista"></div>
+        </div>
+      </details>
+
+      <section class="gruppo gruppo-suggerimenti">
+        <h2>Prova a chiedere</h2>
+        <div class="lista" id="lista-esempi"></div>
+      </section>
+
+      <section class="gruppo gruppo-strumenti">
+        <h2>Strumenti</h2>
+        <div class="lista lista-strumenti">
+          <button class="voce" type="button" data-azione="modello">
+            <span class="ico" aria-hidden="true">◉</span>
+            <span class="voce-testo"><strong>Scegli modello</strong><small>locale o in rete</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="ragionamento">
+            <span class="ico" aria-hidden="true">◎</span>
+            <span class="voce-testo"><strong>Ragionamento</strong><small>velocita o accuratezza</small></span>
+          </button>
+          <button class="voce" id="btn-albero" type="button" data-azione="albero">
+            <span class="ico" aria-hidden="true">↶</span>
+            <span class="voce-testo"><strong>Cronologia e rami</strong><small>torna a un passaggio precedente</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="comprimi">
+            <span class="ico" aria-hidden="true">↡</span>
+            <span class="voce-testo"><strong>Libera spazio</strong><small>riassume una chat diventata lunga</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="statistiche">
+            <span class="ico" aria-hidden="true">▥</span>
+            <span class="voce-testo"><strong>Uso e costo</strong><small>messaggi, token e spazio rimasto</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="esporta">
+            <span class="ico" aria-hidden="true">⇩</span>
+            <span class="voce-testo"><strong>Esporta</strong><small>salva la conversazione in HTML</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="avanzate">
+            <span class="ico" aria-hidden="true">⋯</span>
+            <span class="voce-testo"><strong>Controlli avanzati</strong><small>coda, shell, sessioni e RPC</small></span>
+          </button>
+          <button class="voce pericolo" type="button" data-azione="interrompi">
+            <span class="ico" aria-hidden="true">■</span>
+            <span class="voce-testo"><strong>Interrompi</strong><small>ferma il lavoro in corso</small></span>
+          </button>
+        </div>
+      </section>
+    </aside>
+
+    <main class="centro">
+      <div class="fascia-estensioni" id="stati-estensioni" hidden></div>
+      <div class="conversazione" id="conversazione" role="log" aria-label="Conversazione"
+           aria-live="polite" aria-relevant="additions" tabindex="0"></div>
+      <div class="solo-lettori" id="annuncio-risposta" aria-live="polite" aria-atomic="true"></div>
+      <div class="widget-estensione" id="widget-sopra" hidden></div>
+
+      <div class="composizione">
+        <div class="riga-avvisi" id="avvisi" role="alert" aria-live="assertive"></div>
+        <div class="coda" id="coda" hidden aria-live="polite"></div>
+        <div class="invii-verifica" id="invii-verifica" hidden aria-live="polite"></div>
+        <div class="allegati" id="allegati" hidden aria-label="Immagini allegate"></div>
+
+        <div class="composer-shell" id="composer-shell">
+          <div class="palette-comandi" id="palette-comandi" hidden>
+            <header class="palette-comandi-testa">
+              <strong>Comandi di pi</strong>
+              <span id="stato-palette-comandi" role="status" aria-live="polite"></span>
+            </header>
+            <div id="lista-palette-comandi" class="lista-palette-comandi"
+                 role="listbox" aria-label="Comandi di pi"></div>
+          </div>
+
+          <div class="scrittura">
+            <input id="scegli-immagini" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+            <button id="btn-allega" class="strumento-input" type="button" disabled
+                    aria-label="Allega immagini" title="Allega immagini">＋</button>
+            <label class="solo-lettori" for="input">Richiesta per pi</label>
+            <textarea id="input" rows="1" maxlength="2097152"
+                      aria-controls="lista-palette-comandi" aria-expanded="false"
+                      aria-autocomplete="list" aria-haspopup="listbox" aria-describedby="suggerimento"
+                      placeholder="Scrivi cosa vuoi ottenere…" disabled></textarea>
+            <button id="btn-invia" class="invia" type="button" disabled aria-label="Invia richiesta" title="Invia (Invio)">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M3 20l18-8L3 4v6l12 2-12 2z" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="sotto-scrittura">
+          <span id="suggerimento">Invio per inviare · Maiusc+Invio per andare a capo</span>
+          <div class="invio-occupato" id="invio-occupato" hidden>
+            <label for="modo-coda">Se pi sta lavorando:</label>
+            <select id="modo-coda">
+              <option value="followUp">aggiungi dopo</option>
+              <option value="steer">correggi il lavoro adesso</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="stato-sessione-tui" id="stato-sessione-tui" role="status"
+             aria-live="polite" aria-atomic="true" aria-label="Stato della sessione pi">
+          <span class="stato-tui-percorso" id="stato-cwd" title="">—</span>
+          <span class="stato-tui-uso" id="stato-uso">statistiche in attesa</span>
+          <span class="stato-tui-contesto" id="contesto-info">Contesto —</span>
+          <span class="stato-tui-modello" id="stato-modello-tui">modello —</span>
+        </div>
+      </div>
+
+      <div class="widget-estensione" id="widget-sotto" hidden></div>
+    </main>
+  </div>
+
+  <div class="toast-area" id="toast-area" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="velo" id="velo" hidden>
+    <section class="modale" id="modale" role="dialog" aria-modal="true"
+             aria-labelledby="modale-titolo" tabindex="-1">
+      <header class="modale-testa">
+        <h3 id="modale-titolo">Titolo</h3>
+        <button class="chiudi" id="modale-chiudi" type="button" aria-label="Chiudi finestra">✕</button>
+      </header>
+      <div class="modale-corpo" id="modale-corpo"></div>
+      <footer class="modale-piede" id="modale-piede" hidden></footer>
+    </section>
+  </div>
+
+  <script src="/palette-core.js"></script>
+  <script src="/auth-flow-core.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,650 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
+const [html, frontend, stile] = await Promise.all([
+  readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
+  readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
+  readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
+]);
+
+function attributi(testo) {
+  const risultato = new Map();
+  const espressione = /(?:^|\s)([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  for (const corrispondenza of testo.matchAll(espressione)) {
+    risultato.set(
+      corrispondenza[1].toLowerCase(),
+      corrispondenza[2] ?? corrispondenza[3] ?? corrispondenza[4] ?? null,
+    );
+  }
+  return risultato;
+}
+
+function elementi(testo) {
+  return [...testo.matchAll(/<([a-z][\w-]*)\b([^<>]*)>/gi)].map((corrispondenza) => ({
+    tag: corrispondenza[1].toLowerCase(),
+    attributi: attributi(corrispondenza[2]),
+    apertura: corrispondenza[0],
+    indice: corrispondenza.index,
+    fine: corrispondenza.index + corrispondenza[0].length,
+  }));
+}
+
+const elementiHtml = elementi(html);
+
+function elementoConId(id) {
+  return elementiHtml.find((elemento) => elemento.attributi.get("id") === id);
+}
+
+function corpoElementoSemplice(id) {
+  const elemento = elementoConId(id);
+  assert.ok(elemento, `manca #${id}`);
+  const chiusura = `</${elemento.tag}>`;
+  const fine = html.toLowerCase().indexOf(chiusura, elemento.fine);
+  assert.notEqual(fine, -1, `manca la chiusura di #${id}`);
+  return html.slice(elemento.fine, fine);
+}
+
+function corpoFunzione(nome) {
+  const inizio = frontend.indexOf(`function ${nome}(`);
+  assert.notEqual(inizio, -1, `manca la funzione ${nome}`);
+  const aperturaParametri = frontend.indexOf("(", inizio);
+  let profonditaParametri = 0;
+  let fineParametri = -1;
+  for (let indice = aperturaParametri; indice < frontend.length; indice += 1) {
+    if (frontend[indice] === "(") profonditaParametri += 1;
+    if (frontend[indice] === ")") profonditaParametri -= 1;
+    if (profonditaParametri === 0) {
+      fineParametri = indice;
+      break;
+    }
+  }
+  assert.notEqual(fineParametri, -1, `la firma di ${nome} non e chiusa`);
+  const apertura = frontend.indexOf("{", fineParametri);
+  let profondita = 0;
+  for (let indice = apertura; indice < frontend.length; indice += 1) {
+    if (frontend[indice] === "{") profondita += 1;
+    if (frontend[indice] === "}") profondita -= 1;
+    if (profondita === 0) return frontend.slice(apertura + 1, indice);
+  }
+  assert.fail(`la funzione ${nome} non e chiusa`);
+}
+
+test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
+  const idHtml = elementiHtml
+    .map((elemento) => elemento.attributi.get("id"))
+    .filter(Boolean);
+  const duplicati = idHtml.filter((id, indice) => idHtml.indexOf(id) !== indice);
+  assert.deepEqual([...new Set(duplicati)], [], "gli ID HTML devono essere univoci");
+
+  const selettoriId = [
+    ...frontend.matchAll(/\$\(\s*["']#([\w-]+)["']\s*\)/g),
+  ].map((corrispondenza) => corrispondenza[1]);
+  assert.ok(selettoriId.length >= 30, "il controllo deve coprire la mappa DOM reale di app.js");
+  for (const id of new Set(selettoriId)) {
+    assert.ok(idHtml.includes(id), `app.js usa #${id}, ma index.html non lo espone`);
+  }
+
+  for (const id of [
+    "schede",
+    "conversazione",
+    "annuncio-risposta",
+    "input",
+    "btn-invia",
+    "btn-allega",
+    "scegli-immagini",
+    "allegati",
+    "invii-verifica",
+    "avvisi",
+    "coda",
+    "modo-coda",
+    "invio-occupato",
+    "spia",
+    "eti-stato",
+    "eti-cartella",
+    "eti-percorso",
+    "eti-modello",
+    "eti-ragionamento",
+    "stato-sessione-tui",
+    "stato-cwd",
+    "stato-uso",
+    "contesto-info",
+    "stato-modello-tui",
+    "composer-shell",
+    "palette-comandi",
+    "lista-palette-comandi",
+    "stato-palette-comandi",
+    "suggerimento",
+    "lista-comandi",
+    "nota-comandi",
+    "btn-aggiorna-skill",
+    "btn-cerca-comandi",
+    "btn-modello",
+    "btn-ragionamento",
+    "btn-controlli",
+    "btn-ferma-top",
+    "stati-estensioni",
+    "widget-sopra",
+    "widget-sotto",
+    "velo",
+    "modale",
+    "modale-titolo",
+    "modale-corpo",
+    "modale-piede",
+    "modale-chiudi",
+    "toast-area",
+  ]) {
+    assert.ok(idHtml.includes(id), `manca il punto di integrazione #${id}`);
+  }
+});
+
+test("la struttura Codex-like mantiene i contratti accessibili della conversazione", () => {
+  const conversazione = elementoConId("conversazione");
+  assert.equal(conversazione?.attributi.get("role"), "log");
+  assert.equal(conversazione?.attributi.get("aria-live"), "polite");
+  assert.equal(conversazione?.attributi.get("aria-relevant"), "additions");
+  assert.equal(conversazione?.attributi.get("tabindex"), "0");
+
+  const stato = elementoConId("stato");
+  assert.equal(stato?.attributi.get("role"), "status");
+  assert.equal(stato?.attributi.get("aria-live"), "polite");
+
+  const avvisi = elementoConId("avvisi");
+  assert.equal(avvisi?.attributi.get("role"), "alert");
+  assert.equal(avvisi?.attributi.get("aria-live"), "assertive");
+
+  const annuncio = elementoConId("annuncio-risposta");
+  assert.equal(annuncio?.attributi.get("aria-live"), "polite");
+  assert.equal(annuncio?.attributi.get("aria-atomic"), "true");
+
+  assert.equal(elementoConId("input")?.tag, "textarea");
+  const input = elementoConId("input");
+  assert.equal(input?.attributi.get("aria-controls"), "lista-palette-comandi");
+  assert.equal(input?.attributi.get("aria-expanded"), "false");
+  assert.equal(input?.attributi.get("aria-autocomplete"), "list");
+  assert.equal(input?.attributi.get("aria-haspopup"), "listbox");
+  assert.equal(input?.attributi.get("aria-describedby"), "suggerimento");
+  assert.equal(elementoConId("palette-comandi")?.attributi.has("hidden"), true);
+  assert.equal(elementoConId("lista-palette-comandi")?.attributi.get("role"), "listbox");
+  assert.equal(elementoConId("stato-palette-comandi")?.attributi.get("role"), "status");
+  assert.ok(
+    elementiHtml.some((elemento) =>
+      elemento.tag === "label" && elemento.attributi.get("for") === "input"),
+    "la textarea deve conservare un'etichetta associata",
+  );
+
+  const modale = elementoConId("modale");
+  assert.equal(modale?.attributi.get("role"), "dialog");
+  assert.equal(modale?.attributi.get("aria-modal"), "true");
+  assert.equal(modale?.attributi.get("aria-labelledby"), "modale-titolo");
+
+  for (const elemento of elementiHtml) {
+    for (const attributo of ["aria-controls", "aria-labelledby"]) {
+      const riferimenti = elemento.attributi.get(attributo)?.split(/\s+/).filter(Boolean) || [];
+      for (const id of riferimenti) {
+        assert.ok(elementoConId(id), `${attributo} punta all'ID inesistente #${id}`);
+      }
+    }
+  }
+});
+
+test("la barra TUI conserva per sessione cwd, contesto, modello e statistiche", () => {
+  const barra = elementoConId("stato-sessione-tui");
+  assert.equal(barra?.attributi.get("role"), "status");
+  assert.equal(barra?.attributi.get("aria-live"), "polite");
+  assert.equal(barra?.attributi.get("aria-atomic"), "true");
+  const corpo = corpoElementoSemplice("stato-sessione-tui");
+  for (const id of ["stato-cwd", "stato-uso", "contesto-info", "stato-modello-tui"]) {
+    assert.match(corpo, new RegExp(`\\bid=["']${id}["']`), `manca #${id} nella barra TUI`);
+  }
+
+  const disegna = corpoFunzione("disegnaBarraStatoSessione");
+  assert.match(disegna, /sessione\.statoRpc\?\.cwd\s*\|\|\s*sessione\.cartella/,
+    "il percorso RPC deve avere il fallback alla cartella canonica");
+  assert.match(disegna, /sessione\.provider/);
+  assert.match(disegna, /sessione\.modello/);
+  assert.match(disegna, /sessione\.ragionamento/);
+  assert.match(corpoFunzione("testoContestoSessione"), /contextUsage/);
+  assert.match(corpoFunzione("testoContestoSessione"), /Math\.max\(0,\s*finestra\s*-\s*usati\)/,
+    "la barra deve mostrare anche il contesto rimanente");
+  assert.match(corpoFunzione("testoContestoSessione"), /ultimoUso\?\.totalTokens/,
+    "durante lo streaming il contesto deve avanzare senza attendere agent_settled");
+  assert.match(corpoFunzione("testoContestoSessione"), /autoCompactionEnabled\s*===\s*true/,
+    "la barra deve mostrare l'indicatore auto come il footer TUI");
+  assert.match(corpoFunzione("testoContestoSessione"), /contesto\?\.tokens\s*==\s*null\s*\?\s*NaN/,
+    "dopo una compaction tokens=null non deve essere trasformato in un falso zero");
+  assert.match(corpoFunzione("finestraModelloSessione"), /sessione\?\.modelli\?\.find/,
+    "prima delle statistiche va mostrata soltanto la finestra autorevole del modello");
+  assert.match(stile, /\.stato-sessione-tui\s*\{/);
+  assert.match(stile, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
+  const uso = corpoFunzione("testoUsoSessione");
+  for (const simbolo of ["↑", "↓", "R", "W", "CH"]) assert.match(uso, new RegExp(simbolo));
+  assert.match(corpoFunzione("mostraUsoBreve"), /ultimoCacheHitPercento/);
+});
+
+test("le statistiche si aggiornano fail-soft dopo sync e agent_settled, non durante i delta", () => {
+  const aggiorna = corpoFunzione("aggiornaStatisticheSessione");
+  assert.match(aggiorna, /type:\s*["']get_session_stats["']/);
+  assert.match(aggiorna, /statisticheInCaricamento/,
+    "le letture concorrenti devono essere riunite per sessione");
+  assert.match(aggiorna, /catch\s*\{/,
+    "un errore accessorio non deve cancellare l'ultima fotografia valida");
+  assert.doesNotMatch(aggiorna, /statisticheSessione\s*=\s*null/);
+
+  const risposta = corpoFunzione("aggiornaDaRisposta");
+  assert.match(risposta, /evento\.command\s*===\s*["']get_session_stats["']/);
+  assert.match(risposta, /sessione\.statisticheSessione\s*=\s*dati/);
+
+  const sync = corpoFunzione("sincronizzaSessione");
+  const fineSync = sync.indexOf("sessione.sincronizzazione = false");
+  const statisticheDopoSync = sync.indexOf("void aggiornaStatisticheSessione(sessione)");
+  assert.ok(fineSync >= 0 && statisticheDopoSync > fineSync,
+    "get_session_stats non deve allungare la sincronizzazione principale");
+
+  const eventi = corpoFunzione("gestisciEvento");
+  const settled = eventi.indexOf('evento.type === "agent_settled"');
+  const richiesta = eventi.indexOf("aggiornaStatisticheSessione(sessione)", settled);
+  const delta = eventi.indexOf('evento.type === "message_update"');
+  assert.ok(settled >= 0 && richiesta > settled && richiesta < delta,
+    "le statistiche devono partire in differita alla fine del turno");
+  const ramoDelta = eventi.slice(delta, eventi.indexOf('evento.type === "message_end"', delta));
+  assert.doesNotMatch(ramoDelta, /aggiornaStatisticheSessione/,
+    "la lettura delle statistiche non deve rallentare il primo delta");
+});
+
+test("il primo delta e visibile subito e il ragionamento resta compatto", () => {
+  const delta = corpoFunzione("gestisciDelta");
+  assert.match(delta, /const primoDelta = !sessione\.bloccoTesto/);
+  assert.match(delta, /primoDelta[\s\S]*appendChild\(document\.createTextNode\(aggiornamento\.delta\)\)/,
+    "il primo token testuale deve essere scritto subito nel DOM");
+  assert.match(delta, /else\s*\{[\s\S]*deltaTestoInAttesa[\s\S]*pianificaDelta/,
+    "i delta successivi restano raggruppati per contenere i reflow");
+  assert.match(corpoFunzione("apriRagionamento"), /box\.open\s*=\s*Boolean\(testo\s*&&\s*sessione\.ragionamentiAperti/,
+    "il ragionamento deve restare compatto finche l'utente non lo apre");
+  assert.doesNotMatch(corpoFunzione("chiudiRagionamento"), /box\.open\s*=\s*false/,
+    "la fine del ragionamento non deve annullare una scelta esplicita dell'utente");
+});
+
+test("il trasferimento al terminale distingue la chat nuova e guida il blocco multi-finestra", () => {
+  const controlli = corpoFunzione("apriControlliAvanzati");
+  assert.match(controlli, /Nuova conversazione nel terminale/);
+  assert.match(controlli, /Sposta questa conversazione nel terminale/);
+  const handoff = corpoFunzione("passaConversazioneAlTerminale");
+  assert.match(handoff, /HANDOFF_CLIENT_RECONNECT_GRACE/);
+  assert.match(handoff, /retryAfterMs/);
+  assert.match(handoff, /HANDOFF_OTHER_CLIENT_CONNECTED/);
+  assert.match(handoff, /Chiudi l'altra finestra di Interfaccia Pi/);
+  const chiedi = corpoFunzione("chiedi");
+  assert.match(chiedi, /errore\.retryAfterMs/);
+  assert.match(chiedi, /errore\.blocker/);
+});
+
+test("Skills e comandi sono un elenco nativo a scomparsa, chiuso inizialmente", () => {
+  const gruppo = elementoConId("gruppo-comandi");
+  assert.equal(gruppo?.tag, "details", "#gruppo-comandi deve usare disclosure nativa");
+  assert.equal(gruppo?.attributi.has("open"), false, "l'elenco non deve occupare spazio all'avvio");
+
+  const corpo = corpoElementoSemplice("gruppo-comandi");
+  assert.match(corpo, /^\s*<summary\b/i, "summary deve essere il primo figlio del details");
+  const sommario = corpo.match(/^\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/i);
+  assert.ok(sommario, "manca il summary del pannello Skills");
+  assert.match(sommario[1].replace(/<[^>]+>/g, " "), /skills|comandi di pi/i);
+  assert.doesNotMatch(sommario[1], /<(?:button|input|select|textarea|a)\b/i,
+    "summary non deve contenere altri controlli interattivi");
+
+  for (const id of ["nota-comandi", "lista-comandi", "btn-cerca-comandi"]) {
+    assert.match(corpo, new RegExp(`\\bid=["']${id}["']`), `#${id} deve restare nel pannello`);
+  }
+  const cerca = elementoConId("btn-cerca-comandi");
+  assert.equal(cerca?.tag, "button");
+  assert.equal(cerca?.attributi.get("type"), "button");
+});
+
+test("le skill restano selezionabili con nome e spiegazione in linguaggio naturale", () => {
+  const descrizione = corpoFunzione("descrizioneComando");
+  assert.match(descrizione, /comando\.description/,
+    "la descrizione fornita dalla skill deve avere priorita");
+  assert.match(descrizione, /comando\.source === ["']skill["']/);
+  assert.match(descrizione, /competenza specializzata/i);
+  assert.match(descrizione, /comando\.source === ["']prompt["']/);
+  assert.match(descrizione, /procedura guidata/i);
+  assert.doesNotMatch(descrizione, /skill:graphify|skill:bonifica-vault/,
+    "le descrizioni delle skill devono arrivare dal catalogo di pi");
+
+  const bottone = corpoFunzione("bottoneComando");
+  assert.match(bottone, /crea\(["']button["'],\s*["']voce["']/);
+  assert.match(bottone, /\.type\s*=\s*["']button["']/);
+  assert.match(bottone, /titoloComando\(comando\)/,
+    "la skill deve mostrare un nome leggibile");
+  assert.match(bottone, /descrizioneComando\(comando\)/,
+    "la skill deve mostrare la spiegazione naturale");
+  assert.match(bottone, /inserisciComandoNelComposer/,
+    "pannello e palette devono usare lo stesso completamento sicuro");
+  assert.match(bottone, /chiaveComando\(comando\)/,
+    "la selezione deve distinguere sorgenti omonime");
+
+  const elenco = corpoFunzione("disegnaComandi");
+  assert.match(elenco, /\["skill",\s*"prompt"\]\.includes\(comando\.source\)/,
+    "il pannello semplice deve contenere soltanto skill e prompt");
+  assert.match(elenco, /utilizzabili\.slice\(0,\s*8\)/,
+    "l'anteprima deve restare limitata");
+  assert.match(elenco, /btnCercaComandi\.hidden\s*=\s*utilizzabili\.length\s*<=\s*8/,
+    "la ricerca completa deve comparire solo quando serve");
+  assert.match(frontend, /DOM\.btnCercaComandi\.onclick\s*=\s*apriRicercaComandi/);
+
+  const ricerca = corpoFunzione("apriRicercaComandi");
+  assert.match(ricerca, /Comandi e skill di questa conversazione/);
+  assert.match(ricerca, /Cerca comandi e skill/);
+});
+
+test("Aggiorna skill usa il reload nativo senza perdere il catalogo verificato", () => {
+  const aggiorna = elementoConId("btn-aggiorna-skill");
+  assert.equal(aggiorna?.tag, "button");
+  assert.equal(aggiorna?.attributi.get("type"), "button");
+  assert.match(
+    `${aggiorna?.attributi.get("aria-label") || ""} ${corpoElementoSemplice("btn-aggiorna-skill")}`,
+    /aggiorna[\s\S]*skill/i,
+    "il controllo deve avere un nome accessibile che spiega cosa aggiorna",
+  );
+  assert.match(frontend, /btnAggiornaSkill:\s*\$\(["']#btn-aggiorna-skill["']\)/,
+    "il controllo deve essere incluso nella mappa DOM del frontend");
+  assert.match(frontend,
+    /DOM\.btnAggiornaSkill\.onclick\s*=\s*(?:\(\)\s*=>\s*)?aggiornaSkillInstallate(?:\(\))?\s*;/,
+    "il pulsante deve attivare il workflow dedicato");
+
+  const workflow = corpoFunzione("aggiornaSkillInstallate");
+  assert.match(workflow, /trovaComandoCatalogo\(sessione,\s*["']reload["']\)/,
+    "il refresh deve risolvere il built-in reload dal catalogo corrente");
+  assert.match(workflow,
+    /invocaComandoBuiltin\(sessione,\s*comando,\s*["']["'],\s*["']\/reload["']\)/,
+    "le skill devono essere ricaricate dal built-in di Pi, non da una sola GET del catalogo");
+  assert.doesNotMatch(workflow,
+    /^\s*await\s+caricaCapacita\(sessione,\s*\{\s*refresh:\s*true\s*\}\)\s*;?\s*$/,
+    "caricaCapacita da sola non ricarica le risorse di Pi");
+
+  assert.match(workflow, /const\s+(?:snapshot|(?:catalogo|comandi)(?:Precedente|Verificato|Snapshot))\s*=/i,
+    "prima del reload va conservata la fotografia del catalogo verificato");
+  const gestioneErrore = workflow.match(/catch\s*(?:\([^)]*\))?\s*\{([\s\S]*)$/)?.[1] || "";
+  assert.match(gestioneErrore, /sessione\.comandi\s*=/,
+    "un reload fallito deve ripristinare esplicitamente i comandi precedenti");
+  assert.match(gestioneErrore, /(?:catalogo|comandi)(?:Precedente|Verificato|Snapshot)|snapshot(?:\.(?:comandi|revisioneCapacita|capacitaComplete))?/i,
+    "il ramo di errore deve riusare la fotografia, non svuotare il pannello");
+  assert.doesNotMatch(gestioneErrore, /sessione\.comandi\s*=\s*\[\s*\]/,
+    "un errore non deve cancellare le skill gia visibili");
+
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  assert.match(interfaccia,
+    /DOM\.btnAggiornaSkill\.disabled\s*=\s*!utilizzabile[\s\S]*sessione\?\.inEsecuzione|DOM\.btnAggiornaSkill\.disabled\s*=\s*[^;]*sessione\?*\.?inEsecuzione/,
+    "Aggiorna skill deve essere disabilitato mentre Pi sta generando una risposta");
+});
+
+test("la palette slash e inline, dinamica e completamente utilizzabile da tastiera", () => {
+  assert.ok(html.indexOf("/palette-core.js") < html.indexOf("/app.js"),
+    "il core puro deve essere caricato prima del frontend");
+  const aggiorna = corpoFunzione("aggiornaPaletteComandi");
+  assert.match(aggiorna, /analizzaRichiamoComando/);
+  assert.match(aggiorna, /filtraCatalogoComandi\(sessione\.comandi/,
+    "i risultati devono provenire dal catalogo della sessione");
+  assert.match(aggiorna, /sessione\.revisioneCapacita/,
+    "il rendering deve essere legato alla revisione della sessione");
+
+  const selezione = corpoFunzione("inserisciComandoNelComposer");
+  assert.match(selezione, /APP\.sessioni\.get\(sessionId\)/);
+  assert.match(selezione, /sessione\.id !== APP\.attivaId/,
+    "un click obsoleto non deve scrivere nella nuova scheda");
+  assert.match(selezione, /trovaComandoPerChiave/,
+    "la voce va riletta dal catalogo corrente");
+
+  assert.match(frontend, /evento\.isComposing\s*\|\|\s*composizioneInputInCorso/);
+  for (const tasto of ["ArrowDown", "ArrowUp", "Home", "End", "Escape", "Tab", "Enter"]) {
+    assert.match(frontend, new RegExp(`evento\\.key === ["']${tasto}["']`), `manca la semantica ${tasto}`);
+  }
+  for (const classe of ["composer-shell", "palette-comandi", "palette-opzione", "palette-descrizione", "palette-categoria"]) {
+    assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`), `manca lo stile .${classe}`);
+  }
+  const regolaOpzione = stile.match(/\.palette-opzione\s*\{([\s\S]*?)\}/)?.[1] || "";
+  assert.match(regolaOpzione, /width:\s*100%/,
+    "ogni risultato deve occupare tutta la larghezza della palette");
+  assert.match(regolaOpzione, /background:\s*transparent/,
+    "lo sfondo globale dei button non deve creare righe irregolari");
+});
+
+test("built-in e shell vengono intercettati prima di cronologia e invii pendenti", () => {
+  const invio = corpoFunzione("invia");
+  const intercetta = invio.indexOf("gestisciComandoComposer");
+  assert.ok(intercetta >= 0, "manca l'intercettazione del composer");
+  assert.ok(intercetta < invio.indexOf("aggiungiMessaggio"));
+  assert.ok(intercetta < invio.indexOf("registraInvioPendente"));
+
+  const gestore = corpoFunzione("gestisciComandoComposer");
+  assert.match(gestore, /!\{1,2\}/);
+  assert.match(gestore, /excludeFromContext:\s*shell\[1\]\s*===\s*["']!!["']/);
+  assert.match(gestore, /source === ["']builtin["']/);
+  assert.match(gestore, /\["skill",\s*"prompt"\]/,
+    "skill e prompt devono continuare lungo il normale invio");
+  assert.match(gestore, /source === ["']extension["']/,
+    "le estensioni TUI-only devono essere riconosciute senza diventare prompt");
+  assert.match(gestore, /sessione\.allegati\.length/,
+    "immagini e comandi non devono separarsi silenziosamente");
+
+  const invoca = corpoFunzione("invocaComandoBuiltin");
+  assert.match(invoca, /preparaAttesaRpcEsterna/);
+  assert.ok(invoca.indexOf("preparaAttesaRpcEsterna") < invoca.indexOf("/api/invoca-comando"),
+    "l'attesa SSE va registrata prima del POST");
+  assert.ok(invoca.indexOf("registraInvioPendente") < invoca.indexOf("/api/invoca-comando"),
+    "il registro exactly-once deve essere persistito prima del POST");
+  assert.match(invoca, /creaRegistroComandoBuiltin/);
+  assert.match(invoca, /lineageId:\s*sessione\.lineageId/);
+  assert.match(invoca, /catalogRevision/);
+  assert.match(invoca, /attesa\.stato\.conclusa/,
+    "un ack anticipato deve restare autorevole se la risposta HTTP si perde");
+  const attendeAck = invoca.indexOf("risultatoRpcAnticipato ?? await attesa.promessa");
+  const risolveDopoAck = invoca.indexOf("dimenticaCopiaSicurezzaVerificata", attendeAck);
+  assert.ok(attendeAck >= 0 && attendeAck < risolveDopoAck,
+    "marker e safety draft non vanno risolti prima dell'ack RPC");
+  assert.match(invoca, /erroreCatalogoComandiObsoleto/);
+  assert.match(invoca, /caricaCapacita\(sessione, \{ refresh: false \}\)/,
+    "un 409 stale aggiorna il catalogo senza rieseguire il comando");
+  assert.doesNotMatch(invoca, /return\s+invocaComandoBuiltin\(/,
+    "un comando con catalogo stale non deve avere auto-retry");
+
+  const risposta = corpoFunzione("aggiornaDaRisposta");
+  assert.match(risposta, /invioCorrelato\?\.origine === ["']builtin["']/);
+  assert.match(risposta, /gestisciAckComandoBuiltinSenzaAttesa/,
+    "ack live tardivi e guiReplay devono usare il registro persistito");
+  const riconcilia = corpoFunzione("riconciliaInviiPendenti");
+  assert.match(riconcilia, /invioRichiedeVerificaManuale/,
+    "un built-in non deve essere scambiato per un normale messaggio user");
+  const safety = corpoFunzione("dimenticaCopiaSicurezzaVerificata");
+  assert.match(safety, /lineageRecordBozza\(recordSicurezza\) === invio\.lineageId/,
+    "l'ack non deve cancellare una nuova bozza identica con lineage diversa");
+
+  const bash = corpoFunzione("eseguiBash");
+  assert.ok(bash.indexOf("registraInvioPendente") < bash.indexOf("await rpc"),
+    "! e !! devono persistere il journal prima della POST RPC");
+  assert.match(bash, /creaRegistroShell/);
+  assert.match(bash, /id,\s*\n\s*operationId,\s*\n\s*excludeFromContext:\s*Boolean\(excludeFromContext\)/,
+    "la shell deve riusare ID e operationId del journal e conservare la semantica !!");
+  assert.match(risposta, /invioCorrelato\?\.origine === ["']shell["']/);
+  assert.match(risposta, /gestisciAckShellSenzaAttesa/);
+
+  const chiedi = corpoFunzione("chiedi");
+  assert.match(chiedi, /errore\.statusHttp = risposta\.status/);
+  assert.match(chiedi, /errore\.code = codice/);
+});
+
+test("i workflow built-in e i segreti delle estensioni hanno superfici GUI dedicate", () => {
+  const workflow = corpoFunzione("eseguiWorkflowComando");
+  for (const azione of [
+    "model-picker", "scoped-models-picker", "export-picker", "import-picker",
+    "share-session", "show-changelog", "show-hotkeys", "fork-picker", "tree-picker",
+    "project-trust", "provider-login", "provider-logout", "resume-picker", "close-session",
+  ]) assert.match(workflow, new RegExp(azione), `workflow non cablato: ${azione}`);
+
+  const dialogo = corpoFunzione("mostraProssimoDialogoEstensione");
+  assert.match(dialogo, /evento\.sensitive\s*\?\s*["']password["']/,
+    "le credenziali non devono essere visibili in chiaro");
+  const autenticazione = corpoFunzione("mostraNotificaAutenticazione");
+  assert.match(autenticazione, /auth_url/);
+  assert.match(autenticazione, /device_code/);
+  assert.match(autenticazione, /Copia codice/);
+  assert.match(corpoFunzione("urlAutenticazioneSicuro"), /\["http:",\s*"https:"\]/,
+    "i collegamenti di autenticazione devono avere protocolli web espliciti");
+  assert.match(corpoFunzione("scegliRiassuntoNavigazioneAlbero"), /type:\s*["']navigate_tree["']/);
+  assert.match(corpoFunzione("mostraAlberoSessione"), /type:\s*["']set_label["']/);
+  assert.match(corpoFunzione("apriEsportazionePi"), /\.jsonl\$\/i/);
+  assert.match(corpoFunzione("apriEsportazionePi"), /outputPath/);
+});
+
+test("il journal workflow resta aperto fino al vero side effect e riconcilia il replay durevole", () => {
+  const invoca = corpoFunzione("invocaComandoBuiltin");
+  const ramoWorkflow = invoca.slice(
+    invoca.indexOf('dati?.mode === "workflow"'),
+    invoca.indexOf('dati?.mode === "terminal"'),
+  );
+  assert.match(ramoWorkflow, /creaOperazioneWorkflow/);
+  assert.doesNotMatch(ramoWorkflow, /dimenticaCopiaSicurezzaVerificata/,
+    "il solo routing HTTP non deve risolvere il journal");
+
+  const operazione = corpoFunzione("creaOperazioneWorkflow");
+  assert.match(operazione, /operationIdPasso/);
+  assert.match(operazione, /rpcId\s*=\s*idRpc\(\)/,
+    "ogni RPC effettiva deve avere una correlation nuova");
+  assert.match(operazione, /persistiInvioPendente\(sessione,\s*aggiornato\)/);
+  assert.ok(operazione.indexOf("persistiInvioPendente") < operazione.indexOf("return rpc("),
+    "step e operationId vanno persistiti prima di contattare Pi");
+  assert.match(operazione, /mutating\s*=\s*!String/);
+  assert.match(operazione, /workflowRisolviSuAck:\s*Boolean\(finalStep\)/);
+
+  const poll = corpoFunzione("attendiOperazioneServer");
+  assert.match(poll, /\/api\/stato-operazione/);
+  assert.match(poll, /operation\.status === ["']completed["']/);
+  const reload = corpoFunzione("riconciliaOperazioniPersistite");
+  assert.match(reload, /workflowOperationId\s*\|\|\s*corrente\.operationId/);
+  assert.match(reload, /aggiornaDaRisposta/,
+    "l'esito durevole deve attraversare la stessa logica degli ack SSE");
+  const risposta = corpoFunzione("aggiornaDaRisposta");
+  assert.match(risposta, /workflowRpcId === evento\.id/);
+  assert.match(risposta, /workflowRisolviSuAck === false/,
+    "un ack di un passo intermedio non deve chiudere il workflow");
+});
+
+test("settings, modelli, tree e resume mantengono la parita operativa di Pi", () => {
+  const settings = corpoFunzione("apriImpostazioniPi");
+  for (const nome of [
+    "autoCompaction", "autoRetry", "steeringMode", "followUpMode", "blockImages",
+    "autoResizeImages", "enableSkillCommands", "transport", "httpIdleTimeoutMs",
+  ]) assert.match(settings, new RegExp(nome), `impostazione Pi non esposta: ${nome}`);
+  assert.match(settings, /step:\s*`settings:\$\{name\}`/);
+  assert.match(settings, /caricaCapacita\(sessione,\s*\{ refresh: true \}\)/,
+    "abilitare/disabilitare i comandi skill deve ricostruire il catalogo");
+
+  const catalogo = corpoFunzione("preparaCatalogoModelliDinamico");
+  assert.match(catalogo, /type:\s*["']refresh_models["']/);
+  assert.ok(catalogo.indexOf("apriModale") < catalogo.indexOf("refresh_models"),
+    "il picker deve aprirsi subito sulla fotografia corrente");
+  assert.match(catalogo, /sessione\.modelli = snapshot/,
+    "un refresh fallito non deve sostituire il catalogo verificato");
+  assert.match(catalogo, /risultato\.onAggiorna\?\.\(\)/,
+    "l'elenco aperto deve aggiornarsi senza perdere il filtro");
+
+  const tree = corpoFunzione("scegliRiassuntoNavigazioneAlbero");
+  for (const scelta of ["none", "summary", "custom"]) {
+    assert.match(tree, new RegExp(`["']${scelta}["']`), `manca la scelta tree ${scelta}`);
+  }
+  assert.match(tree, /customInstructions/);
+  assert.match(tree, /abort_branch_summary/);
+  assert.match(tree, /esito\.editorText/);
+
+  const resume = corpoFunzione("apriRipresaConversazione");
+  assert.match(resume, /Apri in una nuova scheda/);
+  assert.match(resume, /Riprendi in questa scheda/);
+  assert.match(resume, /type:\s*["']switch_session["']/);
+  assert.match(resume, /operationId/);
+});
+
+test("l'albero della conversazione e raggiungibile direttamente dalla barra laterale", () => {
+  const albero = elementoConId("btn-albero");
+  assert.equal(albero?.tag, "button");
+  assert.equal(albero?.attributi.get("type"), "button");
+  assert.equal(albero?.attributi.get("data-azione"), "albero");
+  assert.match(
+    `${albero?.attributi.get("aria-label") || ""} ${corpoElementoSemplice("btn-albero").replace(/<[^>]+>/g, " ")}`,
+    /(?:cronologia|rami|passaggi? precedenti?|torna)/i,
+    "il pulsante deve spiegare che permette di tornare a passaggi o rami precedenti",
+  );
+
+  assert.match(frontend, /btnAlbero:\s*\$\(["']#btn-albero["']\)/,
+    "il pulsante deve essere incluso nella mappa DOM del frontend");
+  assert.match(
+    corpoFunzione("eseguiAzione"),
+    /azione\s*===\s*["']albero["'][\s\S]*?return\s+mostraAlberoSessione\(sessione\)/,
+    "l'azione laterale deve aprire direttamente l'albero della sessione attiva",
+  );
+
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  const bloccoDisabilitazione = interfaccia.match(
+    /DOM\.btnAlbero\.disabled\s*=([\s\S]*?);/,
+  )?.[1] || "";
+  assert.match(bloccoDisabilitazione, /sessione\.inEsecuzione/,
+    "l'albero non deve essere navigabile mentre Pi sta rispondendo");
+  assert.match(bloccoDisabilitazione, /sessione\.compattazioneInCorso/,
+    "l'albero non deve essere navigabile durante la compattazione");
+});
+
+test("il pulsante Modello non usa il PointerEvent come filtro di ricerca", () => {
+  assert.match(
+    frontend,
+    /DOM\.btnModello\.onclick\s*=\s*\(\)\s*=>\s*apriSceltaModello\(\)/,
+  );
+  assert.doesNotMatch(frontend, /DOM\.btnModello\.onclick\s*=\s*apriSceltaModello\s*;/);
+});
+
+test("le modali prendono subito il focus e i workflow tornano al composer", () => {
+  const apertura = corpoFunzione("apriModale");
+  assert.match(apertura, /sessioneAttiva\(\)\?\.invioInCorso/);
+  assert.match(apertura, /composerDaRipristinare/);
+  assert.match(apertura, /DOM\.modale\.focus\(\{ preventScroll: true \}\)/);
+  const chiusura = corpoFunzione("chiudiModale");
+  assert.match(chiusura, /stato\?\.precedente\?\.isConnected/);
+});
+
+test("share e login cancellabili usano operazioni stabili senza retry automatici", () => {
+  const share = corpoFunzione("condividiSessione");
+  assert.match(share, /preparaPasso\(["']share["']\)/);
+  assert.match(share, /chiediOperazioneIdempotente/);
+  assert.match(share, /PREFISSO_RISULTATI_OPERAZIONI/);
+
+  const auth = corpoFunzione("mostraNotificaAutenticazione");
+  assert.match(auth, /AUTH_FLOW\.loginCommandIdEvento\(evento\)/);
+  assert.match(auth, /annullaLoginProvider/);
+  const dialogo = corpoFunzione("mostraProssimoDialogoEstensione");
+  assert.match(dialogo, /AUTH_FLOW\.loginCommandIdEvento\(evento\)/);
+  assert.match(dialogo, /if \(risposta\.cancelled\) annullaAutenticazione\(\)/);
+  const annulla = corpoFunzione("annullaLoginProvider");
+  assert.match(annulla, /\/api\/annulla-login-provider/);
+  assert.match(annulla, /loginProviderAnnullati\.has/,
+    "chiusura, pulsante e timeout devono produrre una sola cancellazione");
+  assert.doesNotMatch(annulla, /setTimeout|while\s*\(/,
+    "la cancellazione auth non deve avere retry automatici");
+});
+
+test("il nuovo tema continua a stilizzare i nodi creati dinamicamente da app.js", () => {
+  for (const classe of [
+    "scheda-gruppo",
+    "scheda",
+    "msg",
+    "msg-chi",
+    "msg-corpo",
+    "utente",
+    "agente",
+    "strumento",
+    "voce",
+  ]) {
+    assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`),
+      `stile.css non copre piu la classe dinamica .${classe}`);
+  }
+});

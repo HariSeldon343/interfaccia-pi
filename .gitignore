@@ -1,0 +1,51 @@
+# Dipendenze e output locali
+/node_modules/
+/target/
+/src-tauri/target/
+/src-tauri/target-*/
+/artifacts/
+/release/
+
+# Il runtime e riproducibile da script e pesa circa 204 MiB. Gli archivi
+# sorgente completi lo includono, il repository Git lo rigenera in CI.
+/vendor/pi-runtime/
+/vendor/.pi-runtime.lock
+/vendor/.pi-runtime-stage-*/
+/vendor/.pi-runtime-backup-*/
+
+# File transitori e diagnostici
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+/.DS_Store
+/Thumbs.db
+
+# Pacchetti prodotti
+/*.zip
+/*.msi
+/*-setup.exe
+/SORGENTE-SHA256.txt
+*.sig
+latest.json
+
+# Segreti di firma e configurazioni locali
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+/src-tauri/relic.conf
+
+# Stato degli strumenti e degli editor, mai parte del prodotto
+/.pi/
+/.claude/
+/.codex/
+/.vscode/
+/.idea/
+/coverage/
+/desktop.ini
