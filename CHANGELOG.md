@@ -18,6 +18,12 @@
 - pulsante **Ricarica estensioni** nella barra Strumenti e menu rapido **+** per
   allegare immagini, richiamare skill o procedure e usare i comandi delle
   estensioni secondo la disponibilita GUI/terminale dichiarata da Pi;
+- Pi riceve in ogni sessione il contesto dell'interfaccia grafica e propone
+  collegamenti Markdown adatti al clic, senza istruzioni da terminale o
+  scorciatoie Desktop non richieste;
+- link web, percorsi assoluti e target Markdown locali o relativi realmente
+  apribili dalla chat, con canonicalizzazione, confine della cartella di lavoro
+  e blocco di rete, namespace, stream NTFS e file attivi;
 - accesso diretto dalla barra Strumenti all'albero della conversazione, per
   tornare a un passaggio precedente senza cancellare il ramo successivo;
 - preparazione del runtime e workflow Windows resi riproducibili e fail-fast

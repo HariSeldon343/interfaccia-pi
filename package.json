@@ -6,7 +6,7 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs app/tests/*.test.mjs",
     "test:smoke": "node --test app/tests/real-pi-smoke.mjs",
-    "check": "node --check app/server.mjs && node --check app/no-workspace-guard.mjs && node --check app/public/auth-flow-core.js && node --check app/public/palette-core.js && node --check app/public/app.js && node --check scripts/vendor-pi-runtime.mjs && node --check scripts/check-release-version.mjs",
+    "check": "node --check app/server.mjs && node --check app/no-workspace-guard.mjs && node --check app/public/auth-flow-core.js && node --check app/public/palette-core.js && node --check app/public/link-core.js && node --check app/public/app.js && node --check scripts/vendor-pi-runtime.mjs && node --check scripts/check-release-version.mjs",
     "release:check": "node scripts/check-release-version.mjs",
     "vendor:pi": "node scripts/vendor-pi-runtime.mjs",
     "vendor:pi:force": "node scripts/vendor-pi-runtime.mjs --force",

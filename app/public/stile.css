@@ -324,7 +324,14 @@ summary:focus-visible {
 .markdown ol { margin: .55em 0; padding-left: 1.55em; }
 .markdown li { margin: .18em 0; }
 .markdown blockquote { margin: .7em 0; padding-left: 12px; color: var(--testo-tenue); border-left: 3px solid var(--accento-scuro); }
-.markdown a { color: var(--accento); }
+.markdown a,
+.markdown .link-locale { padding: 0; color: var(--accento); background: transparent; border: 0; border-radius: 2px; font: inherit; text-align: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; cursor: pointer; }
+.markdown a:hover,
+.markdown a:focus-visible,
+.markdown .link-locale:hover,
+.markdown .link-locale:focus-visible { color: #cdb7ff; outline-offset: 2px; }
+.markdown a[aria-busy="true"],
+.markdown .link-locale[aria-busy="true"] { opacity: .6; cursor: wait; }
 .markdown code { padding: 1px 5px; background: #202631; border: 1px solid var(--bordo); border-radius: 4px; font-family: var(--mono); font-size: .9em; }
 .markdown pre { position: relative; margin: .75em 0; padding: 12px; overflow: auto; background: #0d1015; border: 1px solid var(--bordo); border-radius: 7px; }
 .markdown pre code { padding: 0; background: transparent; border: 0; font-size: 12px; white-space: pre; }

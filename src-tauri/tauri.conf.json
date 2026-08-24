@@ -48,6 +48,7 @@
       "../app/public/stile.css": "app/public/stile.css",
       "../app/public/auth-flow-core.js": "app/public/auth-flow-core.js",
       "../app/public/palette-core.js": "app/public/palette-core.js",
+      "../app/public/link-core.js": "app/public/link-core.js",
       "../app/public/app.js": "app/public/app.js",
       "../vendor/pi-runtime/node": "runtime/node",
       "../vendor/pi-runtime/pi": "runtime/pi",

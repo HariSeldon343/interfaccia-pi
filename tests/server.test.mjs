@@ -3514,6 +3514,13 @@ test("piu dialoghi concorrenti vengono conservati e riprodotti tutti", async (t)
     }, ambiente.stato.tokenApi, "client-dialoghi-multipli");
   }
   assert.equal(sessione.richiesteInterattivePendenti.size, 0);
+  // La risposta HTTP conferma l'accettazione della scelta; l'ack RPC del fake
+  // puo arrivare nel tick immediatamente successivo. Attendiamo il vero drain
+  // invece di dipendere dalla velocita dello scheduler Windows.
+  const scadenzaRevisioni = Date.now() + 2000;
+  while (sessione.revisioniComandi.size && Date.now() < scadenzaRevisioni) {
+    await attendi(10);
+  }
   assert.equal(sessione.revisioniComandi.size, 0);
   await lettore.cancel();
 });

@@ -70,6 +70,25 @@ configurati senza perdere la conversazione.
 Se nella casella hai gia scritto una richiesta, scegliendo una skill o un
 comando estensione dal menu **＋** quel testo viene conservato come argomento.
 
+Le risposte di Pi sanno di essere mostrate nella GUI e usano collegamenti
+Markdown realmente selezionabili. I link `http` e `https` si aprono nel browser
+di sistema; file e cartelle locali si aprono nell'app associata o in Esplora
+file. Sono riconosciuti sia `[etichetta](C:\percorso con spazi\file.xlsx)` sia
+`[etichetta](file:///C:/percorso%20con%20spazi/file.xlsx)`. Dentro una
+conversazione con cartella, un target Markdown relativo viene risolto rispetto
+alla cartella di lavoro; un percorso relativo scritto come semplice testo non
+diventa invece cliccabile, per evitare interpretazioni ambigue. I percorsi
+assoluti senza spazi e gli URL web scritti in chiaro vengono riconosciuti
+automaticamente. Un percorso con spazi deve essere sempre racchiuso in un link
+Markdown esplicito: cosi la GUI non confonde il nome con la frase che lo segue.
+
+L'apertura avviene solo dopo il clic e viene verificata dal ponte locale: il
+file o la cartella devono esistere davvero, i collegamenti relativi non possono
+uscire dal progetto, le unita di rete e i namespace di dispositivo sono
+bloccati e la chat non apre file eseguibili, installer, script, scorciatoie o
+altri formati attivi. Pi non crea collegamenti sul Desktop se non glielo chiedi
+esplicitamente.
+
 Gli allegati diretti della GUI sono immagini PNG, JPEG, WebP o GIF. Il protocollo
 RPC di `pi` non espone un allegato file generico; per un documento o un sorgente
 usa un percorso assoluto nella richiesta oppure il riferimento `@file` di Pi

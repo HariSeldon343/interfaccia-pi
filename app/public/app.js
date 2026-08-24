@@ -15,6 +15,12 @@ const PALETTE_CORE = globalThis.PiGuiPaletteCore;
 if (!PALETTE_CORE) throw new Error("Il modulo della palette comandi non e stato caricato");
 const AUTH_FLOW = globalThis.PiGuiAuthFlowCore;
 if (!AUTH_FLOW) throw new Error("Il modulo del flusso di autenticazione non e stato caricato");
+const LINK_CORE = globalThis.PiGuiLinkCore;
+if (!LINK_CORE) throw new Error("Il modulo dei collegamenti non e stato caricato");
+const {
+  destinazioneLinkGui,
+  prossimaDestinazioneAutomatica,
+} = LINK_CORE;
 
 const DOM = {
   schede: $("#schede"),
@@ -2720,12 +2726,58 @@ function mostraNessunaSessione() {
 // Markdown sicuro e messaggi
 // ---------------------------------------------------------------------------
 
-function aggiungiInline(contenitore, testo) {
-  const espressione = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|\[[^\]\n]+\]\([^\)\n]+\))/g;
+function collegaDestinazioneGui(collegamento, valore, {
+  sessionId = null,
+  consentiRelativo = false,
+  dopoApertura = null,
+} = {}) {
+  const destinazione = destinazioneLinkGui(valore, { consentiRelativo });
+  if (!destinazione) return false;
+  collegaBrowserSistema(collegamento, destinazione.target, {
+    sessionId,
+    tipo: destinazione.tipo,
+    dopoApertura,
+  });
+  return true;
+}
+
+function creaCollegamentoGui(etichetta, valore, contestoLink = {}) {
+  const destinazione = destinazioneLinkGui(valore, {
+    consentiRelativo: Boolean(contestoLink.consentiRelativo),
+  });
+  if (!destinazione) return null;
+  const collegamento = destinazione.tipo === "locale"
+    ? crea("button", "link-locale", etichetta)
+    : crea("a", null, etichetta);
+  if (destinazione.tipo === "locale") collegamento.type = "button";
+  collegaDestinazioneGui(collegamento, destinazione.target, contestoLink);
+  return collegamento;
+}
+
+function aggiungiTestoAutolink(contenitore, testo, contestoLink) {
+  let posizione = 0;
+  for (;;) {
+    const destinazione = prossimaDestinazioneAutomatica(testo, posizione);
+    if (!destinazione) break;
+    if (destinazione.inizio > posizione) {
+      contenitore.appendChild(document.createTextNode(testo.slice(posizione, destinazione.inizio)));
+    }
+    contenitore.appendChild(creaCollegamentoGui(
+      destinazione.target,
+      destinazione.target,
+      contestoLink,
+    ));
+    posizione = destinazione.fine;
+  }
+  if (posizione < testo.length) contenitore.appendChild(document.createTextNode(testo.slice(posizione)));
+}
+
+function aggiungiInline(contenitore, testo, contestoLink = {}) {
+  const espressione = LINK_CORE.creaEspressioneInline();
   let ultimo = 0;
   for (const corrispondenza of testo.matchAll(espressione)) {
     const indice = corrispondenza.index;
-    if (indice > ultimo) aggiungiTestoConACapo(contenitore, testo.slice(ultimo, indice));
+    if (indice > ultimo) aggiungiTestoConACapo(contenitore, testo.slice(ultimo, indice), contestoLink);
     const token = corrispondenza[0];
     if (token.startsWith("`")) {
       contenitore.appendChild(crea("code", null, token.slice(1, -1)));
@@ -2734,34 +2786,30 @@ function aggiungiInline(contenitore, testo) {
     } else if (token.startsWith("*")) {
       contenitore.appendChild(crea("em", null, token.slice(1, -1)));
     } else {
-      const parti = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      const collegamento = crea("a", null, parti[1]);
-      try {
-        const destinazione = new URL(parti[2], window.location.href);
-        if (["http:", "https:", "mailto:"].includes(destinazione.protocol)) {
-          collegaBrowserSistema(collegamento, destinazione.href);
-        }
-      } catch {
-        // Un collegamento non valido resta testo senza href.
-      }
-      contenitore.appendChild(collegamento);
+      const link = LINK_CORE.analizzaTokenCollegamento(token);
+      const collegamento = link && creaCollegamentoGui(link.etichetta, link.target, contestoLink);
+      contenitore.appendChild(collegamento || document.createTextNode(link?.etichetta || token));
     }
     ultimo = indice + token.length;
   }
-  if (ultimo < testo.length) aggiungiTestoConACapo(contenitore, testo.slice(ultimo));
+  if (ultimo < testo.length) aggiungiTestoConACapo(contenitore, testo.slice(ultimo), contestoLink);
 }
 
-function aggiungiTestoConACapo(contenitore, testo) {
+function aggiungiTestoConACapo(contenitore, testo, contestoLink = {}) {
   const righe = testo.split("\n");
   righe.forEach((riga, indice) => {
     if (indice) contenitore.appendChild(document.createElement("br"));
-    contenitore.appendChild(document.createTextNode(riga));
+    aggiungiTestoAutolink(contenitore, riga, contestoLink);
   });
 }
 
-function renderMarkdown(contenitore, testo) {
+function renderMarkdown(contenitore, testo, { sessione = null } = {}) {
   contenitore.replaceChildren();
   contenitore.classList.add("markdown");
+  const contestoLink = {
+    sessionId: sessione?.id || null,
+    consentiRelativo: Boolean(sessione?.cartella && !sessione?.senzaCartella),
+  };
   const righe = String(testo || "").replace(/\r\n/g, "\n").split("\n");
   let indice = 0;
   while (indice < righe.length) {
@@ -2786,7 +2834,7 @@ function renderMarkdown(contenitore, testo) {
     const titolo = riga.match(/^(#{1,3})\s+(.+)$/);
     if (titolo) {
       const elemento = crea("h" + titolo[1].length);
-      aggiungiInline(elemento, titolo[2]);
+      aggiungiInline(elemento, titolo[2], contestoLink);
       contenitore.appendChild(elemento);
       indice += 1;
       continue;
@@ -2797,7 +2845,7 @@ function renderMarkdown(contenitore, testo) {
       const regola = ordinata ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
       while (indice < righe.length && regola.test(righe[indice])) {
         const voce = crea("li");
-        aggiungiInline(voce, righe[indice].replace(regola, ""));
+        aggiungiInline(voce, righe[indice].replace(regola, ""), contestoLink);
         lista.appendChild(voce);
         indice += 1;
       }
@@ -2811,7 +2859,7 @@ function renderMarkdown(contenitore, testo) {
         indice += 1;
       }
       const blocco = crea("blockquote");
-      aggiungiInline(blocco, citazione.join("\n"));
+      aggiungiInline(blocco, citazione.join("\n"), contestoLink);
       contenitore.appendChild(blocco);
       continue;
     }
@@ -2829,7 +2877,7 @@ function renderMarkdown(contenitore, testo) {
       indice += 1;
     }
     const p = crea("p");
-    aggiungiInline(p, paragrafo.join("\n"));
+    aggiungiInline(p, paragrafo.join("\n"), contestoLink);
     contenitore.appendChild(p);
   }
 }
@@ -2848,7 +2896,7 @@ function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdo
   const msg = crea("article", "msg " + classe);
   const autore = crea("div", "msg-chi", chi);
   const corpo = crea("div", "msg-corpo");
-  if (markdown) renderMarkdown(corpo, testo);
+  if (markdown) renderMarkdown(corpo, testo, { sessione });
   else corpo.textContent = testo;
   msg.append(autore, corpo);
 
@@ -3258,7 +3306,7 @@ function scaricaDeltaAccodati(sessione, { markdownFinale = false } = {}) {
   sessione.deltaRagionamentoInAttesa = "";
   if (markdownFinale && sessione.bloccoTesto) {
     sessione.bloccoTesto.corpo.classList.remove("in-streaming");
-    renderMarkdown(sessione.bloccoTesto.corpo, sessione.bloccoTesto.raw);
+    renderMarkdown(sessione.bloccoTesto.corpo, sessione.bloccoTesto.raw, { sessione });
   }
   inFondo(sessione);
 }
@@ -8248,20 +8296,35 @@ function urlAutenticazioneSicuro(valore) {
   }
 }
 
-function collegaBrowserSistema(collegamento, href, { dopoApertura = null } = {}) {
-  collegamento.href = href;
-  collegamento.target = "_blank";
-  collegamento.rel = "noopener noreferrer";
+function collegaBrowserSistema(collegamento, href, {
+  sessionId = null,
+  tipo = "web",
+  dopoApertura = null,
+} = {}) {
+  collegamento.dataset.tipoDestinazione = tipo;
+  if (tipo === "web") {
+    collegamento.href = href;
+    collegamento.target = "_blank";
+    collegamento.rel = "noopener noreferrer";
+  } else {
+    collegamento.type = "button";
+  }
   collegamento.onclick = async (evento) => {
     evento.preventDefault();
     if (collegamento.dataset.aperturaInCorso === "true") return;
     collegamento.dataset.aperturaInCorso = "true";
     collegamento.setAttribute("aria-busy", "true");
     try {
-      await chiedi("/api/apri-url", { corpo: { url: href, confirmed: true } });
+      await chiedi("/api/apri-url", {
+        corpo: {
+          url: href,
+          confirmed: true,
+          ...(sessionId ? { sessionId } : {}),
+        },
+      });
       dopoApertura?.();
     } catch (errore) {
-      toast(`Non riesco ad aprire il browser: ${testoErrore(errore)}. Usa “Copia collegamento” come alternativa.`, "errore");
+      toast(`Non riesco ad aprire il collegamento: ${testoErrore(errore)}. Puoi copiarlo come alternativa.`, "errore");
     } finally {
       delete collegamento.dataset.aperturaInCorso;
       collegamento.removeAttribute("aria-busy");

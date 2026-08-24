@@ -5,10 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, frontend, stile] = await Promise.all([
+const [html, frontend, stile, linkCore] = await Promise.all([
   readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
   readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
+  readFile(join(RADICE, "app", "public", "link-core.js"), "utf8"),
 ]);
 
 function attributi(testo) {
@@ -579,6 +580,41 @@ test("built-in, estensioni verificate e shell vengono intercettati prima di cron
   const chiedi = corpoFunzione("chiedi");
   assert.match(chiedi, /errore\.statusHttp = risposta\.status/);
   assert.match(chiedi, /errore\.code = codice/);
+});
+
+test("le risposte rendono cliccabili web e percorsi locali senza navigazione diretta", () => {
+  assert.ok(html.indexOf('src="/link-core.js"') < html.indexOf('src="/app.js"'),
+    "il classificatore puro deve essere disponibile prima del renderer");
+  assert.match(frontend, /globalThis\.PiGuiLinkCore/);
+  assert.match(frontend, /prossimaDestinazioneAutomatica/);
+  assert.match(linkCore, /\["http:",\s*"https:",\s*"mailto:"\]/);
+  assert.match(linkCore, /url\.protocol === "file:"/);
+  assert.match(linkCore, /consentiRelativo/);
+
+  const creaLink = corpoFunzione("creaCollegamentoGui");
+  assert.match(creaLink, /crea\("button",\s*"link-locale",\s*etichetta\)/,
+    "un percorso locale non deve avere un href navigabile");
+  assert.match(creaLink, /collegamento\.type = "button"/);
+
+  const inline = corpoFunzione("aggiungiInline");
+  assert.match(inline, /LINK_CORE\.creaEspressioneInline\(\)/);
+  assert.match(inline, /LINK_CORE\.analizzaTokenCollegamento\(token\)/);
+  assert.match(inline, /collegamento \|\| document\.createTextNode\(link\?\.etichetta \|\| token\)/,
+    "un target non valido deve restare testo, non un anchor inerte");
+
+  const render = corpoFunzione("renderMarkdown");
+  assert.match(render, /sessionId:\s*sessione\?\.id/);
+  assert.match(render, /sessione\?\.cartella\s*&&\s*!sessione\?\.senzaCartella/);
+  const apertura = corpoFunzione("collegaBrowserSistema");
+  assert.match(apertura, /confirmed:\s*true/);
+  assert.match(apertura, /\.\.\.\(sessionId \? \{ sessionId \} : \{\}\)/);
+  assert.match(apertura, /aria-busy/);
+  assert.doesNotMatch(apertura, /href\s*=\s*tipo === "web"\s*\?/,
+    "il percorso locale non deve avere un fallback href");
+
+  assert.match(stile, /\.markdown \.link-locale/);
+  assert.match(stile, /:focus-visible/);
+  assert.match(stile, /\[aria-busy="true"\]/);
 });
 
 test("i workflow built-in e i segreti delle estensioni hanno superfici GUI dedicate", () => {

@@ -67,6 +67,20 @@ const TTL_CONDIVISIONE_DUREVOLE_MS = 30 * 24 * 60 * 60 * 1000;
 const LIMITE_ARCHIVIO_CONDIVISIONI = 512 * 1024;
 const VERSIONE_PI_VERIFICATA = "0.84.2";
 const MAX_SESSIONI = 6;
+const ESTENSIONI_APERTURA_LOCALE_BLOCCATE = new Set([
+  ".exe", ".com", ".bat", ".cmd", ".ps1", ".msi", ".msix", ".scr", ".cpl",
+  ".hta", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".reg", ".lnk",
+  ".url", ".scf", ".appref-ms", ".pif", ".application", ".gadget", ".msp",
+  ".mst", ".inf", ".chm",
+]);
+const PROMPT_INTERFACCIA_GRAFICA = [
+  "Stai operando dentro Interfaccia pi, una GUI desktop Windows: l'utente non sta usando il terminale di Pi.",
+  "Le tue risposte sono renderizzate come Markdown e i collegamenti vengono aperti con un clic dalla GUI.",
+  "Quando proponi una pagina web, un file o una cartella, usa un collegamento Markdown nella forma [etichetta descrittiva](target).",
+  "Per risorse locali preferisci un percorso assoluto Windows nel target; puoi usare un target relativo soltanto per una risorsa dentro la cartella di lavoro corrente.",
+  "Non suggerire Ctrl+clic, scorciatoie o altri comportamenti del terminale.",
+  "Non creare collegamenti sul Desktop salvo richiesta esplicita dell'utente.",
+].join(" ");
 const PROMPT_SENZA_CARTELLA = [
   "Nessuna cartella di lavoro e stata selezionata in questa conversazione.",
   "Non assumere che la directory corrente sia un workspace dell'utente.",
@@ -113,12 +127,15 @@ export function argomentiAvvioPi({
   if (senzaCartella) {
     argomenti.push(
       "--no-context-files",
-      "--append-system-prompt",
-      PROMPT_SENZA_CARTELLA,
-      "--extension",
-      estensioneSenzaCartella,
     );
   }
+  argomenti.push(
+    "--append-system-prompt",
+    senzaCartella
+      ? `${PROMPT_INTERFACCIA_GRAFICA} ${PROMPT_SENZA_CARTELLA}`
+      : PROMPT_INTERFACCIA_GRAFICA,
+  );
+  if (senzaCartella) argomenti.push("--extension", estensioneSenzaCartella);
   if (provider) argomenti.push("--provider", provider);
   if (modello) argomenti.push("--model", modello);
   if (ragionamento) argomenti.push("--thinking", ragionamento);
@@ -955,7 +972,13 @@ export function eseguiGhLimitato(
 }
 
 export function urlEsternoSicuro(valore) {
-  if (typeof valore !== "string" || !valore.trim() || valore.length > 8192 || valore.includes("\0")) {
+  if (
+    typeof valore !== "string"
+    || !valore.trim()
+    || valore.length > 8192
+    || /[\0\r\n]/.test(valore)
+    || /%(?:25)*(?:00|0a|0d)/i.test(valore)
+  ) {
     return null;
   }
   try {
@@ -963,13 +986,135 @@ export function urlEsternoSicuro(valore) {
     if (!new Set(["http:", "https:", "mailto:"]).has(url.protocol)) return null;
     if (["http:", "https:"].includes(url.protocol)) {
       if (!url.hostname || url.username || url.password) return null;
-    } else if (!url.pathname) {
-      return null;
+    } else {
+      if (!url.pathname) return null;
+      let decodificato = url.href;
+      for (let passaggio = 0; passaggio < 3; passaggio += 1) {
+        if (
+          /[\0\r\n]/.test(decodificato)
+          || /%(?:25)*(?:00|0a|0d)/i.test(decodificato)
+        ) return null;
+        let successivo;
+        try {
+          successivo = decodeURIComponent(decodificato);
+        } catch {
+          // Un `%25` legittimo diventa `%` al primo passaggio e non e piu una
+          // sequenza URI completa. Non va confuso con una CR/LF codificata.
+          break;
+        }
+        if (successivo === decodificato) break;
+        decodificato = successivo;
+      }
+      if (/[\0\r\n]/.test(decodificato) || /%(?:25)*(?:00|0a|0d)/i.test(decodificato)) return null;
     }
     return url.href;
   } catch {
     return null;
   }
+}
+
+/**
+ * Risolve una destinazione selezionata esplicitamente dall'utente. I link web
+ * conservano soltanto gli schemi gia consentiti; i link locali devono puntare
+ * a un file o una cartella esistente su un'unita locale e vengono
+ * canonicalizzati prima di arrivare al processo del sistema operativo.
+ *
+ * Un target relativo e ammesso esclusivamente quando il server riceve la
+ * cartella autorevole della sessione. Dopo realpath deve restare al suo
+ * interno: il testo Markdown non puo usare `..` per aprire file esterni.
+ */
+export async function risolviDestinazioneApribile(
+  valore,
+  { cartellaBase = null } = {},
+) {
+  if (
+    typeof valore !== "string"
+    || !valore.trim()
+    || valore.length > 8192
+    || /[\0\r\n]/.test(valore)
+  ) {
+    throw erroreHttp("Il collegamento non e valido", 400);
+  }
+  const testo = valore.trim();
+  const web = urlEsternoSicuro(testo);
+  if (web) return { tipo: "web", href: web, protocollo: new URL(web).protocol };
+
+  let percorso = testo;
+  if (/^file:/i.test(testo)) {
+    let url;
+    try {
+      url = new URL(testo);
+    } catch {
+      throw erroreHttp("Il collegamento file non e valido", 400);
+    }
+    if (
+      url.protocol !== "file:"
+      || url.username
+      || url.password
+      || url.hostname
+      || url.search
+      || url.hash
+    ) {
+      throw erroreHttp("Sono consentiti soltanto collegamenti file locali", 400);
+    }
+    try {
+      percorso = fileURLToPath(url);
+    } catch {
+      throw erroreHttp("Il collegamento file non contiene un percorso locale valido", 400);
+    }
+  } else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(testo) && !/^[A-Za-z]:[\\/]/.test(testo)) {
+    throw erroreHttp("Lo schema del collegamento non e consentito", 400);
+  }
+
+  if (process.platform === "win32") {
+    if (/^(?:\\\\|\/\/)[.?](?:\\|\/)/.test(percorso)) {
+      throw erroreHttp("I namespace di dispositivo e le pipe non sono percorsi apribili", 400);
+    }
+    const senzaUnita = percorso.replace(/^[A-Za-z]:/, "");
+    if (senzaUnita.includes(":")) {
+      throw erroreHttp("I flussi NTFS alternativi non sono apribili", 400);
+    }
+  }
+
+  let baseCanonica = null;
+  if (!isAbsolute(percorso)) {
+    if (!cartellaBase) {
+      throw erroreHttp("Un percorso relativo richiede una cartella di lavoro", 400);
+    }
+    baseCanonica = await directoryEsistente(cartellaBase);
+    percorso = resolve(baseCanonica, percorso);
+  }
+
+  let reale;
+  try {
+    reale = await percorsoLocaleCanonico(percorso);
+  } catch (errore) {
+    if (errore?.statusHttp) throw errore;
+    throw erroreHttp("Il file o la cartella indicati non esistono", 404);
+  }
+  if (baseCanonica) {
+    const scarto = relative(baseCanonica, reale);
+    if (
+      scarto === ".."
+      || scarto.startsWith(".." + sep)
+      || isAbsolute(scarto)
+    ) {
+      throw erroreHttp("Un collegamento relativo deve restare nella cartella di lavoro", 403);
+    }
+  }
+  const info = await stat(reale).catch(() => null);
+  if (!info || (!info.isFile() && !info.isDirectory())) {
+    throw erroreHttp("Il collegamento locale non punta a un file o una cartella", 400);
+  }
+  if (info.isFile() && ESTENSIONI_APERTURA_LOCALE_BLOCCATE.has(extname(reale).toLowerCase())) {
+    throw erroreHttp("Per sicurezza questo tipo di file non puo essere aperto dalla chat", 403);
+  }
+  return {
+    tipo: "locale",
+    href: pathToFileURL(reale).href,
+    percorso: reale,
+    protocollo: "file:",
+  };
 }
 
 export function rimuoviRichiesteInterattiveLogin(pendenti, loginCommandId) {
@@ -991,23 +1136,26 @@ export function rimuoviRichiesteInterattiveLogin(pendenti, loginCommandId) {
   return rimosse;
 }
 
-export function apriUrlSistema(
+export async function apriUrlSistema(
   valore,
   { platform = process.platform, spawnProcesso = spawn } = {},
 ) {
-  const href = urlEsternoSicuro(valore);
-  if (!href) return Promise.reject(erroreHttp("Il collegamento esterno non e valido", 400));
+  const destinazione = await risolviDestinazioneApribile(valore);
+  const href = destinazione.href;
   let comando;
   let argomenti;
-  if (platform === "win32") {
+  if (destinazione.tipo === "locale" && platform === "win32") {
+    comando = "explorer.exe";
+    argomenti = [destinazione.percorso];
+  } else if (platform === "win32") {
     comando = "rundll32.exe";
     argomenti = ["url.dll,FileProtocolHandler", href];
   } else if (platform === "darwin") {
     comando = "open";
-    argomenti = [href];
+    argomenti = [destinazione.tipo === "locale" ? destinazione.percorso : href];
   } else {
     comando = "xdg-open";
-    argomenti = [href];
+    argomenti = [destinazione.tipo === "locale" ? destinazione.percorso : href];
   }
   return new Promise((risolvi, rifiuta) => {
     let processo;
@@ -1029,7 +1177,7 @@ export function apriUrlSistema(
       if (errore) rifiuta(errore);
       else {
         processo.unref?.();
-        risolvi({ ok: true, protocol: new URL(href).protocol });
+        risolvi({ ok: true, protocol: destinazione.protocollo, tipo: destinazione.tipo });
       }
     };
     processo.once("error", completa);
@@ -5214,16 +5362,23 @@ $processo.WaitForExit()
 
       if (via === "/api/apri-url" && post) {
         const corpo = await leggiCorpo(richiesta);
-        if (Object.keys(corpo).some((chiave) => !["url", "confirmed"].includes(chiave))) {
+        if (Object.keys(corpo).some((chiave) => !["url", "confirmed", "sessionId"].includes(chiave))) {
           throw erroreHttp("La richiesta di apertura contiene campi non previsti", 400);
         }
         if (corpo.confirmed !== true) {
           throw erroreHttp("L'apertura del collegamento richiede un clic esplicito", 400);
         }
-        const href = urlEsternoSicuro(corpo.url);
-        if (!href) throw erroreHttp("Il collegamento esterno non e valido", 400);
-        await apriUrl(href);
-        return json(risposta, { ok: true });
+        let cartellaBase = null;
+        if (Object.hasOwn(corpo, "sessionId")) {
+          if (typeof corpo.sessionId !== "string" || !corpo.sessionId.trim()) {
+            throw erroreHttp("La sessione del collegamento non e valida", 400);
+          }
+          const sessione = trovaSessione(corpo.sessionId);
+          if (!sessione.senzaCartella) cartellaBase = sessione.cartella;
+        }
+        const destinazione = await risolviDestinazioneApribile(corpo.url, { cartellaBase });
+        await apriUrl(destinazione.href);
+        return json(risposta, { ok: true, tipo: destinazione.tipo });
       }
 
       if (via === "/api/fiducia-progetto" && post) {

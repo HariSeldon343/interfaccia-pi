@@ -36,13 +36,25 @@ test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   });
   assert.ok(senza.includes("--no-context-files"));
   assert.ok(senza.includes("--append-system-prompt"));
+  assert.equal(senza.filter((argomento) => argomento === "--append-system-prompt").length, 1);
+  const promptSenza = senza[senza.indexOf("--append-system-prompt") + 1];
+  assert.match(promptSenza, /GUI desktop Windows/);
+  assert.match(promptSenza, /renderizzate come Markdown/);
+  assert.match(promptSenza, /\[etichetta descrittiva\]\(target\)/);
+  assert.match(promptSenza, /Non suggerire Ctrl\+clic/);
+  assert.match(promptSenza, /Non creare collegamenti sul Desktop/);
+  assert.match(promptSenza, /Nessuna cartella di lavoro/);
   assert.deepEqual(senza.slice(senza.indexOf("--extension"), senza.indexOf("--extension") + 2), ["--extension", estensione]);
   assert.ok(senza.includes("--no-approve"));
   assert.equal(senza.includes("--approve"), false);
 
   const cartella = argomentiAvvioPi({ cliPi: FAKE_PI, approvaProgetto: true });
   assert.equal(cartella.includes("--no-context-files"), false);
-  assert.equal(cartella.includes("--append-system-prompt"), false);
+  assert.equal(cartella.filter((argomento) => argomento === "--append-system-prompt").length, 1);
+  const promptCartella = cartella[cartella.indexOf("--append-system-prompt") + 1];
+  assert.match(promptCartella, /GUI desktop Windows/);
+  assert.match(promptCartella, /\[etichetta descrittiva\]\(target\)/);
+  assert.doesNotMatch(promptCartella, /Nessuna cartella di lavoro/);
   assert.equal(cartella.includes("--extension"), false);
   assert.ok(cartella.includes("--approve"));
 });
