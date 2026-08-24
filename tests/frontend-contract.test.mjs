@@ -95,6 +95,11 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
     "input",
     "btn-invia",
     "btn-allega",
+    "menu-azioni-composer",
+    "azione-allega-immagine",
+    "azione-richiama-skill",
+    "azione-comandi-estensioni",
+    "azione-ricarica-risorse",
     "scegli-immagini",
     "allegati",
     "invii-verifica",
@@ -120,7 +125,7 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
     "suggerimento",
     "lista-comandi",
     "nota-comandi",
-    "btn-aggiorna-skill",
+    "btn-ricarica-risorse",
     "btn-cerca-comandi",
     "btn-modello",
     "btn-ragionamento",
@@ -333,29 +338,114 @@ test("le skill restano selezionabili con nome e spiegazione in linguaggio natura
     "l'anteprima deve restare limitata");
   assert.match(elenco, /btnCercaComandi\.hidden\s*=\s*utilizzabili\.length\s*<=\s*8/,
     "la ricerca completa deve comparire solo quando serve");
-  assert.match(frontend, /DOM\.btnCercaComandi\.onclick\s*=\s*apriRicercaComandi/);
+  assert.match(frontend, /DOM\.btnCercaComandi\.onclick\s*=\s*\(\)\s*=>\s*apriRicercaComandi\(\)/);
 
   const ricerca = corpoFunzione("apriRicercaComandi");
-  assert.match(ricerca, /Comandi e skill di questa conversazione/);
-  assert.match(ricerca, /Cerca comandi e skill/);
+  assert.match(frontend, /titolo\s*=\s*["']Comandi e skill di questa conversazione["']/);
+  assert.match(frontend, /etichettaRicerca\s*=\s*["']Cerca comandi e skill["']/);
+  assert.match(ricerca, /new Set\(fonti\)/,
+    "lo stesso selettore deve accettare filtri di sorgente espliciti");
+  assert.match(ricerca, /filtraCatalogoComandi\(/,
+    "la ricerca deve riusare la normalizzazione del catalogo autorevole");
 });
 
-test("Aggiorna skill usa il reload nativo senza perdere il catalogo verificato", () => {
-  const aggiorna = elementoConId("btn-aggiorna-skill");
-  assert.equal(aggiorna?.tag, "button");
-  assert.equal(aggiorna?.attributi.get("type"), "button");
-  assert.match(
-    `${aggiorna?.attributi.get("aria-label") || ""} ${corpoElementoSemplice("btn-aggiorna-skill")}`,
-    /aggiorna[\s\S]*skill/i,
-    "il controllo deve avere un nome accessibile che spiega cosa aggiorna",
-  );
-  assert.match(frontend, /btnAggiornaSkill:\s*\$\(["']#btn-aggiorna-skill["']\)/,
-    "il controllo deve essere incluso nella mappa DOM del frontend");
-  assert.match(frontend,
-    /DOM\.btnAggiornaSkill\.onclick\s*=\s*(?:\(\)\s*=>\s*)?aggiornaSkillInstallate(?:\(\))?\s*;/,
-    "il pulsante deve attivare il workflow dedicato");
+test("il pulsante + apre un menu rapido accessibile senza fingere di installare estensioni", () => {
+  const apertura = elementoConId("btn-allega");
+  assert.equal(apertura?.tag, "button");
+  assert.equal(apertura?.attributi.get("aria-haspopup"), "menu");
+  assert.equal(apertura?.attributi.get("aria-expanded"), "false");
+  assert.equal(apertura?.attributi.get("aria-controls"), "menu-azioni-composer");
+  assert.match(apertura?.attributi.get("aria-label") || "", /azioni rapide/i);
 
-  const workflow = corpoFunzione("aggiornaSkillInstallate");
+  const menu = elementoConId("menu-azioni-composer");
+  assert.equal(menu?.attributi.get("role"), "menu");
+  assert.equal(menu?.attributi.has("hidden"), true);
+  const corpoMenu = corpoElementoSemplice("menu-azioni-composer");
+  for (const [id, testo] of [
+    ["azione-allega-immagine", /allega immagine/i],
+    ["azione-richiama-skill", /richiama skill o procedura/i],
+    ["azione-comandi-estensioni", /comandi estensioni/i],
+    ["azione-ricarica-risorse", /ricarica dopo installazione/i],
+  ]) {
+    const voce = elementoConId(id);
+    assert.equal(voce?.tag, "button");
+    assert.equal(voce?.attributi.get("type"), "button");
+    assert.equal(voce?.attributi.get("role"), "menuitem");
+    assert.equal(voce?.attributi.get("tabindex"), "-1");
+    assert.match(corpoMenu, new RegExp(`id=["']${id}["'][\\s\\S]*?${testo.source}`, "i"));
+  }
+  assert.doesNotMatch(corpoMenu, /installa(?:re|zione) estension/i,
+    "il menu non deve promettere una funzione di installazione inesistente");
+  assert.match(corpoMenu, /gia installate o configurate/i,
+    "il reload deve essere descritto come riscoperta di risorse gia presenti");
+
+  const picker = corpoFunzione("eseguiAzioneMenuComposer");
+  assert.match(picker, /fonti:\s*\["skill",\s*"prompt"\]/,
+    "skill e prompt devono provenire dal catalogo della sessione");
+  assert.match(picker, /fonti:\s*\["extension"\]/,
+    "il pannello estensioni deve usare soltanto source=extension");
+  assert.match(picker, /mostraDisponibilita:\s*true/,
+    "i comandi estensione devono dichiarare GUI o terminale");
+  assert.match(picker, /conservaBozzaComeArgomenti:\s*true/,
+    "scegliere dal menu + non deve cancellare il testo gia scritto");
+  assert.match(picker, /ricaricaRisorsePi\(\)/,
+    "Ricarica dopo installazione deve riusare il workflow sicuro esistente");
+
+  const inserimento = corpoFunzione("inserisciComandoNelComposer");
+  assert.match(inserimento, /conservaBozzaComeArgomenti\s*\?\s*DOM\.input\.value\.trim\(\)/,
+    "la bozza deve diventare l'argomento della skill o estensione selezionata");
+  assert.match(inserimento, /argomentiEsistenti/,
+    "il comando scelto deve conservare la bozza nel composer");
+
+  const apri = corpoFunzione("apriMenuAzioniComposer");
+  assert.match(apri, /chiudiPaletteComandi\(\)/,
+    "menu rapido e palette slash non devono sovrapporsi");
+  assert.match(apri, /aria-expanded["'],\s*["']true/);
+  const chiudi = corpoFunzione("chiudiMenuAzioniComposer");
+  assert.match(chiudi, /aria-expanded["'],\s*["']false/);
+  assert.match(chiudi, /ripristinaFocus/);
+  const sposta = corpoFunzione("spostaFocusMenuAzioniComposer");
+  assert.match(sposta, /inizio/);
+  assert.match(sposta, /fine/);
+  for (const tasto of ["ArrowDown", "ArrowUp", "Home", "End", "Escape", "Tab"]) {
+    assert.match(frontend, new RegExp(`menuAzioniComposer[\\s\\S]{0,1800}evento\\.key === ["']${tasto}["']`),
+      `manca la gestione ${tasto} nel menu rapido`);
+  }
+  assert.match(frontend, /menuAzioniComposer\.contains\(evento\.target\)/,
+    "un click esterno deve chiudere il menu");
+  for (const classe of ["menu-azioni-composer", "menu-azione-composer", "disponibilita-comando"]) {
+    assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`), `manca lo stile .${classe}`);
+  }
+});
+
+test("Ricarica estensioni espone nella barra Strumenti il reload nativo e non perde la conversazione", () => {
+  const ricarica = elementoConId("btn-ricarica-risorse");
+  assert.equal(ricarica?.tag, "button");
+  assert.equal(ricarica?.attributi.get("type"), "button");
+  assert.equal(ricarica?.attributi.get("data-azione"), "ricarica");
+  const inizioStrumenti = html.indexOf('<section class="gruppo gruppo-strumenti">');
+  const fineStrumenti = html.indexOf("</section>", inizioStrumenti);
+  assert.ok(
+    ricarica.indice > inizioStrumenti && ricarica.indice < fineStrumenti,
+    "il controllo deve essere una voce della barra Strumenti, non del pannello Skills",
+  );
+  const testoControllo = [
+    ricarica?.attributi.get("aria-label") || "",
+    ricarica?.attributi.get("title") || "",
+    corpoElementoSemplice("btn-ricarica-risorse"),
+  ].join(" ");
+  for (const risorsa of ["estensioni", "skill", "prompt", "temi", "configurazioni"]) {
+    assert.match(testoControllo, new RegExp(risorsa, "i"), `il controllo deve spiegare che ricarica ${risorsa}`);
+  }
+  assert.match(testoControllo, /senza (?:perdere|chiudere) la conversazione/i,
+    "tooltip e nome accessibile devono rassicurare sulla conservazione della conversazione");
+  assert.match(frontend, /btnRicaricaRisorse:\s*\$\(["']#btn-ricarica-risorse["']\)/,
+    "il controllo deve essere incluso nella mappa DOM del frontend");
+  const instradamento = corpoFunzione("eseguiAzione");
+  assert.match(instradamento, /azione\s*===\s*["']ricarica["'][\s\S]*ricaricaRisorsePi\(\)/,
+    "la voce Strumenti deve attivare il workflow dedicato attraverso data-azione");
+
+  const workflow = corpoFunzione("ricaricaRisorsePi");
   assert.match(workflow, /trovaComandoCatalogo\(sessione,\s*["']reload["']\)/,
     "il refresh deve risolvere il built-in reload dal catalogo corrente");
   assert.match(workflow,
@@ -374,11 +464,23 @@ test("Aggiorna skill usa il reload nativo senza perdere il catalogo verificato",
     "il ramo di errore deve riusare la fotografia, non svuotare il pannello");
   assert.doesNotMatch(gestioneErrore, /sessione\.comandi\s*=\s*\[\s*\]/,
     "un errore non deve cancellare le skill gia visibili");
+  assert.match(workflow, /La conversazione resta aperta/,
+    "l'avvio deve dare un feedback esplicito senza suggerire un riavvio");
+
+  const esito = corpoFunzione("gestisciEsitoRpcBuiltin");
+  assert.match(esito, /Estensioni, skill, prompt, temi e configurazioni ricaricati/,
+    "l'esito positivo deve confermare tutte le risorse ricaricate");
+  assert.match(esito, /conversazione e rimasta aperta/,
+    "l'esito positivo deve confermare che la conversazione e stata conservata");
 
   const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
   assert.match(interfaccia,
-    /DOM\.btnAggiornaSkill\.disabled\s*=\s*!utilizzabile[\s\S]*sessione\?\.inEsecuzione|DOM\.btnAggiornaSkill\.disabled\s*=\s*[^;]*sessione\?*\.?inEsecuzione/,
-    "Aggiorna skill deve essere disabilitato mentre Pi sta generando una risposta");
+    /DOM\.btnRicaricaRisorse\.disabled\s*=\s*!utilizzabile[\s\S]*sessione\?\.inEsecuzione|DOM\.btnRicaricaRisorse\.disabled\s*=\s*[^;]*sessione\?*\.?inEsecuzione/,
+    "Ricarica estensioni deve essere disabilitato mentre Pi sta generando una risposta");
+  assert.match(interfaccia, /btnRicaricaRisorse\.setAttribute\(["']aria-busy["']/,
+    "il ricaricamento in corso deve essere comunicato alle tecnologie assistive");
+  assert.match(interfaccia, /Ricaricamento…/,
+    "l'etichetta visibile deve confermare che il comando e in corso");
 });
 
 test("la palette slash e inline, dinamica e completamente utilizzabile da tastiera", () => {
@@ -412,7 +514,7 @@ test("la palette slash e inline, dinamica e completamente utilizzabile da tastie
     "lo sfondo globale dei button non deve creare righe irregolari");
 });
 
-test("built-in e shell vengono intercettati prima di cronologia e invii pendenti", () => {
+test("built-in, estensioni verificate e shell vengono intercettati prima di cronologia e invii pendenti", () => {
   const invio = corpoFunzione("invia");
   const intercetta = invio.indexOf("gestisciComandoComposer");
   assert.ok(intercetta >= 0, "manca l'intercettazione del composer");
@@ -422,11 +524,14 @@ test("built-in e shell vengono intercettati prima di cronologia e invii pendenti
   const gestore = corpoFunzione("gestisciComandoComposer");
   assert.match(gestore, /!\{1,2\}/);
   assert.match(gestore, /excludeFromContext:\s*shell\[1\]\s*===\s*["']!!["']/);
-  assert.match(gestore, /source === ["']builtin["']/);
   assert.match(gestore, /\["skill",\s*"prompt"\]/,
     "skill e prompt devono continuare lungo il normale invio");
-  assert.match(gestore, /source === ["']extension["']/,
-    "le estensioni TUI-only devono essere riconosciute senza diventare prompt");
+  assert.match(gestore, /\["builtin",\s*"extension"\]\.includes\(comando\.source\)/,
+    "built-in ed estensioni devono attraversare lo stesso endpoint verificato");
+  assert.match(gestore, /invocaComandoBuiltin\(sessione,\s*comando,\s*richiamo\.arguments,\s*fotografia\)/,
+    "la disponibilita GUI o terminale deve essere decisa dal catalogo autorevole del ponte");
+  assert.doesNotMatch(gestore, /rpc\(\s*\{\s*type:\s*["']prompt["']/,
+    "il frontend non deve inviare direttamente un comando extension grezzo");
   assert.match(gestore, /sessione\.allegati\.length/,
     "immagini e comandi non devono separarsi silenziosamente");
 

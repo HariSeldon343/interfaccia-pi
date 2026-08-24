@@ -60,6 +60,21 @@ e alle skill della cartella. Puoi scrivere per filtrare, usare le frecce e
 Invio, oppure fare click: il comando viene inserito nell'editor e puoi ancora
 leggerlo o completarne gli argomenti prima di inviarlo.
 
+Il pulsante **＋** accanto alla casella apre le stesse funzioni senza dover
+ricordare la sintassi: puoi allegare un'immagine supportata, cercare una skill o
+una procedura nel catalogo reale della conversazione, vedere i comandi forniti
+dalle estensioni e ricaricare le risorse dopo un'installazione o una modifica di
+configurazione. Quest'ultima voce esegue il `/reload` nativo: non installa e non
+abilita pacchetti da sola, ma rende disponibili quelli gia installati o
+configurati senza perdere la conversazione.
+Se nella casella hai gia scritto una richiesta, scegliendo una skill o un
+comando estensione dal menu **＋** quel testo viene conservato come argomento.
+
+Gli allegati diretti della GUI sono immagini PNG, JPEG, WebP o GIF. Il protocollo
+RPC di `pi` non espone un allegato file generico; per un documento o un sorgente
+usa un percorso assoluto nella richiesta oppure il riferimento `@file` di Pi
+completo nel terminale.
+
 Anche la shell rapida conserva la sintassi originale: `! git status` esegue il
 comando e aggiunge il risultato al contesto; `!! git status` lo esegue senza
 aggiungerlo al contesto. In entrambi i casi la GUI mostra prima una conferma.
@@ -102,7 +117,7 @@ altre finestre dell'interfaccia.
 | `/compact` | riassume il contesto per liberare spazio |
 | `/copy` | copia l'ultima risposta |
 | `/export` | salva la conversazione come pagina HTML |
-| `/reload` | ricarica istruzioni, skill ed estensioni; nel pannello Skills corrisponde a **Aggiorna skill** |
+| `/reload` | ricarica estensioni, skill, prompt, temi e configurazioni senza perdere la conversazione; nella barra **Strumenti** corrisponde a **Ricarica estensioni** |
 | `/settings` | apre le impostazioni interattive |
 | `/hotkeys` | mostra le scorciatoie disponibili |
 
@@ -111,11 +126,13 @@ La palette comprende inoltre `/scoped-models`, `/import`, `/share`, `/name`,
 incorporati dichiarati da `pi` 0.84.2. Alcuni aprono un selettore o una finestra
 grafica, altri inviano direttamente l'operazione RPC equivalente.
 
-L'eccezione sono i comandi forniti da estensioni arbitrarie. Una estensione può
-eseguire codice e cambiare conversazione senza passare dal coordinamento della
-GUI; per questo la palette li identifica ma li indirizza a **PI completo nel
-terminale**. Prompt template e skill non sono estensioni e funzionano invece
-normalmente nella GUI.
+I comandi delle estensioni mostrano sempre se sono disponibili nella GUI oppure
+se richiedono **PI completo nel terminale**. Soltanto le estensioni il cui flusso
+RPC e stato verificato dall'interfaccia vengono eseguite nella GUI; tutte le
+altre passano comunque dal catalogo sicuro del ponte, che propone il terminale
+senza inoltrare un comando grezzo. Una estensione puo infatti eseguire codice e
+cambiare conversazione fuori dal coordinamento della GUI. Prompt template e
+skill non sono estensioni e funzionano normalmente nella GUI.
 
 ## Avvio dal terminale
 

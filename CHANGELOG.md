@@ -15,6 +15,9 @@
 - conversazioni gia aperte riconosciute nell'elenco delle salvate;
 - pannello Skills aggiornabile senza riavviare o perdere la conversazione: il
   vero reload di Pi riscopre anche le skill installate dopo l'avvio;
+- pulsante **Ricarica estensioni** nella barra Strumenti e menu rapido **+** per
+  allegare immagini, richiamare skill o procedure e usare i comandi delle
+  estensioni secondo la disponibilita GUI/terminale dichiarata da Pi;
 - accesso diretto dalla barra Strumenti all'albero della conversazione, per
   tornare a un passaggio precedente senza cancellare il ramo successivo;
 - preparazione del runtime e workflow Windows resi riproducibili e fail-fast

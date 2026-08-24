@@ -95,13 +95,6 @@
           <div class="titolo-riga">
             <h2>Skills disponibili</h2>
             <div class="azioni-titolo">
-              <button
-                class="testo-bottone"
-                id="btn-aggiorna-skill"
-                type="button"
-                aria-label="Aggiorna le skill installate"
-                disabled
-              >Aggiorna skill</button>
               <button class="testo-bottone" id="btn-cerca-comandi" type="button" hidden>Cerca</button>
             </div>
           </div>
@@ -129,6 +122,18 @@
           <button class="voce" id="btn-albero" type="button" data-azione="albero">
             <span class="ico" aria-hidden="true">↶</span>
             <span class="voce-testo"><strong>Cronologia e rami</strong><small>torna a un passaggio precedente</small></span>
+          </button>
+          <button
+            class="voce"
+            id="btn-ricarica-risorse"
+            type="button"
+            data-azione="ricarica"
+            aria-label="Ricarica estensioni, skill, prompt, temi e configurazioni senza perdere la conversazione"
+            title="Dopo un'installazione, rende subito disponibili estensioni, skill, prompt, temi e configurazioni senza chiudere la conversazione"
+            disabled
+          >
+            <span class="ico" aria-hidden="true">↻</span>
+            <span class="voce-testo"><strong>Ricarica estensioni</strong><small>dopo nuove estensioni, skill o configurazioni</small></span>
           </button>
           <button class="voce" type="button" data-azione="comprimi">
             <span class="ico" aria-hidden="true">↡</span>
@@ -168,6 +173,30 @@
         <div class="allegati" id="allegati" hidden aria-label="Immagini allegate"></div>
 
         <div class="composer-shell" id="composer-shell">
+          <div class="menu-azioni-composer" id="menu-azioni-composer" role="menu"
+               aria-label="Azioni rapide della richiesta" hidden>
+            <button id="azione-allega-immagine" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="allega-immagine" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">▧</span>
+              <span><strong>Allega immagine</strong><small>PNG, JPEG, WebP o GIF</small></span>
+            </button>
+            <button id="azione-richiama-skill" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="skill" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">◇</span>
+              <span><strong>Richiama skill o procedura</strong><small>scegli dal catalogo di questa conversazione</small></span>
+            </button>
+            <button id="azione-comandi-estensioni" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="estensioni" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">⚙</span>
+              <span><strong>Comandi estensioni</strong><small>mostra disponibilita GUI o terminale</small></span>
+            </button>
+            <button id="azione-ricarica-risorse" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="ricarica" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">↻</span>
+              <span><strong>Ricarica dopo installazione</strong><small>riscopre le risorse gia installate o configurate</small></span>
+            </button>
+          </div>
+
           <div class="palette-comandi" id="palette-comandi" hidden>
             <header class="palette-comandi-testa">
               <strong>Comandi di pi</strong>
@@ -180,7 +209,9 @@
           <div class="scrittura">
             <input id="scegli-immagini" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
             <button id="btn-allega" class="strumento-input" type="button" disabled
-                    aria-label="Allega immagini" title="Allega immagini">＋</button>
+                    aria-label="Apri azioni rapide" title="Allega immagini, richiama skill o usa estensioni"
+                    aria-haspopup="menu" aria-expanded="false"
+                    aria-controls="menu-azioni-composer">＋</button>
             <label class="solo-lettori" for="input">Richiesta per pi</label>
             <textarea id="input" rows="1" maxlength="2097152"
                       aria-controls="lista-palette-comandi" aria-expanded="false"

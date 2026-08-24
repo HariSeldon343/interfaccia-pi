@@ -25,6 +25,11 @@ const DOM = {
   btnAllega: $("#btn-allega"),
   scegliImmagini: $("#scegli-immagini"),
   allegati: $("#allegati"),
+  menuAzioniComposer: $("#menu-azioni-composer"),
+  azioneAllegaImmagine: $("#azione-allega-immagine"),
+  azioneRichiamaSkill: $("#azione-richiama-skill"),
+  azioneComandiEstensioni: $("#azione-comandi-estensioni"),
+  azioneRicaricaRisorse: $("#azione-ricarica-risorse"),
   inviiVerifica: $("#invii-verifica"),
   avvisi: $("#avvisi"),
   coda: $("#coda"),
@@ -48,7 +53,7 @@ const DOM = {
   suggerimento: $("#suggerimento"),
   listaComandi: $("#lista-comandi"),
   notaComandi: $("#nota-comandi"),
-  btnAggiornaSkill: $("#btn-aggiorna-skill"),
+  btnRicaricaRisorse: $("#btn-ricarica-risorse"),
   btnCercaComandi: $("#btn-cerca-comandi"),
   btnModello: $("#btn-modello"),
   btnRagionamento: $("#btn-ragionamento"),
@@ -608,6 +613,10 @@ const APP = {
     indiceAttivo: 0,
     revision: null,
     soppressa: null,
+  },
+  menuAzioniComposer: {
+    aperto: false,
+    indiceAttivo: 0,
   },
 };
 const COMANDI_CAMBIO_SESSIONE = new Set([
@@ -3837,25 +3846,37 @@ function aggiornaInterfacciaAttiva() {
       && !sessione.ripristinoAllegatiInCorso
       && !sessione.erroreAllegatiBozza,
   );
-  if (!utilizzabile) chiudiPaletteComandi();
+  if (!utilizzabile) {
+    chiudiPaletteComandi();
+    chiudiMenuAzioniComposer();
+  }
   DOM.input.disabled = !utilizzabile;
   const cronologiaVerificata = !sessione?.erroreCronologia;
-  DOM.btnAllega.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.btnAllega.disabled = !utilizzabile;
   DOM.btnInvia.disabled = !utilizzabile
     || !cronologiaVerificata
     || (!DOM.input.value.trim() && !(sessione?.allegati.length));
   DOM.btnModello.disabled = !utilizzabile;
   DOM.btnRagionamento.disabled = !utilizzabile;
   DOM.btnControlli.disabled = !utilizzabile;
-  DOM.btnAggiornaSkill.disabled = !utilizzabile
-    || Boolean(sessione?.inEsecuzione)
-    || Boolean(sessione?.compattazioneInCorso)
-    || Boolean(sessione?.aggiornamentoSkillInCorso);
   DOM.conversazione.setAttribute(
     "aria-busy",
     String(Boolean(sessione?.inEsecuzione || sessione?.compattazioneInCorso)),
   );
   abilitaAzioni(utilizzabile);
+  const ricaricaRisorseInCorso = Boolean(sessione?.ricaricaRisorseInCorso);
+  DOM.btnRicaricaRisorse.disabled = !utilizzabile
+    || Boolean(sessione?.inEsecuzione)
+    || Boolean(sessione?.compattazioneInCorso)
+    || ricaricaRisorseInCorso;
+  DOM.btnRicaricaRisorse.setAttribute("aria-busy", String(ricaricaRisorseInCorso));
+  DOM.btnRicaricaRisorse.querySelector("strong").textContent = ricaricaRisorseInCorso
+    ? "Ricaricamento…"
+    : "Ricarica estensioni";
+  DOM.azioneAllegaImmagine.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneRichiamaSkill.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneComandiEstensioni.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneRicaricaRisorse.disabled = DOM.btnRicaricaRisorse.disabled;
   DOM.btnAlbero.disabled = !utilizzabile
     || !sessione
     || Boolean(sessione.inEsecuzione)
@@ -3870,7 +3891,9 @@ function aggiornaInterfacciaAttiva() {
     DOM.etiRagionamento.textContent = "—";
     DOM.listaComandi.replaceChildren();
     DOM.notaComandi.textContent = "Si caricano quando avvii una conversazione.";
-    DOM.btnAggiornaSkill.disabled = true;
+    DOM.btnRicaricaRisorse.disabled = true;
+    DOM.btnRicaricaRisorse.setAttribute("aria-busy", "false");
+    DOM.btnRicaricaRisorse.querySelector("strong").textContent = "Ricarica estensioni";
     DOM.btnCercaComandi.hidden = true;
     disegnaBarraStatoSessione(null);
     DOM.invioOccupato.hidden = true;
@@ -5491,7 +5514,7 @@ const TESTI_BUILTIN = Object.freeze({
   new: ["Nuova conversazione", "Inizia una conversazione nuova nello stesso contesto di lavoro."],
   compact: ["Libera spazio", "Riassume la conversazione per liberare spazio nel contesto."],
   resume: ["Conversazioni salvate", "Scegli una conversazione precedente da riprendere."],
-  reload: ["Ricarica", "Ricarica estensioni, skill, prompt e temi di pi."],
+  reload: ["Ricarica", "Ricarica estensioni, skill, prompt, temi e configurazioni di pi."],
   quit: ["Chiudi sessione", "Chiudi questa sessione di pi."],
 });
 
@@ -5531,14 +5554,23 @@ function trovaComandoPerChiave(sessione, chiave) {
   return sessione?.comandi.find((comando) => PALETTE_CORE.chiaveComando(comando) === chiave) || null;
 }
 
-function inserisciComandoNelComposer(sessionId, chiave, richiamo = null) {
+function inserisciComandoNelComposer(
+  sessionId,
+  chiave,
+  richiamo = null,
+  { conservaBozzaComeArgomenti = false } = {},
+) {
   const sessione = APP.sessioni.get(sessionId);
   if (!sessione || sessione.id !== APP.attivaId) return false;
   const comando = trovaComandoPerChiave(sessione, chiave);
   if (!comando) return false;
+  const argomentiEsistenti = conservaBozzaComeArgomenti ? DOM.input.value.trim() : "";
   const completato = richiamo
     ? PALETTE_CORE.completaRichiamoComando(DOM.input.value, richiamo, comando)
-    : { value: `/${comando.name} `, caret: comando.name.length + 2 };
+    : {
+        value: `/${comando.name}${argomentiEsistenti ? ` ${argomentiEsistenti}` : " "}`,
+        caret: comando.name.length + 2 + argomentiEsistenti.length,
+      };
   if (!completato || !impostaBozzaComposer(sessione, completato.value, { salvaSubito: true })) return false;
   DOM.input.focus();
   DOM.input.setSelectionRange(completato.caret, completato.caret);
@@ -5546,20 +5578,41 @@ function inserisciComandoNelComposer(sessionId, chiave, richiamo = null) {
   return true;
 }
 
-function bottoneComando(comando, sessioneRiferimento = sessioneAttiva()) {
+function bottoneComando(
+  comando,
+  sessioneRiferimento = sessioneAttiva(),
+  { mostraDisponibilita = false, conservaBozzaComeArgomenti = false } = {},
+) {
   const bottone = crea("button", "voce");
   bottone.type = "button";
+  bottone.dataset.sorgenteComando = comando.source;
+  bottone.dataset.disponibilitaComando = comando.availability || "gui";
   const icone = { skill: "◇", prompt: "▤", extension: "⚙" };
   bottone.appendChild(crea("span", "ico", icone[comando.source] || "›"));
   const testo = crea("span", "voce-testo");
   testo.appendChild(crea("strong", null, titoloComando(comando)));
   testo.appendChild(crea("small", null, `/${comando.name} · ${descrizioneComando(comando)}`));
+  if (mostraDisponibilita) {
+    const disponibilita = comando.availability === "terminal"
+      ? "Richiede Pi completo nel terminale"
+      : comando.availability === "unavailable"
+        ? "Non disponibile in questa sessione"
+        : "Disponibile nella GUI";
+    testo.appendChild(crea(
+      "small",
+      `disponibilita-comando ${comando.availability || "gui"}`,
+      disponibilita,
+    ));
+  }
   bottone.appendChild(testo);
+  bottone.disabled = comando.availability === "unavailable";
   bottone.onclick = () => {
     if (!sessioneRiferimento) return;
     inserisciComandoNelComposer(
       sessioneRiferimento.id,
       PALETTE_CORE.chiaveComando(comando),
+      null,
+      { conservaBozzaComeArgomenti },
     );
     if (!DOM.velo.hidden) chiudiModale({ annulla: false });
     chiudiMenuLaterale();
@@ -5571,25 +5624,25 @@ function disegnaComandi(sessione) {
   DOM.listaComandi.replaceChildren();
   const utilizzabili = sessione.comandi.filter((comando) => ["skill", "prompt"].includes(comando.source));
   if (!utilizzabili.length) {
-    DOM.notaComandi.textContent = sessione.aggiornamentoSkillInCorso
-      ? "Ricarico le skill installate…"
+    DOM.notaComandi.textContent = sessione.ricaricaRisorseInCorso
+      ? "Ricarico estensioni, skill, prompt, temi e configurazioni…"
       : sessione.sincronizzazione
         ? "Carico i comandi…"
         : "Nessun comando aggiuntivo in questa conversazione.";
     DOM.btnCercaComandi.hidden = true;
     return;
   }
-  DOM.notaComandi.textContent = sessione.aggiornamentoSkillInCorso
-    ? "Ricarico le skill installate; l'elenco corrente resta disponibile."
+  DOM.notaComandi.textContent = sessione.ricaricaRisorseInCorso
+    ? "Ricarico le risorse di Pi; l'elenco corrente resta disponibile."
     : "Scegli una skill o procedura descritta in linguaggio naturale.";
   for (const comando of utilizzabili.slice(0, 8)) DOM.listaComandi.appendChild(bottoneComando(comando, sessione));
   DOM.btnCercaComandi.hidden = utilizzabili.length <= 8;
   DOM.btnCercaComandi.textContent = `Cerca (${utilizzabili.length})`;
 }
 
-async function aggiornaSkillInstallate() {
+async function ricaricaRisorsePi() {
   const sessione = sessioneAttiva();
-  if (!sessione?.attiva || sessione.aggiornamentoSkillInCorso) return false;
+  if (!sessione?.attiva || sessione.ricaricaRisorseInCorso) return false;
   if (
     sessione.inEsecuzione
     || sessione.invioInCorso
@@ -5598,12 +5651,12 @@ async function aggiornaSkillInstallate() {
     || sessione.handoffInCorso
     || sessione.chiusuraInCorso
   ) {
-    toast("Attendi che Pi sia pronto prima di aggiornare le skill.", "avviso");
+    toast("Attendi che Pi sia pronto prima di ricaricare le risorse.", "avviso");
     return false;
   }
   const comando = trovaComandoCatalogo(sessione, "reload");
   if (!comando || comando.source !== "builtin") {
-    toast("Questa versione di Pi non espone il comando sicuro per aggiornare le skill.", "errore");
+    toast("Questa versione di Pi non supporta il ricaricamento sicuro delle risorse.", "errore");
     return false;
   }
 
@@ -5615,8 +5668,9 @@ async function aggiornaSkillInstallate() {
     revisioneCapacita: sessione.revisioneCapacita,
     capacitaComplete: sessione.capacitaComplete,
   };
-  sessione.aggiornamentoSkillInCorso = true;
+  sessione.ricaricaRisorseInCorso = true;
   aggiornaInterfacciaAttiva();
+  toast("Ricarico estensioni, skill, prompt, temi e configurazioni. La conversazione resta aperta.");
   try {
     await invocaComandoBuiltin(sessione, comando, "", "/reload");
     return true;
@@ -5624,36 +5678,134 @@ async function aggiornaSkillInstallate() {
     sessione.comandi = snapshot.comandi;
     sessione.revisioneCapacita = snapshot.revisioneCapacita;
     sessione.capacitaComplete = snapshot.capacitaComplete;
-    toast("Non sono riuscito ad aggiornare le skill: " + testoErrore(errore), "errore");
+    toast("Non sono riuscito a ricaricare le risorse di Pi: " + testoErrore(errore), "errore");
     return false;
   } finally {
     if (APP.sessioni.get(sessione.id) === sessione) {
-      sessione.aggiornamentoSkillInCorso = false;
+      sessione.ricaricaRisorseInCorso = false;
       if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
     }
   }
 }
 
-function apriRicercaComandi() {
+function vociMenuAzioniComposer({ includiDisabilitate = false } = {}) {
+  const voci = [...DOM.menuAzioniComposer.querySelectorAll("[role='menuitem']")];
+  return includiDisabilitate ? voci : voci.filter((voce) => !voce.disabled);
+}
+
+function aggiornaFocusMenuAzioniComposer() {
+  const voci = vociMenuAzioniComposer();
+  APP.menuAzioniComposer.indiceAttivo = Math.max(
+    0,
+    Math.min(APP.menuAzioniComposer.indiceAttivo, Math.max(0, voci.length - 1)),
+  );
+  for (const voce of vociMenuAzioniComposer({ includiDisabilitate: true })) voce.tabIndex = -1;
+  const attiva = voci[APP.menuAzioniComposer.indiceAttivo];
+  if (attiva) attiva.tabIndex = 0;
+  return attiva || null;
+}
+
+function chiudiMenuAzioniComposer({ ripristinaFocus = false } = {}) {
+  if (!DOM.menuAzioniComposer) return;
+  APP.menuAzioniComposer.aperto = false;
+  DOM.menuAzioniComposer.hidden = true;
+  DOM.btnAllega.setAttribute("aria-expanded", "false");
+  for (const voce of vociMenuAzioniComposer({ includiDisabilitate: true })) voce.tabIndex = -1;
+  if (ripristinaFocus && !DOM.btnAllega.disabled) DOM.btnAllega.focus();
+}
+
+function apriMenuAzioniComposer() {
+  if (DOM.btnAllega.disabled || APP.menuAzioniComposer.aperto) return false;
+  chiudiPaletteComandi();
+  APP.menuAzioniComposer.aperto = true;
+  APP.menuAzioniComposer.indiceAttivo = 0;
+  DOM.menuAzioniComposer.hidden = false;
+  DOM.btnAllega.setAttribute("aria-expanded", "true");
+  const attiva = aggiornaFocusMenuAzioniComposer();
+  requestAnimationFrame(() => attiva?.focus());
+  return true;
+}
+
+function spostaFocusMenuAzioniComposer(movimento) {
+  const voci = vociMenuAzioniComposer();
+  if (!APP.menuAzioniComposer.aperto || !voci.length) return false;
+  if (movimento === "inizio") APP.menuAzioniComposer.indiceAttivo = 0;
+  else if (movimento === "fine") APP.menuAzioniComposer.indiceAttivo = voci.length - 1;
+  else {
+    APP.menuAzioniComposer.indiceAttivo = (
+      APP.menuAzioniComposer.indiceAttivo + movimento + voci.length
+    ) % voci.length;
+  }
+  aggiornaFocusMenuAzioniComposer()?.focus();
+  return true;
+}
+
+async function eseguiAzioneMenuComposer(azione) {
+  chiudiMenuAzioniComposer();
+  if (azione === "allega-immagine") {
+    DOM.scegliImmagini.click();
+    return;
+  }
+  if (azione === "skill") {
+    DOM.input.focus({ preventScroll: true });
+    apriRicercaComandi({
+      titolo: "Richiama una skill o procedura",
+      etichettaRicerca: "Cerca skill e procedure",
+      fonti: ["skill", "prompt"],
+      conservaBozzaComeArgomenti: true,
+      testoVuoto: "Nessuna skill o procedura disponibile in questa conversazione.",
+    });
+    return;
+  }
+  if (azione === "estensioni") {
+    DOM.input.focus({ preventScroll: true });
+    apriRicercaComandi({
+      titolo: "Comandi delle estensioni",
+      etichettaRicerca: "Cerca comandi delle estensioni",
+      fonti: ["extension"],
+      mostraDisponibilita: true,
+      conservaBozzaComeArgomenti: true,
+      testoVuoto: "Nessun comando estensione caricato. Dopo avere installato o configurato una risorsa, usa Ricarica dopo installazione.",
+    });
+    return;
+  }
+  if (azione === "ricarica") {
+    DOM.btnAllega.focus({ preventScroll: true });
+    await ricaricaRisorsePi();
+  }
+}
+
+function apriRicercaComandi({
+  titolo = "Comandi e skill di questa conversazione",
+  etichettaRicerca = "Cerca comandi e skill",
+  fonti = ["skill", "prompt"],
+  mostraDisponibilita = false,
+  conservaBozzaComeArgomenti = false,
+  testoVuoto = "Nessun comando trovato.",
+} = {}) {
   const sessione = sessioneAttiva();
   if (!sessione) return;
-  const corpo = apriModale("Comandi e skill di questa conversazione");
+  const fontiConsentite = new Set(fonti);
+  const corpo = apriModale(titolo);
   const ricerca = crea("input", "campo");
   ricerca.placeholder = "Cerca per nome o scopo";
-  ricerca.setAttribute("aria-label", "Cerca comandi e skill");
+  ricerca.setAttribute("aria-label", etichettaRicerca);
   corpo.appendChild(ricerca);
   const lista = crea("div", "lista");
   corpo.appendChild(lista);
   const disegna = () => {
-    const filtro = ricerca.value.toLowerCase().trim();
     lista.replaceChildren();
-    const risultati = sessione.comandi.filter((comando) => ["skill", "prompt"].includes(comando.source)).filter((comando) =>
-      [comando.name, comando.description, comando.source]
-        .filter(Boolean)
-        .some((valore) => String(valore).toLowerCase().includes(filtro)),
+    const risultati = PALETTE_CORE.filtraCatalogoComandi(
+      sessione.comandi.filter((comando) => fontiConsentite.has(comando.source)),
+      ricerca.value,
     );
-    for (const comando of risultati) lista.appendChild(bottoneComando(comando, sessione));
-    if (!risultati.length) lista.appendChild(crea("p", "vuoto", "Nessun comando trovato."));
+    for (const comando of risultati) {
+      lista.appendChild(bottoneComando(comando, sessione, {
+        mostraDisponibilita,
+        conservaBozzaComeArgomenti,
+      }));
+    }
+    if (!risultati.length) lista.appendChild(crea("p", "vuoto", testoVuoto));
   };
   ricerca.oninput = disegna;
   disegna();
@@ -5753,6 +5905,7 @@ function aggiornaPaletteComandi({ forza = false } = {}) {
   }
   const firma = `${sessione.id}\u0000${DOM.input.value}\u0000${DOM.input.selectionStart}`;
   if (!forza && APP.paletteComandi.soppressa === firma) return false;
+  chiudiMenuAzioniComposer();
   APP.paletteComandi.soppressa = null;
   const risultati = PALETTE_CORE.filtraCatalogoComandi(sessione.comandi, richiamo.query);
   const stessaRicerca = APP.paletteComandi.aperta
@@ -6537,7 +6690,7 @@ async function gestisciEsitoRpcBuiltin(sessione, nome, argomenti, risultato) {
   if (nome === "new") renderCronologia(sessione, []);
   if (nome === "reload") {
     await caricaCapacita(sessione, { refresh: true });
-    toast("Estensioni, skill, prompt e temi ricaricati.");
+    toast("Estensioni, skill, prompt, temi e configurazioni ricaricati. La conversazione e rimasta aperta.");
   } else if (nome === "compact") {
     toast("Spazio della conversazione liberato.");
   } else if (nome === "clone") {
@@ -6919,16 +7072,16 @@ async function gestisciComandoComposer(sessione, fotografia, testo) {
       return true;
     }
   }
-  if (comando?.source === "builtin" && sessione.allegati.length) {
+  if (["builtin", "extension"].includes(comando?.source) && sessione.allegati.length) {
     toast("Rimuovi o invia prima le immagini allegate; non appartengono al comando di pi.", "avviso");
     return true;
   }
   if (!comando || ["skill", "prompt"].includes(comando.source)) return false;
-  if (comando.source === "extension") {
-    toast(`/${comando.name} richiede l'interfaccia terminale completa di pi.`, "avviso");
-    return true;
-  }
-  if (comando.source !== "builtin") return false;
+  // Anche le estensioni passano dal catalogo verificato e da
+  // /api/invoca-comando. Il ponte esegue soltanto quelle certificate per la
+  // GUI; per le altre restituisce mode=terminal e apre Pi completo dopo la
+  // conferma, senza mai inoltrare qui un prompt extension grezzo.
+  if (!["builtin", "extension"].includes(comando.source)) return false;
   return invocaComandoBuiltin(sessione, comando, richiamo.arguments, fotografia);
 }
 
@@ -7219,6 +7372,7 @@ async function eseguiAzione(azione) {
   if (azione === "interrompi") return interrompi();
   if (azione === "avanzate") return apriControlliAvanzati();
   if (azione === "albero") return mostraAlberoSessione(sessione);
+  if (azione === "ricarica") return ricaricaRisorsePi();
   try {
     if (azione === "comprimi") {
       await rpc({ type: "compact" }, { sessionId: sessione.id, timeout: 5 * 60 * 1000 });
@@ -8476,6 +8630,12 @@ DOM.conversazione.addEventListener("scroll", () => {
 });
 document.addEventListener("keydown", (evento) => {
   if (evento.key === "Escape" && DOM.velo.hidden) {
+    if (APP.menuAzioniComposer.aperto) {
+      evento.preventDefault();
+      evento.stopPropagation();
+      chiudiMenuAzioniComposer({ ripristinaFocus: true });
+      return;
+    }
     chiudiMenuLaterale({ ripristinaFocus: true });
   }
 });
@@ -8488,9 +8648,37 @@ DOM.btnModello.onclick = () => apriSceltaModello();
 DOM.btnRagionamento.onclick = apriSceltaRagionamento;
 DOM.btnControlli.onclick = apriControlliAvanzati;
 DOM.btnFermaTop.onclick = interrompi;
-DOM.btnAggiornaSkill.onclick = aggiornaSkillInstallate;
-DOM.btnCercaComandi.onclick = apriRicercaComandi;
-DOM.btnAllega.onclick = () => DOM.scegliImmagini.click();
+DOM.btnCercaComandi.onclick = () => apriRicercaComandi();
+DOM.btnAllega.onclick = () => {
+  if (APP.menuAzioniComposer.aperto) chiudiMenuAzioniComposer({ ripristinaFocus: true });
+  else apriMenuAzioniComposer();
+};
+DOM.menuAzioniComposer.onclick = (evento) => {
+  const voce = evento.target.closest("[data-azione-composer]");
+  if (!voce || voce.disabled || !DOM.menuAzioniComposer.contains(voce)) return;
+  void eseguiAzioneMenuComposer(voce.dataset.azioneComposer);
+};
+DOM.menuAzioniComposer.addEventListener("keydown", (evento) => {
+  if (!APP.menuAzioniComposer.aperto) return;
+  const voci = vociMenuAzioniComposer();
+  const indiceCorrente = voci.indexOf(document.activeElement);
+  if (indiceCorrente >= 0) APP.menuAzioniComposer.indiceAttivo = indiceCorrente;
+  if (evento.key === "ArrowDown" || evento.key === "ArrowUp") {
+    evento.preventDefault();
+    spostaFocusMenuAzioniComposer(evento.key === "ArrowDown" ? 1 : -1);
+  } else if (evento.key === "Home" || evento.key === "End") {
+    evento.preventDefault();
+    spostaFocusMenuAzioniComposer(evento.key === "Home" ? "inizio" : "fine");
+  } else if (evento.key === "Escape") {
+    evento.preventDefault();
+    evento.stopPropagation();
+    chiudiMenuAzioniComposer({ ripristinaFocus: true });
+  } else if (evento.key === "Tab") {
+    evento.preventDefault();
+    chiudiMenuAzioniComposer();
+    (evento.shiftKey ? DOM.btnAllega : DOM.input).focus();
+  }
+});
 DOM.scegliImmagini.onchange = async () => {
   await aggiungiImmagini(DOM.scegliImmagini.files || []);
   DOM.scegliImmagini.value = "";
@@ -8551,6 +8739,13 @@ for (const evento of ["click", "select", "focus"]) {
   });
 }
 document.addEventListener("pointerdown", (evento) => {
+  if (
+    APP.menuAzioniComposer.aperto
+    && evento.target !== DOM.btnAllega
+    && !DOM.menuAzioniComposer.contains(evento.target)
+  ) {
+    chiudiMenuAzioniComposer();
+  }
   if (APP.paletteComandi.aperta && !DOM.composerShell.contains(evento.target)) {
     chiudiPaletteComandi();
   }

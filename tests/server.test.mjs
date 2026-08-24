@@ -256,11 +256,14 @@ test("il catalogo builtin viene letto dalla build Pi verificata e unificato in o
     { name: "mia-skill", description: "Skill locale", argumentHint: "<file>", source: "skill" },
     { name: "settings", description: "Non deve oscurare il builtin", source: "prompt" },
     { name: "mia-estensione", description: "Solo TUI", source: "extension" },
+    { name: "llama", description: "Estensione integrata verificata", source: "extension" },
   ]);
   assert.deepEqual(unificato.slice(0, 22).map((voce) => voce.source), Array(22).fill("builtin"));
   assert.equal(unificato.filter((voce) => voce.name === "settings").length, 1);
   assert.equal(unificato.find((voce) => voce.name === "mia-skill").dispatch.kind, "prompt");
   assert.equal(unificato.find((voce) => voce.name === "mia-estensione").dispatch.kind, "terminal");
+  assert.equal(unificato.find((voce) => voce.name === "llama").availability.surface, "gui");
+  assert.equal(unificato.find((voce) => voce.name === "llama").dispatch.kind, "prompt");
 });
 
 test("il changelog appartiene al Pi pinato, ha un limite ed esige UTF-8 valido", async (t) => {
@@ -341,6 +344,7 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
   const catalogo = unificaCatalogoCapacita(BUILTIN_SLASH_COMMANDS, [
     { name: "mia-skill", source: "skill" },
     { name: "mia-estensione", source: "extension" },
+    { name: "llama", source: "extension" },
   ]);
   const voce = (nome) => catalogo.find((comando) => comando.name === nome);
   assert.deepEqual(preparaInvocazioneCapacita(voce("new")), {
@@ -364,6 +368,10 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
   );
   assert.equal(preparaInvocazioneCapacita(voce("mia-skill"), "ora").command.message, "/mia-skill ora");
   assert.equal(preparaInvocazioneCapacita(voce("mia-estensione")).mode, "terminal");
+  assert.deepEqual(preparaInvocazioneCapacita(voce("llama"), "stato"), {
+    mode: "rpc",
+    command: { type: "prompt", message: "/llama stato" },
+  });
   assert.deepEqual(preparaInvocazioneCapacita(voce("model"), "gemma"), {
     mode: "workflow",
     action: "model-picker",

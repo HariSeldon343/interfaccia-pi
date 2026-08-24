@@ -1500,7 +1500,59 @@ body {
   font-size: 10.5px;
 }
 
-/* Palette slash: resta ancorata al composer senza spostare la cronologia. */
+/* Menu del + e palette slash: restano ancorati al composer senza spostare la cronologia. */
+
+.menu-azioni-composer {
+  position: absolute;
+  z-index: 25;
+  bottom: calc(100% + 9px);
+  left: 0;
+  width: min(370px, 100%);
+  padding: 5px;
+  background: #232325;
+  border: 1px solid #504b54;
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0,0,0,.48);
+}
+
+.menu-azione-composer {
+  display: grid;
+  width: 100%;
+  min-height: 50px;
+  padding: 7px 9px;
+  align-items: center;
+  color: #eeeaf0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  gap: 9px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  text-align: left;
+}
+
+.menu-azione-composer:hover:not(:disabled),
+.menu-azione-composer:focus-visible {
+  background: #343136;
+  border-color: #4b4650;
+}
+
+.menu-azione-composer:focus-visible { box-shadow: inset 2px 0 0 #c7acf2; }
+.menu-azione-composer:disabled { opacity: .45; cursor: not-allowed; }
+.menu-azione-icona { color: #d3bdf8; font-size: 17px; text-align: center; }
+.menu-azione-composer > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.menu-azione-composer strong { font-size: 12px; font-weight: 620; }
+.menu-azione-composer small {
+  overflow: hidden;
+  color: #aaa1ad;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.disponibilita-comando.gui { color: #9fd3b5; }
+.disponibilita-comando.terminal { color: #d9bd86; }
+.disponibilita-comando.unavailable { color: #b5aeb8; }
 
 .palette-comandi {
   position: absolute;
@@ -1756,6 +1808,7 @@ body {
   .stato-sessione-tui { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .stato-tui-uso,
   .stato-tui-modello { overflow: hidden; text-align: left; text-overflow: ellipsis; }
+  .menu-azioni-composer { width: 100%; border-radius: 13px; }
   .palette-comandi { max-height: 48vh; border-radius: 13px; }
   .lista-palette-comandi { max-height: calc(48vh - 40px); }
   .palette-opzione { grid-template-columns: minmax(105px, .8fr) minmax(0, 1.2fr); }
