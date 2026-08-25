@@ -6,9 +6,13 @@ const decoder = new StringDecoder("utf8");
 let buffer = "";
 let messages = [];
 const indiceSessione = process.argv.indexOf("--session");
+const indiceSessioneId = process.argv.indexOf("--session-id");
+const sessioneIdAvvio = indiceSessioneId >= 0 && process.argv[indiceSessioneId + 1]
+  ? process.argv[indiceSessioneId + 1]
+  : "fake-session";
 let fileSessione = indiceSessione >= 0 && process.argv[indiceSessione + 1]
   ? process.argv[indiceSessione + 1]
-  : join(process.cwd(), "fake-session.jsonl");
+  : join(process.cwd(), `fake-session-${sessioneIdAvvio}.jsonl`);
 const persistenzaTardiva = process.cwd().includes("file-tardivo");
 if (!persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
 let contatoreSessioni = 0;
@@ -34,7 +38,7 @@ function gestisci(comando) {
       model: { provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 },
       thinkingLevel: "medium",
       isStreaming: false,
-      sessionId: "fake-session",
+      sessionId: sessioneIdAvvio,
       messageCount: messages.length,
       steeringMode: "one-at-a-time",
       followUpMode: "one-at-a-time",

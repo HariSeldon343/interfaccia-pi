@@ -4909,7 +4909,10 @@ async function apriSceltaCartella(percorsoIniziale) {
   entra.onclick = () => stato.selezionata?.percorso
     && disegnaSfoglia(stato, stato.selezionata.percorso, { focusElenco: true });
   apri.onclick = () => stato.selezionata?.percorso
-    && avviaSessione(stato.selezionata.percorso, { approvaProgetto: fiducia.checked });
+    && avviaSessione(stato.selezionata.percorso, {
+      approvaProgetto: fiducia.checked,
+      forzaNuova: true,
+    });
   principale.onkeydown = (evento) => {
     if (evento.altKey && evento.key === "ArrowUp" && stato.dati?.genitore) {
       evento.preventDefault();
@@ -5015,6 +5018,14 @@ async function avviaSessione(
     APP.avvioSessioneInCorso = false;
     avvisa("");
   }
+}
+
+async function avviaNuovaSchedaNelContestoCorrente() {
+  const corrente = sessioneAttiva();
+  if (corrente?.cartella && !corrente.senzaCartella) {
+    return avviaSessione(corrente.cartella, { forzaNuova: true });
+  }
+  return avviaSessione(null, { senzaCartella: true, forzaNuova: true });
 }
 
 async function apriConversazioniSalvate() {
@@ -8769,10 +8780,7 @@ document.addEventListener("keydown", (evento) => {
   }
 });
 $("#btn-apri-cartella").onclick = () => apriSceltaCartella();
-$("#btn-nuova-chat").onclick = () => avviaSessione(null, {
-  senzaCartella: true,
-  forzaNuova: true,
-});
+$("#btn-nuova-chat").onclick = avviaNuovaSchedaNelContestoCorrente;
 DOM.btnModello.onclick = () => apriSceltaModello();
 DOM.btnRagionamento.onclick = apriSceltaRagionamento;
 DOM.btnControlli.onclick = apriControlliAvanzati;

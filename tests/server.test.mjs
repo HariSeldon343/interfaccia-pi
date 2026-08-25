@@ -28,6 +28,7 @@ import {
   condividiHtmlConGh,
   eseguiGhLimitato,
   argomentiPiTerminale,
+  avvisoCreazioneSessionePi,
   decisioneBonificaLegacy,
   LettoreJsonl,
   SessionePi,
@@ -53,6 +54,19 @@ const CLI_PI_REALE = join(RADICE, "vendor", "pi-runtime", "pi", "dist", "cli.js"
 function attendi(ms) {
   return new Promise((risolvi) => setTimeout(risolvi, ms));
 }
+
+test("l'avviso previsto di creazione sessione non viene presentato come errore", () => {
+  const id = "gui-sessione-123";
+  assert.equal(avvisoCreazioneSessionePi(
+    `Warning: No project session found with id '${id}'; creating a new session with that id.`,
+    id,
+  ), true);
+  assert.equal(avvisoCreazioneSessionePi("Errore reale del provider", id), false);
+  assert.equal(avvisoCreazioneSessionePi(
+    "Warning: No project session found with id 'altra'; creating a new session with that id.",
+    id,
+  ), false);
+});
 
 async function avviaPonteTest({
   maxSessioni = 4,
@@ -257,6 +271,7 @@ test("il catalogo builtin viene letto dalla build Pi verificata e unificato in o
     { name: "settings", description: "Non deve oscurare il builtin", source: "prompt" },
     { name: "mia-estensione", description: "Solo TUI", source: "extension" },
     { name: "llama", description: "Estensione integrata verificata", source: "extension" },
+    { name: "sistema", description: "Sistema guidato verificato", source: "extension" },
   ]);
   assert.deepEqual(unificato.slice(0, 22).map((voce) => voce.source), Array(22).fill("builtin"));
   assert.equal(unificato.filter((voce) => voce.name === "settings").length, 1);
@@ -264,6 +279,8 @@ test("il catalogo builtin viene letto dalla build Pi verificata e unificato in o
   assert.equal(unificato.find((voce) => voce.name === "mia-estensione").dispatch.kind, "terminal");
   assert.equal(unificato.find((voce) => voce.name === "llama").availability.surface, "gui");
   assert.equal(unificato.find((voce) => voce.name === "llama").dispatch.kind, "prompt");
+  assert.equal(unificato.find((voce) => voce.name === "sistema").availability.surface, "gui");
+  assert.equal(unificato.find((voce) => voce.name === "sistema").dispatch.kind, "prompt");
 });
 
 test("il changelog appartiene al Pi pinato, ha un limite ed esige UTF-8 valido", async (t) => {
@@ -345,6 +362,7 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
     { name: "mia-skill", source: "skill" },
     { name: "mia-estensione", source: "extension" },
     { name: "llama", source: "extension" },
+    { name: "sistema", source: "extension" },
   ]);
   const voce = (nome) => catalogo.find((comando) => comando.name === nome);
   assert.deepEqual(preparaInvocazioneCapacita(voce("new")), {
@@ -371,6 +389,10 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
   assert.deepEqual(preparaInvocazioneCapacita(voce("llama"), "stato"), {
     mode: "rpc",
     command: { type: "prompt", message: "/llama stato" },
+  });
+  assert.deepEqual(preparaInvocazioneCapacita(voce("sistema"), "stato"), {
+    mode: "rpc",
+    command: { type: "prompt", message: "/sistema stato" },
   });
   assert.deepEqual(preparaInvocazioneCapacita(voce("model"), "gemma"), {
     mode: "workflow",
@@ -1135,7 +1157,8 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(frontend, /replayId:\s*clientIdPagina\(\)/);
   assert.match(server, /"--no-extensions"/);
   assert.match(server, /VERSIONE_PI_VERIFICATA = "0\.84\.2"/);
-  assert.match(server, /estensioniBuiltinConsentite: new Set\(\["llama"\]\)/);
+  assert.match(server, /estensioniBuiltinConsentite: new Set\(\["llama", "sistema"\]\)/);
+  assert.match(server, /"extensions", "sistema-guidato", "index\.ts"/);
   assert.match(server, /verificaPromptEstensione\(comando\)/);
   assert.match(server, /join\(config, "terminali", randomUUID\(\)\)/);
   assert.match(server, /PI_CODING_AGENT_SESSION_DIR:\s*directorySessioni/);
@@ -2524,12 +2547,13 @@ test("lo stato iniziale chiude la finestra di race prima del resume JSONL", asyn
   const ambiente = await avviaPonteTest();
   t.after(ambiente.chiudi);
   const cartella = join(ambiente.home, "stato-lento");
-  const fileSessione = join(cartella, "fake-session.jsonl");
   await mkdir(cartella);
-  await writeFile(fileSessione, '{"type":"session","id":"race"}\n', "utf8");
 
   const primaPromessa = ambiente.post("/api/avvia", { cartella, forzaNuova: true });
   await attendi(30);
+  const sessioneInAvvio = [...ambiente.ponte.sessioni.values()][0];
+  assert.ok(sessioneInAvvio, "la prima sessione deve aver prenotato il proprio identificativo");
+  const fileSessione = join(cartella, `fake-session-${sessioneInAvvio.id}.jsonl`);
   const secondaPromessa = ambiente.post("/api/avvia", {
     cartella,
     sessionPath: fileSessione,
@@ -2900,6 +2924,25 @@ test("un alias junction della cartella riusa il processo esistente", async (t) =
   assert.equal(seconda.dati.id, prima.dati.id);
   assert.equal(seconda.dati.esistente, true);
   assert.equal(ambiente.ponte.sessioni.size, 1);
+});
+
+test("forzaNuova apre processi distinti nella stessa cartella ma con JSONL distinti", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "progetto-sessioni-parallele");
+  await mkdir(cartella);
+
+  const prima = await ambiente.post("/api/avvia", { cartella, forzaNuova: true });
+  const seconda = await ambiente.post("/api/avvia", { cartella, forzaNuova: true });
+
+  assert.equal(prima.risposta.status, 200, JSON.stringify(prima.dati));
+  assert.equal(seconda.risposta.status, 200, JSON.stringify(seconda.dati));
+  assert.notEqual(seconda.dati.id, prima.dati.id);
+  const primaSessione = ambiente.ponte.sessioni.get(prima.dati.id);
+  const secondaSessione = ambiente.ponte.sessioni.get(seconda.dati.id);
+  assert.equal(primaSessione.cartella, secondaSessione.cartella);
+  assert.notEqual(primaSessione.fileSessione, secondaSessione.fileSessione);
+  assert.equal([...ambiente.ponte.sessioni.values()].filter((sessione) => sessione.proc).length, 2);
 });
 
 test("le sessioni terminate non consumano il limite e il fallback sceglie una sessione viva", async (t) => {

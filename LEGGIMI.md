@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.4.1, aggiornata il 25/08/2026.
+Versione 2.5.0, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -17,14 +17,17 @@ elenco a scomparsa e spiegate in linguaggio naturale.
 
 La cartella viene aperta in una nuova scheda. Aprirne un'altra non chiude né
 cancella la conversazione precedente: ogni scheda ha un processo `pi`, un
-modello, una coda e una cronologia indipendenti. Si possono tenere aperte fino
-a sei cartelle contemporaneamente.
+modello, una coda e una cronologia indipendenti. **Nuova scheda** riusa il
+contesto di lavoro corrente ma crea un file di sessione distinto; puoi quindi
+lavorare in parallelo anche nella stessa cartella. Si possono tenere aperte fino
+a sei sessioni complessive.
 
 ## Cosa si può fare dalla finestra
 
 - iniziare anche senza cartella e usare percorsi assoluti quando servono file locali;
 - accedere ai provider con account/OAuth quando Pi lo supporta, senza essere obbligati a inserire una chiave API;
-- aprire più cartelle e passare dall'una all'altra tramite le schede;
+- aprire più cartelle o più sessioni nella stessa cartella e passare dall'una
+  all'altra tramite le schede;
 - scegliere e cercare i modelli, distinguendo quelli locali da quelli cloud e
   vedendo subito se LM Studio, Ollama o llama.cpp sono realmente in esecuzione;
 - scegliere quanto il modello deve ragionare;
@@ -48,13 +51,35 @@ a sei cartelle contemporaneamente.
 - usare, sotto **Controlli avanzati**, le operazioni del protocollo RPC che non
   mettono a rischio la cronologia e la shell diretta con un avviso esplicito.
 
+## Creare un sistema di gestione guidato
+
+In una scheda con cartella di lavoro digita `/sistema`, oppure cercalo nella
+palette aperta da `/`. Il percorso grafico consente di:
+
+1. creare più progetti cliente nello stesso workspace;
+2. raccogliere le informazioni in blocchi di massimo quattro domande;
+3. distinguere dichiarazioni, fatti verificati, fonti normative ed evidenze da
+   verificare;
+4. collegare evidenze tramite percorso e SHA-256, senza copiarle;
+5. collegare una cartella di template scelta dall'utente e associare ciascun
+   modello al documento previsto;
+6. compilare placeholder `{{CHIAVE}}` o `[[CHIAVE]]`, oppure creare un dossier
+   fattuale Word conservando le sezioni iniziali e l'identità visiva del template;
+7. approvare esplicitamente una bozza già controllata ed esportare soltanto i
+   documenti approvati in un pacchetto nuovo con manifesto.
+
+Lo stato vive sotto `.pi/sistemi-gestione/progetti/` nella cartella di lavoro.
+Originali, evidenze e librerie cliente non entrano nel repository, nel runtime o
+nell'installer. Il motore non include testi di norme e non inventa requisiti:
+fonti pubbliche o copie licenziate devono essere collegate al progetto.
+
 Al primo avvio di una cartella viene chiesto se considerare attendibili le
 istruzioni, skill e risorse del progetto. L'opzione è visibile perché possono
 guidare `pi` a usare strumenti con i permessi dell'utente.
 
 ## Tutto pi: cosa significa con precisione
 
-La versione 2.4 è un'impalcatura grafica sopra la modalità RPC della stessa
+La versione 2.5 è un'impalcatura grafica sopra la modalità RPC della stessa
 build `pi` 0.84.2 inclusa nell'installer. Il bridge legge il catalogo originale
 dei comandi incorporati, lo unisce a prompt e skill della cartella e lo espone
 alla palette aperta da `/`. Ogni comando viene tradotto in un'operazione RPC
@@ -70,12 +95,15 @@ possono superare il limite del protocollo (`get_messages`, albero, fork e ultima
 risposta) sono sostituite da endpoint locali equivalenti, a flusso o con
 anteprima limitata.
 
-Rimane una sola distinzione intenzionale. I processi della GUI partono con
+Rimane una distinzione intenzionale. I processi della GUI partono con
 `--no-extensions`: in PI 0.84.2 un'estensione arbitraria può cambiare file di
 sessione dall'interno senza comunicarlo al bridge e aggirerebbe il blocco
-anti-doppia-apertura. Skill, prompt template, file di contesto, strumenti e i
-22 comandi incorporati restano disponibili; estensioni e componenti TUI
-personalizzati si usano con **Nuova conversazione nel terminale**.
+anti-doppia-apertura. Il bridge carica poi esplicitamente soltanto le estensioni
+integrate, versionate e testate dall'app, fra cui `/sistema`; `/llama` resta
+ammessa come componente inline verificata. Skill, prompt template, file di
+contesto, strumenti e i 22 comandi incorporati restano disponibili. Le altre
+estensioni e i componenti TUI personalizzati si usano con **Nuova conversazione
+nel terminale**.
 
 Nei Controlli avanzati ci sono due percorsi distinti. **Nuova conversazione nel
 terminale** crea un lavoro separato nella stessa cartella, utile per pacchetti,
@@ -99,7 +127,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.4.1\release\bundle\nsis\Interfaccia pi_2.4.1_x64-setup.exe`
+`src-tauri\target-final-2.5.0\release\bundle\nsis\Interfaccia pi_2.5.0_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -185,7 +213,9 @@ chiesto a `pi` di lasciare in esecuzione.
 | La risposta non parte | Controlla il messaggio rosso; il testo rimane nell'editor e può essere reinviato |
 | Il contesto è quasi pieno | Premi **Comprimi conversazione** o scegli un modello con più contesto |
 | Una cronologia supera 128 MB | Usa **Continua questa conversazione nel terminale**; compattare non riduce il JSONL append-only |
-| Ti serve un'estensione | Usa **Apri PI completo nel terminale**; la GUI RPC carica skill e prompt ma disattiva le estensioni |
+| Ti serve un'estensione personale | Usa **Apri PI completo nel terminale**; la GUI RPC carica soltanto le estensioni integrate e verificate |
+| Vuoi due lavori nella stessa cartella | Premi **Nuova scheda**: la cartella resta la stessa ma Pi usa una sessione distinta |
+| Vuoi creare documenti di un sistema di gestione | Apri una cartella, digita `/sistema` e collega la tua libreria di template |
 
 ## Architettura
 
@@ -193,6 +223,9 @@ chiesto a `pi` di lasciare in esecuzione.
 |---|---|
 | `avvia.mjs` | verifica la firma del bridge, lo avvia e apre l'interfaccia |
 | `app/server.mjs` | gestisce processi `pi` RPC indipendenti e API locale protetta |
+| `app/extensions/sistema-guidato/index.ts` | flusso grafico `/sistema` e dialoghi RPC |
+| `app/extensions/sistema-guidato/core.mjs` | stato persistente, evidenze, revisioni, approvazioni ed export |
+| `app/extensions/sistema-guidato/office-package.mjs` | compilazione confinata dei pacchetti Office e OpenDocument |
 | `app/public/index.html` | struttura semantica della finestra |
 | `app/public/stile.css` | layout desktop, zoom elevato e modalità compatta |
 | `app/public/palette-core.js` | ricerca, completamento e analisi sicura dei comandi `/` |
@@ -210,7 +243,7 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.4.1'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.0'
 npm run build:desktop:offline
 ```
 

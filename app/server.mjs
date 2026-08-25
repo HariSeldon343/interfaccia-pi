@@ -23,6 +23,7 @@ import { join, dirname, resolve, basename, extname, isAbsolute, parse, relative,
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 
 const FILE_CORRENTE = fileURLToPath(import.meta.url);
 const QUI = dirname(FILE_CORRENTE);
@@ -118,10 +119,12 @@ export function argomentiAvvioPi({
   modello,
   ragionamento,
   sessionPath,
+  sessionId,
   nome,
   approvaProgetto = false,
   senzaCartella = false,
   estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
+  estensioneSistemaGuidato = join(QUI, "extensions", "sistema-guidato", "index.ts"),
 } = {}) {
   const argomenti = [cliPi, "--mode", "rpc", "--no-extensions"];
   if (senzaCartella) {
@@ -136,13 +139,21 @@ export function argomentiAvvioPi({
       : PROMPT_INTERFACCIA_GRAFICA,
   );
   if (senzaCartella) argomenti.push("--extension", estensioneSenzaCartella);
+  else argomenti.push("--extension", estensioneSistemaGuidato);
   if (provider) argomenti.push("--provider", provider);
   if (modello) argomenti.push("--model", modello);
   if (ragionamento) argomenti.push("--thinking", ragionamento);
   if (sessionPath) argomenti.push("--session", sessionPath);
+  else if (sessionId) argomenti.push("--session-id", sessionId);
   if (nome) argomenti.push("--name", nome);
   argomenti.push(approvaProgetto && !senzaCartella ? "--approve" : "--no-approve");
   return argomenti;
+}
+
+export function avvisoCreazioneSessionePi(testo, sessionId) {
+  const id = String(sessionId || "");
+  return Boolean(id) && String(testo || "").trim()
+    === `Warning: No project session found with id '${id}'; creating a new session with that id.`;
 }
 // La classificazione delle unita richiede l'avvio di PowerShell su Windows.
 // Le aperture di nuovi percorsi attendono sempre una fotografia fresca; la
@@ -161,6 +172,7 @@ const ENDPOINT_PROVIDER_LOCALI = new Map([
   ["llama.cpp", "http://127.0.0.1:8080/v1"],
 ]);
 const METODI_ESTENSIONE_INTERATTIVI = new Set(["select", "confirm", "input", "editor"]);
+const ESTENSIONI_SOLO_CON_CARTELLA = new Set(["sistema"]);
 const COMANDI_CAMBIO_SESSIONE = new Set([
   "new_session",
   "switch_session",
@@ -1407,7 +1419,7 @@ const RPC_BUILTIN = new Map([
 // Pi 0.84.2 carica /llama come estensione inline anche con --no-extensions.
 // Il suo dialogo usa soltanto le primitive RPC select/confirm/input gia
 // implementate dalla GUI e non puo cambiare file di sessione.
-const ESTENSIONI_INTEGRATE_GUI = new Set(["llama"]);
+const ESTENSIONI_INTEGRATE_GUI = new Set(["llama", "sistema"]);
 
 function capacitaBuiltin(comando) {
   const workflow = WORKFLOW_BUILTIN.get(comando.name);
@@ -2429,6 +2441,7 @@ export class SessionePi {
       modello,
       ragionamento,
       sessionPath,
+      sessionId: sessionPath ? null : this.id,
       nome,
       approvaProgetto,
       senzaCartella: this.senzaCartella,
@@ -2456,9 +2469,34 @@ export class SessionePi {
       lettore.termina();
       if (this.lettore === lettore) this.lettore = null;
     });
+    const decoderStderr = new StringDecoder("utf8");
+    let stderrPendente = "";
+    const pubblicaRigaStderr = (riga) => {
+      const testo = String(riga || "").replace(/\r$/, "").trim();
+      if (!testo || avvisoCreazioneSessionePi(testo, sessionPath ? null : this.id)) return;
+      this.diffondi({ type: "gui_errore", messaggio: testo });
+    };
+    const scaricaStderr = (finale = false) => {
+      let separatore;
+      while ((separatore = stderrPendente.indexOf("\n")) >= 0) {
+        pubblicaRigaStderr(stderrPendente.slice(0, separatore));
+        stderrPendente = stderrPendente.slice(separatore + 1);
+      }
+      if (finale && stderrPendente) {
+        pubblicaRigaStderr(stderrPendente);
+        stderrPendente = "";
+      } else if (stderrPendente.length > 256 * 1024) {
+        pubblicaRigaStderr(stderrPendente.slice(0, 256 * 1024));
+        stderrPendente = "";
+      }
+    };
     processo.stderr.on("data", (pezzo) => {
-      const testo = pezzo.toString("utf8").trim();
-      if (testo) this.diffondi({ type: "gui_errore", messaggio: testo });
+      stderrPendente += decoderStderr.write(pezzo);
+      scaricaStderr(false);
+    });
+    processo.stderr.on("end", () => {
+      stderrPendente += decoderStderr.end();
+      scaricaStderr(true);
     });
     processo.stdin.on("error", (errore) => {
       if (generazione !== this.generazione) return;
@@ -2695,7 +2733,9 @@ export class SessionePi {
     }
     if (this.estensioniBuiltinConsentite) {
       const attuali = [...this.comandiEstensione].sort();
-      const consentiti = [...this.estensioniBuiltinConsentite].sort();
+      const consentiti = [...this.estensioniBuiltinConsentite]
+        .filter((nome) => !this.senzaCartella || !ESTENSIONI_SOLO_CON_CARTELLA.has(nome))
+        .sort();
       if (attuali.length !== consentiti.length || attuali.some((nome, indice) => nome !== consentiti[indice])) {
         throw erroreHttp(
           "Questa versione di pi espone estensioni integrate non ancora verificate dall'interfaccia. Usa Pi completo nel terminale oppure aggiorna l'interfaccia.",
@@ -6467,7 +6507,7 @@ if (eseguitoDirettamente) {
     cliPi: cliPiDiretto,
     autoStopMs,
     onAutoStop: () => process.exit(0),
-    estensioniBuiltinConsentite: new Set(["llama"]),
+    estensioniBuiltinConsentite: new Set(["llama", "sistema"]),
   });
   ponte.server.listen(PORTA, "127.0.0.1", () => {
     console.log("");

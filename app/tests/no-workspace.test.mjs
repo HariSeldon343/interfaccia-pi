@@ -28,6 +28,7 @@ test("il guard richiede percorsi assoluti espliciti per i tool file", () => {
 
 test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   const estensione = join(QUI, "..", "no-workspace-guard.mjs");
+  const estensioneSistema = join(QUI, "..", "extensions", "sistema-guidato", "index.ts");
   const senza = argomentiAvvioPi({
     cliPi: FAKE_PI,
     senzaCartella: true,
@@ -55,8 +56,23 @@ test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   assert.match(promptCartella, /GUI desktop Windows/);
   assert.match(promptCartella, /\[etichetta descrittiva\]\(target\)/);
   assert.doesNotMatch(promptCartella, /Nessuna cartella di lavoro/);
-  assert.equal(cartella.includes("--extension"), false);
+  assert.deepEqual(
+    cartella.slice(cartella.indexOf("--extension"), cartella.indexOf("--extension") + 2),
+    ["--extension", estensioneSistema],
+  );
   assert.ok(cartella.includes("--approve"));
+
+  const nuova = argomentiAvvioPi({ cliPi: FAKE_PI, sessionId: "gui-session-1" });
+  assert.deepEqual(
+    nuova.slice(nuova.indexOf("--session-id"), nuova.indexOf("--session-id") + 2),
+    ["--session-id", "gui-session-1"],
+  );
+  const ripresa = argomentiAvvioPi({
+    cliPi: FAKE_PI,
+    sessionId: "da-ignorare",
+    sessionPath: "C:\\sessioni\\esistente.jsonl",
+  });
+  assert.equal(ripresa.includes("--session-id"), false);
 });
 
 test("la radice tecnica e stabile e non confonde percorsi esterni", () => {
@@ -69,13 +85,15 @@ test("la radice tecnica e stabile e non confonde percorsi esterni", () => {
   assert.equal(percorsoInRadiceSenzaCartella(dirname(radice), radice), false);
 });
 
-test("la UI offre e avvia automaticamente una chat senza cartella", async () => {
+test("la UI offre una nuova scheda nel contesto corrente o senza cartella", async () => {
   const [html, javascript] = await Promise.all([
     readFile(join(PUBLIC, "index.html"), "utf8"),
     readFile(join(PUBLIC, "app.js"), "utf8"),
   ]);
   assert.match(html, /id="btn-nuova-chat"/);
-  assert.match(html, /Nuova chat/);
+  assert.match(html, /Nuova scheda/);
+  assert.match(javascript, /function avviaNuovaSchedaNelContestoCorrente\(\)/);
+  assert.match(javascript, /avviaSessione\(corrente\.cartella, \{ forzaNuova: true \}\)/);
   assert.match(javascript, /avviaSessione\(null, \{ senzaCartella: true, forzaNuova: true \}\)/);
   assert.match(javascript, /sessione\.senzaCartella\s*\?\s*"Senza cartella"/);
   assert.match(javascript, /File solo tramite percorso assoluto/);

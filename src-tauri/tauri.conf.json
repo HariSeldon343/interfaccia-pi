@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Interfaccia pi",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "identifier": "it.amodeo.interfaccia-pi",
   "build": {
     "frontendDist": "../app/public"
@@ -40,10 +40,11 @@
     "copyright": "Antonio Amodeo",
     "category": "DeveloperTool",
     "shortDescription": "Interfaccia grafica completa per l'agente pi",
-    "longDescription": "Interfaccia accessibile e autocontenuta per usare pi con il mouse: include Node.js, PI, npm e gli strumenti di ricerca, con più cartelle in schede indipendenti e conversazioni salvate.",
+    "longDescription": "Interfaccia accessibile e autocontenuta per usare pi con il mouse: include Node.js, PI, npm e gli strumenti di ricerca, con sessioni indipendenti anche nella stessa cartella, conversazioni salvate e progettazione guidata dei sistemi di gestione.",
     "resources": {
       "../app/server.mjs": "app/server.mjs",
       "../app/no-workspace-guard.mjs": "app/no-workspace-guard.mjs",
+      "../app/extensions": "app/extensions",
       "../app/public/index.html": "app/public/index.html",
       "../app/public/stile.css": "app/public/stile.css",
       "../app/public/auth-flow-core.js": "app/public/auth-flow-core.js",

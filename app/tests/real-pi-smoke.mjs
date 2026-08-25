@@ -22,7 +22,7 @@ test("smoke con il runtime Pi incluso: la modalita senza cartella carica davvero
     emetti: (evento) => eventi.push(evento),
     elencaDiscendenti: async () => [],
     terminaDiscendenti: async () => true,
-    estensioniBuiltinConsentite: new Set(["llama"]),
+    estensioniBuiltinConsentite: new Set(["llama", "sistema"]),
   });
   t.after(async () => {
     await sessione.ferma({ notifica: false });

@@ -148,6 +148,17 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
   }
 });
 
+test("una nuova scheda puo riusare la stessa cartella senza riusare la conversazione", () => {
+  const nuovaScheda = corpoFunzione("avviaNuovaSchedaNelContestoCorrente");
+  assert.match(nuovaScheda, /corrente\?\.cartella\s*&&\s*!corrente\.senzaCartella/);
+  assert.match(nuovaScheda, /avviaSessione\(corrente\.cartella,\s*\{\s*forzaNuova:\s*true\s*\}\)/);
+  assert.match(nuovaScheda, /senzaCartella:\s*true,\s*forzaNuova:\s*true/);
+
+  const explorer = corpoFunzione("apriSceltaCartella");
+  assert.match(explorer, /avviaSessione\(stato\.selezionata\.percorso,[\s\S]*?forzaNuova:\s*true/);
+  assert.match(frontend, /\$\("#btn-nuova-chat"\)\.onclick\s*=\s*avviaNuovaSchedaNelContestoCorrente/);
+});
+
 test("la struttura Codex-like mantiene i contratti accessibili della conversazione", () => {
   const conversazione = elementoConId("conversazione");
   assert.equal(conversazione?.attributi.get("role"), "log");

@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.5.0 — 2026-08-25
+
+- **Nuova scheda** apre una sessione Pi indipendente nello stesso contesto di
+  lavoro; più processi possono quindi lavorare nella medesima cartella senza
+  condividere il file JSONL, mentre resta vietata la doppia apertura della
+  stessa conversazione salvata;
+- nuova estensione integrata e verificata `/sistema`, utilizzabile interamente
+  dalla GUI per creare e riprendere progetti di sistemi di gestione
+  multi-cliente;
+- questionario persistente in blocchi di massimo quattro domande, piano
+  documentale con dipendenze, registro append-only delle operazioni e stato di
+  avanzamento verificabile;
+- evidenze collegate per riferimento, con natura dell'informazione, metadati e
+  SHA-256: nessun file del cliente viene copiato nell'app o nell'installer;
+- librerie di template selezionate dall'utente e confinate alla radice reale,
+  con supporto per DOCX/DOTX, XLSX/XLTX, ODT/ODS e Markdown;
+- compilazione sicura dei placeholder `{{CHIAVE}}` e `[[CHIAVE]]`, anche quando
+  Word o Excel li dividono internamente, e modalità dossier Word che conserva
+  copertine, sezioni iniziali, stili, intestazioni e piè di pagina;
+- ogni generazione crea una nuova revisione locale; placeholder o informazioni
+  mancanti impediscono l'approvazione, e una modifica successiva viene rilevata
+  confrontando l'impronta del file;
+- esportazione consentita soltanto dopo conferma umana, in un nuovo pacchetto
+  consegnabile con manifesto, provenienza e hash dei documenti;
+- collaudo RPC con Pi 0.84.2, test su pacchetti Office ostili e prova visuale
+  su un template Word reale senza modificare l'originale.
+
 ## 2.4.1 — 2026-08-25
 
 - uno screenshot copiato negli appunti puo essere incollato direttamente nel
