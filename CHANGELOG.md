@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.6.0 RC — 2026-08-25
+
+- **Sistema Guidato** e ora un pannello interno autonomo, apribile dal pulsante
+  nella testata o dal comando virtuale `/sistema` anche quando non e stata
+  selezionata una cartella di lavoro;
+- il backend viene avviato pigramente una sola volta per processo GUI, condiviso
+  fra le chat, arrestato insieme al bridge e riavviato in modo controllato dopo
+  un crash;
+- dashboard e API sono esposte sotto `/sistema/` sulla stessa origine della GUI:
+  il browser non riceve token, cookie backend o segreti in URL, HTML,
+  JavaScript, localStorage, sessionStorage, header di risposta o log;
+- il proxy crea e conserva soltanto in memoria host la sessione attendibile del
+  backend, la associa a `prepare`/`commit` di ruoli e finding e la rinnova senza
+  riusare una mutazione: dopo un rinnovo un ticket precedente deve essere
+  preparato di nuovo;
+- runtime Pi, dashboard e template del modulo provengono dal monorepo
+  `sistema-guidato`; l'host verifica versione, patch RPC, lettori e writer di
+  schema, manifesti, dimensioni e SHA-256 di ogni file prima di avviare il
+  servizio;
+- il writer storico schema 1 non viene piu caricato o registrato in Pi. I dati
+  esistenti restano disponibili soltanto come sorgente read-only di una
+  migrazione esplicita, con anteprima e conferma; nessun dato viene eliminato o
+  sovrascritto automaticamente;
+- aggiunti test di pannello senza cartella, comando unico `/sistema`, proxy
+  same-origin, session binding, singleton, crash recovery, shutdown, bundle e
+  compatibilita, conservando le funzioni e la copertura della 2.5.3;
+- predisposto l'updater Tauri 2 con flusso interamente manuale, capability
+  confinata, shutdown ordinato e pipeline production fail-closed. La build
+  pilota resta updater-disabled; G11 e ACC-16 restano aperti fino al drill reale
+  N-1, recovery e rollback.
+
 ## 2.5.3 — 2026-08-25
 
 - dopo una compattazione la chat conserva, integralmente e nello stesso ordine,

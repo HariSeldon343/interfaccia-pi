@@ -743,6 +743,7 @@ summary:focus-visible {
 .risultato-codice { max-height: 260px; margin: 9px 0 0; padding: 10px; overflow: auto; color: var(--testo-tenue); background: #0d1015; border: 1px solid var(--bordo); border-radius: 7px; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; }
 .avviso-sicurezza { margin: 8px 0 10px; padding: 9px 10px; color: #f4d69a; background: #2a2417; border: 1px solid #5e4c26; border-radius: 7px; font-size: 12px; line-height: 1.5; }
 .errore-cronologia { margin: 12px 14px; padding: 12px 14px; color: #f7dddd; background: #2d1d20; border: 1px solid #8d4f58; border-radius: 9px; line-height: 1.5; }
+.avviso-inline { margin: 10px 0; padding: 10px 12px; color: #f7dddd; background: #2d1d20; border: 1px solid #8d4f58; border-radius: 9px; line-height: 1.5; }
 .errore-cronologia strong { display: block; margin-bottom: 4px; color: #fff0f1; }
 .errore-cronologia p { margin: 4px 0 8px; }
 .errore-cronologia .barra-modale { margin: 10px 0 0; }
@@ -2165,6 +2166,133 @@ body {
 .stato-reale:hover { background: #29262f; border-color: #6a6176; }
 
 .invio-occupato select { max-width: 220px; }
+
+/* Pannello incorporato Sistema Guidato */
+
+.sistema-guidato-apri {
+  color: #eef7f0;
+  background: #21372c;
+  border-color: #416b54;
+}
+
+.sistema-guidato-apri:hover {
+  background: #294536;
+  border-color: #6fa580;
+}
+
+.sistema-guidato-apri > span:first-child {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  color: #bfe7c8;
+  border: 1px solid #5b8b69;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 750;
+  place-items: center;
+}
+
+.pannello-sistema-guidato {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  padding: 10px;
+  background: #0d0f12;
+}
+
+.pannello-sistema-guidato-finestra {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #f5f7f8;
+  border: 1px solid #454b55;
+  border-radius: 12px;
+  box-shadow: 0 22px 80px rgba(0,0,0,.5);
+  flex-direction: column;
+}
+
+.pannello-sistema-guidato-testa {
+  display: flex;
+  min-height: 58px;
+  padding: 9px 12px;
+  color: var(--testo);
+  background: #171a1e;
+  border-bottom: 1px solid #353a43;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pannello-sistema-guidato-testa > div,
+.pannello-sistema-guidato-testa > div > span:last-child,
+.pannello-sistema-guidato-azioni {
+  display: flex;
+  align-items: center;
+}
+
+.pannello-sistema-guidato-testa > div { gap: 10px; min-width: 0; }
+.pannello-sistema-guidato-testa > div > span:last-child { align-items: flex-start; flex-direction: column; }
+.pannello-sistema-guidato-testa strong { font-size: 14px; }
+.pannello-sistema-guidato-testa small { color: var(--testo-debole); font-size: 11px; }
+.pannello-sistema-guidato-azioni { gap: 7px; }
+
+.pannello-sistema-guidato-marchio {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: #d9f4df;
+  background: #28543a;
+  border: 1px solid #5d8b6c;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 800;
+  place-items: center;
+}
+
+.pannello-sistema-guidato-corpo {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  background: #edf1f2;
+}
+
+.pannello-sistema-guidato-corpo iframe {
+  width: 100%;
+  height: 100%;
+  background: #f5f7f8;
+  border: 0;
+}
+
+.pannello-sistema-guidato-attesa {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  color: #26312b;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pannello-sistema-guidato-attesa small { color: #647069; }
+.pannello-sistema-guidato-attesa.errore strong { color: #8a2730; }
+.pannello-sistema-guidato-attesa.errore .spinner-sistema-guidato {
+  animation: none;
+  border-color: #c9848a;
+  border-top-color: #8a2730;
+}
+
+.spinner-sistema-guidato {
+  width: 26px;
+  height: 26px;
+  border: 3px solid #b8c9be;
+  border-top-color: #2f7650;
+  border-radius: 50%;
+  animation: gira-sistema-guidato .8s linear infinite;
+}
+
+@keyframes gira-sistema-guidato { to { transform: rotate(360deg); } }
 
 @media (max-width: 1280px) {
   .barra > .apri-cartella span:last-child { display: none; }

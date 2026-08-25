@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, frontend, stile, linkCore, clipboardCore, viewCore, attachmentCore] = await Promise.all([
+const [html, frontend, stile, linkCore, clipboardCore, viewCore, attachmentCore, updaterCore] = await Promise.all([
   readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
   readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
@@ -13,6 +13,7 @@ const [html, frontend, stile, linkCore, clipboardCore, viewCore, attachmentCore]
   readFile(join(RADICE, "app", "public", "clipboard-core.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "view-core.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "attachment-core.js"), "utf8"),
+  readFile(join(RADICE, "app", "public", "updater-core.js"), "utf8"),
 ]);
 
 function attributi(testo) {
@@ -137,6 +138,14 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
     "btn-ragionamento",
     "btn-controlli",
     "btn-ferma-top",
+    "btn-sistema-guidato",
+    "pannello-sistema-guidato",
+    "pannello-sistema-guidato-titolo",
+    "stato-sistema-guidato",
+    "attesa-sistema-guidato",
+    "frame-sistema-guidato",
+    "btn-ricarica-sistema-guidato",
+    "btn-chiudi-sistema-guidato",
     "stati-estensioni",
     "widget-sopra",
     "widget-sotto",
@@ -150,6 +159,45 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
   ]) {
     assert.ok(idHtml.includes(id), `manca il punto di integrazione #${id}`);
   }
+});
+
+test("Sistema Guidato e un pannello interno accessibile senza capability nel browser", () => {
+  const apri = elementoConId("btn-sistema-guidato");
+  assert.equal(apri?.tag, "button");
+  assert.equal(apri?.attributi.get("type"), "button");
+  assert.equal(apri?.attributi.get("aria-haspopup"), "dialog");
+  assert.equal(apri?.attributi.get("aria-controls"), "pannello-sistema-guidato");
+
+  const pannello = elementoConId("pannello-sistema-guidato");
+  assert.equal(pannello?.attributi.has("hidden"), true);
+  const dialogo = elementiHtml.find((elemento) =>
+    elemento.attributi.get("aria-labelledby") === "pannello-sistema-guidato-titolo");
+  assert.equal(dialogo?.attributi.get("role"), "dialog");
+  assert.equal(dialogo?.attributi.get("aria-modal"), "true");
+
+  const frame = elementoConId("frame-sistema-guidato");
+  assert.equal(frame?.tag, "iframe");
+  assert.equal(frame?.attributi.get("src"), "about:blank");
+  assert.equal(frame?.attributi.get("referrerpolicy"), "no-referrer");
+  assert.match(frame?.attributi.get("sandbox") || "", /allow-same-origin/u);
+  assert.match(frame?.attributi.get("sandbox") || "", /allow-scripts/u);
+  assert.match(frame?.attributi.get("sandbox") || "", /allow-downloads/u);
+  assert.doesNotMatch(frame?.attributi.get("sandbox") || "", /allow-top-navigation/u);
+
+  const carica = corpoFunzione("caricaPannelloSistemaGuidato");
+  assert.match(carica, /fetch\("\/sistema\/api\/health"/u);
+  assert.match(carica, /credentials:\s*"same-origin"/u);
+  assert.match(carica, /"X-SG-Nonce":\s*nonce/u);
+  assert.match(carica, /risposta\.headers\.get\("X-SG-Nonce"\)\s*!==\s*nonce/u);
+  assert.match(carica, /frameSistemaGuidato\.src\s*=\s*"\/sistema\/"/u);
+  assert.doesNotMatch(carica, /localStorage|sessionStorage|X-SG-Token|api[-_]?key/iu);
+  assert.doesNotMatch(frontend, /X-SG-Token/iu,
+    "la capability interna non deve esistere nel JavaScript del browser");
+  assert.match(corpoFunzione("apriPannelloSistemaGuidato"), /sfondoSistemaGuidatoInerte\(true\)/u);
+  assert.match(corpoFunzione("chiudiPannelloSistemaGuidato"), /sfondoSistemaGuidatoInerte\(false\)/u);
+  assert.match(corpoFunzione("eseguiWorkflowComando"), /sistema-guidato-panel/u);
+  assert.match(stile, /\.pannello-sistema-guidato\s*\{/u);
+  assert.match(stile, /\.pannello-sistema-guidato-corpo iframe\s*\{/u);
 });
 
 test("una nuova scheda puo riusare la stessa cartella senza riusare la conversazione", () => {
@@ -638,6 +686,24 @@ test("la vista compatta viene caricata prima del frontend", () => {
   assert.match(frontend, /globalThis\.PiGuiViewCore/);
   assert.match(viewCore, /pulisciRispostaAgente/);
   assert.match(viewCore, /statoAttivita/);
+});
+
+test("l'updater nativo e controllato dall'utente e non avvia controlli automatici", () => {
+  assert.ok(html.indexOf("/updater-core.js") < html.indexOf("/app.js"));
+  assert.match(html, /data-azione=["']aggiornamenti["']/u);
+  assert.match(frontend, /globalThis\.PI_GUI_UPDATER/u);
+  const apertura = corpoFunzione("apriAggiornamenti");
+  assert.match(apertura, /invocaTauri\("updater_status"\)/u,
+    "aprire il pannello deve leggere solo lo stato locale");
+  assert.match(apertura, /esegui\("updater_check"\)/u);
+  assert.match(apertura, /esegui\("updater_download"\)/u);
+  assert.match(apertura, /invocaTauri\("updater_install"\)/u);
+  assert.match(apertura, /conferma\(/u,
+    "l'installazione deve avere una conferma distinta dal download");
+  assert.doesNotMatch(frontend, /(?:DOMContentLoaded|window\.onload)[\s\S]{0,300}updater_check/u,
+    "il controllo non deve partire automaticamente all'avvio");
+  assert.match(updaterCore, /Il controllo parte soltanto quando lo richiedi/u);
+  assert.match(updaterCore, /firma verificata/u);
 });
 
 test("la GUI non lascia che Pi trasformi silenziosamente gli allegati in image omitted", () => {

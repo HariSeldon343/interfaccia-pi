@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Interfaccia pi",
-  "version": "2.5.3",
+  "version": "2.6.0",
   "identifier": "it.amodeo.interfaccia-pi",
   "build": {
     "frontendDist": "../app/public"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Interfaccia pi",
@@ -22,11 +23,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://localhost:4666; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' http://localhost:4666; img-src 'self' data: blob:; style-src 'self'; script-src 'self'"
+      "csp": "default-src 'self' http://localhost:4666; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' http://localhost:4666 ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self'; script-src 'self'"
     }
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "targets": [
       "nsis",
       "msi"
@@ -44,8 +46,9 @@
     "longDescription": "Interfaccia accessibile e autocontenuta per usare pi con il mouse: include Node.js, PI, npm e gli strumenti di ricerca, con sessioni indipendenti anche nella stessa cartella, conversazioni salvate e progettazione guidata dei sistemi di gestione.",
     "resources": {
       "../app/server.mjs": "app/server.mjs",
+      "../app/sistema-guidato-manager.mjs": "app/sistema-guidato-manager.mjs",
       "../app/no-workspace-guard.mjs": "app/no-workspace-guard.mjs",
-      "../app/extensions": "app/extensions",
+      "../vendor/sistema-guidato": "app/sistema-guidato",
       "../app/public/index.html": "app/public/index.html",
       "../app/public/stile.css": "app/public/stile.css",
       "../app/public/auth-flow-core.js": "app/public/auth-flow-core.js",
@@ -54,6 +57,7 @@
       "../app/public/clipboard-core.js": "app/public/clipboard-core.js",
       "../app/public/attachment-core.js": "app/public/attachment-core.js",
       "../app/public/view-core.js": "app/public/view-core.js",
+      "../app/public/updater-core.js": "app/public/updater-core.js",
       "../app/public/app.js": "app/public/app.js",
       "../vendor/pi-runtime/node": "runtime/node",
       "../vendor/pi-runtime/pi": "runtime/pi",

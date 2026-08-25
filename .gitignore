@@ -13,6 +13,11 @@
 /vendor/.pi-runtime-stage-*/
 /vendor/.pi-runtime-backup-*/
 
+# Il modulo Sistema Guidato arriva da un release asset del repository privato,
+# bloccato da SHA-256, oppure da un monorepo locale indicato esplicitamente.
+/vendor/sistema-guidato/
+/vendor/.sistema-guidato-stage-*/
+
 # File transitori e diagnostici
 *.log
 *.tmp
@@ -40,6 +45,7 @@ latest.json
 *.pem
 *.key
 /src-tauri/relic.conf
+/src-tauri/tauri.production.generated.json
 
 # Stato degli strumenti e degli editor, mai parte del prodotto
 /.pi/

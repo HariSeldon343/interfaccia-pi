@@ -22,6 +22,11 @@
             aria-label="Apri una nuova scheda nello stesso contesto di lavoro">
       <span aria-hidden="true">✎</span><span>Nuova scheda</span>
     </button>
+    <button class="apri-cartella sistema-guidato-apri" id="btn-sistema-guidato" type="button"
+            aria-haspopup="dialog" aria-controls="pannello-sistema-guidato"
+            title="Progetta e verifica un sistema ISO 9001/HLS">
+      <span aria-hidden="true">SG</span><span>Sistema guidato</span>
+    </button>
     <button class="apri-cartella" id="btn-apri-cartella" type="button" aria-label="Apri una cartella">
       <span aria-hidden="true">＋</span><span>Apri cartella</span>
     </button>
@@ -69,6 +74,10 @@
       </section>
 
       <nav class="gruppo navigazione-principale" aria-label="Conversazione">
+        <button class="voce voce-primaria" type="button" data-azione="sistema">
+          <span class="ico" aria-hidden="true">SG</span>
+          <span class="voce-testo"><strong>Sistema guidato</strong><small>ISO 9001/HLS, anche senza cartella</small></span>
+        </button>
         <button class="voce voce-primaria" type="button" data-azione="nuova">
           <span class="ico" aria-hidden="true">✎</span>
           <span class="voce-testo"><strong>Nuova conversazione</strong><small>continua con o senza cartella</small></span>
@@ -151,6 +160,10 @@
           <button class="voce" type="button" data-azione="avanzate">
             <span class="ico" aria-hidden="true">⋯</span>
             <span class="voce-testo"><strong>Controlli avanzati</strong><small>coda, shell, sessioni e RPC</small></span>
+          </button>
+          <button class="voce" type="button" data-azione="aggiornamenti">
+            <span class="ico" aria-hidden="true">⇧</span>
+            <span class="voce-testo"><strong>Aggiornamenti</strong><small>controllo e installazione sempre manuali</small></span>
           </button>
           <button class="voce pericolo" type="button" data-azione="interrompi">
             <span class="ico" aria-hidden="true">■</span>
@@ -258,6 +271,36 @@
 
   <div class="toast-area" id="toast-area" aria-live="polite" aria-atomic="true"></div>
 
+  <div class="pannello-sistema-guidato" id="pannello-sistema-guidato" hidden>
+    <section class="pannello-sistema-guidato-finestra" role="dialog" aria-modal="true"
+             aria-labelledby="pannello-sistema-guidato-titolo">
+      <header class="pannello-sistema-guidato-testa">
+        <div>
+          <span class="pannello-sistema-guidato-marchio" aria-hidden="true">SG</span>
+          <span>
+            <strong id="pannello-sistema-guidato-titolo">Sistema guidato</strong>
+            <small id="stato-sistema-guidato" role="status" aria-live="polite">Pronto per l'avvio</small>
+          </span>
+        </div>
+        <div class="pannello-sistema-guidato-azioni">
+          <button class="bottone" id="btn-ricarica-sistema-guidato" type="button">Ricarica</button>
+          <button class="chiudi" id="btn-chiudi-sistema-guidato" type="button"
+                  aria-label="Chiudi Sistema guidato">✕</button>
+        </div>
+      </header>
+      <div class="pannello-sistema-guidato-corpo">
+        <div class="pannello-sistema-guidato-attesa" id="attesa-sistema-guidato">
+          <span class="spinner-sistema-guidato" aria-hidden="true"></span>
+          <strong>Avvio del percorso guidato…</strong>
+          <small>Il servizio locale viene avviato soltanto quando serve.</small>
+        </div>
+        <iframe id="frame-sistema-guidato" title="Percorso Sistema guidato"
+                src="about:blank" hidden referrerpolicy="no-referrer"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals"></iframe>
+      </div>
+    </section>
+  </div>
+
   <div class="velo" id="velo" hidden>
     <section class="modale" id="modale" role="dialog" aria-modal="true"
              aria-labelledby="modale-titolo" tabindex="-1">
@@ -276,6 +319,7 @@
   <script src="/clipboard-core.js"></script>
   <script src="/attachment-core.js"></script>
   <script src="/view-core.js"></script>
+  <script src="/updater-core.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

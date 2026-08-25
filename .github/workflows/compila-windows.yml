@@ -48,6 +48,20 @@ jobs:
           npm ci
           npm run vendor:pi
           npm run vendor:pi:check
+
+      - name: Acquisisce Sistema Guidato dal repository privato
+        shell: pwsh
+        env:
+          SISTEMA_GUIDATO_BUNDLE_TOKEN: ${{ secrets.SISTEMA_GUIDATO_BUNDLE_TOKEN }}
+          SISTEMA_GUIDATO_BUNDLE_REPOSITORY: ${{ vars.SISTEMA_GUIDATO_BUNDLE_REPOSITORY }}
+          SISTEMA_GUIDATO_BUNDLE_TAG: ${{ vars.SISTEMA_GUIDATO_BUNDLE_TAG }}
+          SISTEMA_GUIDATO_BUNDLE_ASSET: ${{ vars.SISTEMA_GUIDATO_BUNDLE_ASSET }}
+          SISTEMA_GUIDATO_BUNDLE_SHA256: ${{ vars.SISTEMA_GUIDATO_BUNDLE_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          pwsh -NoProfile -File scripts/prepare-sistema-guidato.ps1
+          npm run vendor:sistema:check
           npm run release:check
 
       - name: Verifica completa

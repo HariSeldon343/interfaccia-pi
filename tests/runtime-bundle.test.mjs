@@ -53,8 +53,14 @@ test("build desktop richiede il vendor verificato e Node 22.19 minimo", async ()
   ]);
   assert.equal(pacchetto.engines.node, ">=22.19.0");
   assert.equal(lock.packages[""].engines.node, ">=22.19.0");
-  assert.equal(pacchetto.scripts["build:desktop"], "npm run vendor:pi && tauri build");
-  assert.equal(pacchetto.scripts["build:desktop:offline"], "npm run vendor:pi:check && tauri build");
+  assert.equal(
+    pacchetto.scripts["build:desktop"],
+    "npm run vendor:pi && npm run vendor:sistema:prepare && tauri build",
+  );
+  assert.equal(
+    pacchetto.scripts["build:desktop:offline"],
+    "npm run vendor:pi:check && npm run vendor:sistema:check && tauri build",
+  );
   assert.match(launcher, /VERSIONE_NODE_MINIMA = \[22, 19, 0\]/);
   assert.match(launcher, /versioneNodeSupportata\(process\.versions\.node\)/);
 });
@@ -74,7 +80,10 @@ test("Tauri include runtime completo e il launcher release lo preferisce", async
   assert.equal(config.bundle.resources["../app/public/clipboard-core.js"], "app/public/clipboard-core.js");
   assert.equal(config.bundle.resources["../app/public/view-core.js"], "app/public/view-core.js");
   assert.equal(config.bundle.resources["../app/public/attachment-core.js"], "app/public/attachment-core.js");
-  assert.equal(config.bundle.resources["../app/extensions"], "app/extensions");
+  assert.equal(config.bundle.resources["../app/public/updater-core.js"], "app/public/updater-core.js");
+  assert.equal(config.bundle.resources["../app/sistema-guidato-manager.mjs"], "app/sistema-guidato-manager.mjs");
+  assert.equal(config.bundle.resources["../vendor/sistema-guidato"], "app/sistema-guidato");
+  assert.equal(config.bundle.resources["../app/extensions"], undefined);
   assert.equal(config.app.windows[0].dragDropEnabled, false,
     "WebView2 deve lasciare il drag/drop dei file alla pagina HTML");
   assert.equal(await esiste(join(RADICE, "licenses", "INTERFACCIA-PI-ISC.txt")), true);

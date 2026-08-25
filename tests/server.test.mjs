@@ -187,6 +187,126 @@ async function avviaPonteTest({
   return { home, ponte, base, stato, post, chiudi };
 }
 
+test("/sistema usa il proxy same-origin anche senza cartella e chiude il singleton con il bridge", async (t) => {
+  const inoltri = [];
+  let chiusure = 0;
+  const gestoreSistemaGuidato = {
+    async proxy(richiesta, risposta, percorso) {
+      inoltri.push({
+        percorso,
+        metodo: richiesta.method,
+        tokenGui: richiesta.headers["x-pi-gui-token"] ?? null,
+      });
+      richiesta.resume();
+      risposta.writeHead(200, {
+        "content-type": percorso.startsWith("/api/") ? "application/json" : "text/html; charset=utf-8",
+        "x-frame-options": "SAMEORIGIN",
+      });
+      risposta.end(percorso.startsWith("/api/") ? JSON.stringify({ ok: true }) : "<!doctype html><title>SG</title>");
+    },
+    async chiudi() {
+      if (chiusure === 0) chiusure += 1;
+    },
+    diagnostica: () => ({ stato: "ready", riavvii: 1 }),
+  };
+  const ambiente = await avviaPonteTest({ gestoreSistemaGuidato });
+  t.after(() => ambiente.chiudi().catch(() => {}));
+
+  const redirect = await fetch(ambiente.base + "/sistema?prova=1", { redirect: "manual" });
+  assert.equal(redirect.status, 308);
+  assert.equal(redirect.headers.get("location"), "/sistema/?prova=1");
+  assert.equal(inoltri.length, 0);
+
+  const pagina = await fetch(ambiente.base + "/sistema/");
+  assert.equal(pagina.status, 200);
+  assert.equal(pagina.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.match(await pagina.text(), /<title>SG<\/title>/u);
+  assert.deepEqual(inoltri[0], { percorso: "/", metodo: "GET", tokenGui: null });
+
+  const ostile = await fetch(ambiente.base + "/sistema/api/prova", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: "http://ostile.example" },
+    body: "{}",
+  });
+  assert.equal(ostile.status, 403);
+  assert.equal(inoltri.length, 1);
+
+  const consentita = await fetch(ambiente.base + "/sistema/api/prova?x=1", {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: ambiente.base },
+    body: "{}",
+  });
+  assert.equal(consentita.status, 200);
+  assert.deepEqual(await consentita.json(), { ok: true });
+  assert.deepEqual(inoltri[1], {
+    percorso: "/api/prova?x=1",
+    metodo: "POST",
+    tokenGui: null,
+  });
+
+  await ambiente.chiudi();
+  assert.equal(chiusure, 1);
+});
+
+test("la preparazione updater richiede il token launcher e non forza conversazioni aperte", async (t) => {
+  const launcherToken = "a".repeat(64);
+  const ambiente = await avviaPonteTest({ launcherToken });
+  t.after(() => ambiente.chiudi().catch(() => {}));
+
+  const senzaToken = await fetch(ambiente.base + "/api/prepara-aggiornamento", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(senzaToken.status, 403);
+
+  ambiente.ponte.sessioni.set("aperta", {});
+  const conSessione = await fetch(ambiente.base + "/api/prepara-aggiornamento", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-pi-gui-launcher-token": launcherToken,
+    },
+    body: "{}",
+  });
+  assert.equal(conSessione.status, 409);
+  assert.match((await conSessione.json()).errore, /Chiudi tutte le conversazioni/u);
+  assert.equal(ambiente.ponte.sessioni.size, 1);
+  ambiente.ponte.sessioni.delete("aperta");
+});
+
+test("il launcher proprietario arresta bridge e backend in modo ordinato prima dell'installer", async () => {
+  const launcherToken = "b".repeat(64);
+  let segnalaArresto;
+  const arrestato = new Promise((risolvi) => {
+    segnalaArresto = risolvi;
+  });
+  const ambiente = await avviaPonteTest({
+    launcherToken,
+    onAutoStop: segnalaArresto,
+    conservaHome: true,
+  });
+
+  const risposta = await fetch(ambiente.base + "/api/prepara-aggiornamento", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-pi-gui-launcher-token": launcherToken,
+    },
+    body: "{}",
+  });
+  assert.equal(risposta.status, 200);
+  assert.deepEqual(await risposta.json(), { ok: true, stato: "arresto-ordinato" });
+  await Promise.race([
+    arrestato,
+    attendi(2000).then(() => {
+      throw new Error("il bridge non si e arrestato");
+    }),
+  ]);
+  assert.equal(ambiente.ponte.server.listening, false);
+  await rm(ambiente.home, { recursive: true, force: true });
+});
+
 test("LettoreJsonl conserva UTF-8 spezzato fra due chunk", () => {
   const valori = [];
   const errori = [];
@@ -766,8 +886,10 @@ test("il catalogo builtin viene letto dalla build Pi verificata e unificato in o
   assert.equal(unificato.find((voce) => voce.name === "mia-estensione").dispatch.kind, "terminal");
   assert.equal(unificato.find((voce) => voce.name === "llama").availability.surface, "gui");
   assert.equal(unificato.find((voce) => voce.name === "llama").dispatch.kind, "prompt");
+  assert.equal(unificato.find((voce) => voce.name === "sistema").source, "builtin");
   assert.equal(unificato.find((voce) => voce.name === "sistema").availability.surface, "gui");
-  assert.equal(unificato.find((voce) => voce.name === "sistema").dispatch.kind, "prompt");
+  assert.equal(unificato.find((voce) => voce.name === "sistema").dispatch.kind, "workflow");
+  assert.equal(unificato.filter((voce) => voce.name === "sistema").length, 1);
 });
 
 test("il changelog appartiene al Pi pinato, ha un limite ed esige UTF-8 valido", async (t) => {
@@ -877,10 +999,17 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
     mode: "rpc",
     command: { type: "prompt", message: "/llama stato" },
   });
-  assert.deepEqual(preparaInvocazioneCapacita(voce("sistema"), "stato"), {
-    mode: "rpc",
-    command: { type: "prompt", message: "/sistema stato" },
+  assert.equal(catalogo.filter((comando) => comando.name === "sistema").length, 1);
+  assert.equal(voce("sistema").source, "builtin");
+  assert.deepEqual(preparaInvocazioneCapacita(voce("sistema")), {
+    mode: "workflow",
+    action: "sistema-guidato-panel",
+    command: "sistema",
   });
+  assert.throws(
+    () => preparaInvocazioneCapacita(voce("sistema"), "stato"),
+    /non accetta argomenti/i,
+  );
   assert.deepEqual(preparaInvocazioneCapacita(voce("model"), "gemma"), {
     mode: "workflow",
     action: "model-picker",
@@ -2005,8 +2134,10 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(server, /"--no-extensions"/);
   assert.match(server, /<pi_gui_files_v1>[\s\S]*percorsi assoluti/);
   assert.match(server, /VERSIONE_PI_VERIFICATA = "0\.84\.2"/);
-  assert.match(server, /estensioniBuiltinConsentite: new Set\(\["llama", "sistema"\]\)/);
-  assert.match(server, /"extensions", "sistema-guidato", "index\.ts"/);
+  assert.match(server, /estensioniBuiltinConsentite: new Set\(\["llama"\]\)/);
+  assert.match(server, /creaGestoreSistemaGuidato/);
+  assert.match(server, /action: "sistema-guidato-panel"/);
+  assert.doesNotMatch(server, /"extensions", "sistema-guidato", "index\.ts"/);
   assert.match(server, /verificaPromptEstensione\(comando\)/);
   assert.match(server, /join\(config, "terminali", randomUUID\(\)\)/);
   assert.match(server, /PI_CODING_AGENT_SESSION_DIR:\s*directorySessioni/);

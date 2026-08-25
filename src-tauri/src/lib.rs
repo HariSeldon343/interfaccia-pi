@@ -13,6 +13,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::Manager;
+use uuid::Uuid;
+
+mod app_updates;
 
 const PORTA: u16 = 4666;
 const INDIRIZZO: &str = "127.0.0.1:4666";
@@ -35,7 +38,12 @@ fn annota(messaggio: &str) {
 
 /// Conserva l'handle mentre l'app e aperta. Il drop di Child non termina il
 /// processo: il bridge gestisce autonomamente l'arresto quando non ha client.
-struct Ponte(Mutex<Option<Child>>);
+struct ProcessoPonte {
+    child: Child,
+    launcher_token: String,
+}
+
+struct Ponte(Mutex<Option<ProcessoPonte>>);
 
 /// Runtime autocontenuto dell'installer. PI resta fuori da `node_modules` a
 /// livello dell'entrypoint: il suo comando `update --self` non puo scambiare
@@ -231,7 +239,11 @@ fn percorso_semplice(percorso: &Path) -> PathBuf {
 }
 
 /// Avvia il ponte come processo figlio, senza finestra nera a video.
-fn avvia_ponte(percorso: &PathBuf, runtime: &RuntimePi) -> std::io::Result<Child> {
+fn avvia_ponte(
+    percorso: &PathBuf,
+    runtime: &RuntimePi,
+    launcher_token: &str,
+) -> std::io::Result<Child> {
     let pulito = percorso_semplice(percorso);
     let node = percorso_semplice(&runtime.node);
     let cli = percorso_semplice(&runtime.cli);
@@ -250,6 +262,7 @@ fn avvia_ponte(percorso: &PathBuf, runtime: &RuntimePi) -> std::io::Result<Child
     comando.env("PI_GUI_NODE", &node);
     comando.env("PI_GUI_PI_CLI", &cli);
     comando.env("PI_GUI_RUNTIME_BUNDLED", "1");
+    comando.env("PI_GUI_LAUNCHER_TOKEN", launcher_token);
 
     // PI completo usa npm per installare i pacchetti nella cartella utente.
     // Preponiamo quindi la directory Node ufficiale inclusa, senza eliminare
@@ -359,6 +372,139 @@ fn trova_node_sviluppo() -> Option<PathBuf> {
     None
 }
 
+fn esito_preparazione_aggiornamento(risposta: &[u8]) -> Option<Result<(), String>> {
+    let testo = std::str::from_utf8(risposta).ok()?;
+    let (intestazioni, corpo) = testo.split_once("\r\n\r\n")?;
+    let stato = intestazioni.lines().next().unwrap_or_default();
+    let dati: serde_json::Value = serde_json::from_str(corpo).ok()?;
+    if stato.starts_with("HTTP/1.1 200 ") || stato.starts_with("HTTP/1.0 200 ") {
+        return Some(
+            if dati.get("ok").and_then(|valore| valore.as_bool()) == Some(true) {
+                Ok(())
+            } else {
+                Err("Il bridge non ha confermato la preparazione dell'aggiornamento.".to_string())
+            },
+        );
+    }
+    Some(Err(dati
+        .get("errore")
+        .and_then(|valore| valore.as_str())
+        .unwrap_or("Il bridge ha rifiutato la preparazione dell'aggiornamento.")
+        .to_string()))
+}
+
+fn richiedi_preparazione_aggiornamento(token: &str) -> Result<(), String> {
+    let mut stream = TcpStream::connect_timeout(
+        &INDIRIZZO.parse().expect("indirizzo locale valido"),
+        Duration::from_secs(1),
+    )
+    .map_err(|_| "Il bridge locale non e raggiungibile.".to_string())?;
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    stream
+        .write_all(
+            format!(
+                "POST /api/prepara-aggiornamento HTTP/1.1\r\nHost: localhost:{}\r\nX-Pi-Gui-Launcher-Token: {}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}",
+                PORTA, token
+            )
+            .as_bytes(),
+        )
+        .map_err(|_| "Non riesco a contattare il bridge per preparare l'aggiornamento.".to_string())?;
+
+    let scadenza = Instant::now() + Duration::from_secs(5);
+    let mut risposta = Vec::with_capacity(2048);
+    let mut pezzo = [0_u8; 1024];
+    loop {
+        if let Some(esito) = esito_preparazione_aggiornamento(&risposta) {
+            return esito;
+        }
+        let ora = Instant::now();
+        if ora >= scadenza {
+            return Err("Il bridge non ha completato in tempo la preparazione.".to_string());
+        }
+        let attesa = scadenza
+            .saturating_duration_since(ora)
+            .min(Duration::from_millis(150));
+        let _ = stream.set_read_timeout(Some(attesa));
+        match stream.read(&mut pezzo) {
+            Ok(0) => {
+                return esito_preparazione_aggiornamento(&risposta).unwrap_or_else(|| {
+                    Err(
+                        "Risposta incompleta durante la preparazione dell'aggiornamento."
+                            .to_string(),
+                    )
+                });
+            }
+            Ok(letti) => {
+                if risposta.len() + letti > 16 * 1024 {
+                    return Err("Risposta del bridge troppo grande.".to_string());
+                }
+                risposta.extend_from_slice(&pezzo[..letti]);
+            }
+            Err(errore)
+                if errore.kind() == ErrorKind::WouldBlock
+                    || errore.kind() == ErrorKind::TimedOut => {}
+            Err(_) => {
+                return Err(
+                    "Connessione persa durante la preparazione dell'aggiornamento.".to_string(),
+                );
+            }
+        }
+    }
+}
+
+/// L'installer puo partire soltanto dal processo Tauri che possiede il bridge.
+/// Il token non viene esposto alla WebView e il bridge rifiuta l'arresto se
+/// esistono conversazioni, terminali o altre finestre ancora attive.
+fn prepara_ponte_per_aggiornamento(app: &tauri::AppHandle) -> Result<(), String> {
+    let stato = app.state::<Ponte>();
+    let mut guardia = stato.0.lock().expect("stato del ponte");
+    let token = guardia.as_ref().ok_or_else(|| {
+        "Questa finestra non possiede il bridge condiviso. Chiudi le altre finestre, riapri l'app e riprova."
+            .to_string()
+    })?.launcher_token.clone();
+    let gia_terminato = guardia
+        .as_mut()
+        .expect("ponte verificato")
+        .child
+        .try_wait()
+        .map_err(|_| "Non riesco a verificare il processo del bridge.".to_string())?
+        .is_some();
+    if gia_terminato {
+        guardia.take();
+        return Err(
+            "Il bridge locale si e gia arrestato; riapri l'app prima di installare.".to_string(),
+        );
+    }
+
+    richiedi_preparazione_aggiornamento(&token)?;
+    let scadenza = Instant::now() + Duration::from_secs(8);
+    loop {
+        match guardia
+            .as_mut()
+            .expect("ponte presente durante l'arresto")
+            .child
+            .try_wait()
+        {
+            Ok(Some(_)) => {
+                guardia.take();
+                return Ok(());
+            }
+            Ok(None) if Instant::now() < scadenza => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                return Err(
+                    "Il bridge non si e arrestato in modo ordinato; l'installazione non parte."
+                        .to_string(),
+                );
+            }
+            Err(_) => {
+                return Err("Non riesco ad attendere l'arresto ordinato del bridge.".to_string());
+            }
+        }
+    }
+}
+
 /// Messaggio d'errore mostrato quando manca qualcosa sul computer.
 fn pagina_errore(titolo: &str, dettaglio: &str) -> String {
     format!(
@@ -379,7 +525,20 @@ fn pagina_errore(titolo: &str, dettaglio: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(Ponte(Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![
+            app_updates::updater_status,
+            app_updates::updater_check,
+            app_updates::updater_download,
+            app_updates::updater_install,
+        ])
         .setup(|app| {
+            let updater_attivo = app_updates::configurazione_production_valida(app)?;
+            if updater_attivo {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
+            app.manage(app_updates::UpdaterControl::new(updater_attivo));
+
             let gestore = app.handle().clone();
             let finestra = app.get_webview_window("main").expect("finestra principale");
 
@@ -443,6 +602,7 @@ pub fn run() {
             let mut prossimo_avvio = Instant::now();
             let mut pronto = gia_attivo;
             let mut ponte_legacy_bloccante = false;
+            let launcher_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
             while !pronto && Instant::now() < scadenza {
                 if ponte_attivo() {
                     pronto = true;
@@ -479,7 +639,7 @@ pub fn run() {
                     match percorso
                         .as_ref()
                         .zip(runtime.as_ref())
-                        .map(|(ponte, runtime)| avvia_ponte(ponte, runtime))
+                        .map(|(ponte, runtime)| avvia_ponte(ponte, runtime, &launcher_token))
                     {
                         Some(Ok(figlio)) => {
                             annota(&format!("ponte avviato, pid {}", figlio.id()));
@@ -542,7 +702,10 @@ pub fn run() {
                     }
                 ));
             } else if let Some(figlio) = nostro {
-                *app.state::<Ponte>().0.lock().expect("stato del ponte") = Some(figlio);
+                *app.state::<Ponte>().0.lock().expect("stato del ponte") = Some(ProcessoPonte {
+                    child: figlio,
+                    launcher_token,
+                });
             }
 
             annota(&format!("ponte pronto: {}", pronto));

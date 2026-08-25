@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/remote-schema.json",
+  "identifier": "updater-ui",
+  "description": "Espone alla sola GUI locale i quattro comandi controllati dell'updater",
+  "local": false,
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://localhost:4666",
+      "http://127.0.0.1:4666"
+    ]
+  },
+  "platforms": ["windows"],
+  "permissions": [
+    "allow-updater-status",
+    "allow-updater-check",
+    "allow-updater-download",
+    "allow-updater-install"
+  ]
+}

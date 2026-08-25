@@ -24,8 +24,9 @@ import { constants as costantiFs, existsSync } from "node:fs";
 import { join, dirname, resolve, basename, extname, isAbsolute, parse, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
+import { creaGestoreSistemaGuidato } from "./sistema-guidato-manager.mjs";
 
 const FILE_CORRENTE = fileURLToPath(import.meta.url);
 const QUI = dirname(FILE_CORRENTE);
@@ -147,7 +148,6 @@ export function argomentiAvvioPi({
   approvaProgetto = false,
   senzaCartella = false,
   estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
-  estensioneSistemaGuidato = join(QUI, "extensions", "sistema-guidato", "index.ts"),
 } = {}) {
   const argomenti = [cliPi, "--mode", "rpc", "--no-extensions"];
   if (senzaCartella) {
@@ -162,7 +162,6 @@ export function argomentiAvvioPi({
       : PROMPT_INTERFACCIA_GRAFICA,
   );
   if (senzaCartella) argomenti.push("--extension", estensioneSenzaCartella);
-  else argomenti.push("--extension", estensioneSistemaGuidato);
   if (provider) argomenti.push("--provider", provider);
   if (modello) argomenti.push("--model", modello);
   if (ragionamento) argomenti.push("--thinking", ragionamento);
@@ -195,7 +194,7 @@ const ENDPOINT_PROVIDER_LOCALI = new Map([
   ["llama.cpp", "http://127.0.0.1:8080/v1"],
 ]);
 const METODI_ESTENSIONE_INTERATTIVI = new Set(["select", "confirm", "input", "editor"]);
-const ESTENSIONI_SOLO_CON_CARTELLA = new Set(["sistema"]);
+const ESTENSIONI_SOLO_CON_CARTELLA = new Set();
 const COMANDI_CAMBIO_SESSIONE = new Set([
   "new_session",
   "switch_session",
@@ -1621,6 +1620,7 @@ export function validaCatalogoDinamicoPi(comandi) {
 }
 
 const WORKFLOW_BUILTIN = new Map([
+  ["sistema", { action: "sistema-guidato-panel" }],
   ["settings", { action: "settings" }],
   ["model", { action: "model-picker", rpcType: "set_model" }],
   ["scoped-models", { action: "scoped-models-picker", rpcType: "set_scoped_models" }],
@@ -1651,7 +1651,7 @@ const RPC_BUILTIN = new Map([
 // Pi 0.84.2 carica /llama come estensione inline anche con --no-extensions.
 // Il suo dialogo usa soltanto le primitive RPC select/confirm/input gia
 // implementate dalla GUI e non puo cambiare file di sessione.
-const ESTENSIONI_INTEGRATE_GUI = new Set(["llama", "sistema"]);
+const ESTENSIONI_INTEGRATE_GUI = new Set(["llama"]);
 
 function capacitaBuiltin(comando) {
   const workflow = WORKFLOW_BUILTIN.get(comando.name);
@@ -1696,7 +1696,16 @@ function capacitaDinamica(comando) {
 }
 
 export function unificaCatalogoCapacita(builtin, dinamici) {
-  const comandiBuiltin = validaCatalogoBuiltinPi(builtin).map(capacitaBuiltin);
+  const builtinVerificati = validaCatalogoBuiltinPi(builtin);
+  // /sistema appartiene all'host GUI, non a una sessione Pi: resta disponibile
+  // anche senza cartella e riserva il nome contro estensioni legacy omonime.
+  if (!builtinVerificati.some((comando) => comando.name === "sistema")) {
+    builtinVerificati.push({
+      name: "sistema",
+      description: "Apri il percorso guidato ISO 9001/HLS",
+    });
+  }
+  const comandiBuiltin = builtinVerificati.map(capacitaBuiltin);
   const catalogoDinamico = validaCatalogoDinamicoPi(dinamici);
   if (!catalogoDinamico) throw new Error("Il catalogo dinamico di Pi non e verificabile");
   const riservati = new Set(comandiBuiltin.map((comando) => comando.name));
@@ -2983,7 +2992,7 @@ async function elencaDiscendentiWindows(pidRadice) {
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
 $radice = [int]$env:PI_GUI_TREE_ROOT
-$tutti = @(Get-CimInstance Win32_Process)
+$tutti = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate)
 $noti = New-Object 'System.Collections.Generic.HashSet[int]'
 [void]$noti.Add($radice)
 do {
@@ -3021,6 +3030,7 @@ async function terminaDiscendentiWindows(processi, taskkillWindows) {
   const sicuri = processi.filter(
     (voce) => Number.isInteger(voce.pid) && voce.pid > 0 && voce.pid !== process.pid && voce.creatoIl,
   );
+  if (sicuri.length === 0) return true;
   const codificati = Buffer.from(JSON.stringify(sicuri), "utf8").toString("base64");
   const script = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -3029,27 +3039,36 @@ $record = @(ConvertFrom-Json -InputObject $json)
 if ($record.Count -eq 1 -and $record[0] -is [System.Array]) {
   $record = @($record[0] | ForEach-Object { $_ })
 }
-function Corrisponde($voce) {
-  $processo = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$voce.pid) -ErrorAction SilentlyContinue
-  if (-not $processo) { return $false }
-  return [string]$processo.CreationDate.ToUniversalTime().Ticks -eq [string]$voce.creatoIl
-}
-foreach ($voce in $record) {
-  if (Corrisponde $voce) {
-    & $env:PI_GUI_TASKKILL /pid ([string][int]$voce.pid) /t /f *> $null
+function Correnti {
+  if ($record.Count -eq 0) { return @() }
+  $attesi = @{}
+  $filtri = @()
+  foreach ($voce in $record) {
+    $pidCorrente = [int]$voce.pid
+    $attesi[$pidCorrente] = [string]$voce.creatoIl
+    $filtri += ('ProcessId=' + $pidCorrente)
   }
+  $query = $filtri -join ' OR '
+  return @(Get-CimInstance Win32_Process -Filter $query -Property ProcessId,CreationDate | Where-Object {
+    $pidCorrente = [int]$_.ProcessId
+    $attesi.ContainsKey($pidCorrente) -and
+      [string]$_.CreationDate.ToUniversalTime().Ticks -eq [string]$attesi[$pidCorrente]
+  })
+}
+foreach ($processo in @(Correnti)) {
+  & $env:PI_GUI_TASKKILL /pid ([string][int]$processo.ProcessId) /t /f *> $null
 }
 $vuotiConsecutivi = 0
 $scadenza = [DateTime]::UtcNow.AddSeconds(3)
 do {
-  $rimasti = @($record | Where-Object { Corrisponde $_ })
+  $rimasti = @(Correnti)
   if ($rimasti.Count -eq 0) {
     $vuotiConsecutivi++
     if ($vuotiConsecutivi -ge 2) { break }
   } else {
     $vuotiConsecutivi = 0
-    foreach ($voce in $rimasti) {
-      & $env:PI_GUI_TASKKILL /pid ([string][int]$voce.pid) /t /f *> $null
+    foreach ($processo in $rimasti) {
+      & $env:PI_GUI_TASKKILL /pid ([string][int]$processo.ProcessId) /t /f *> $null
     }
   }
   Start-Sleep -Milliseconds 250
@@ -3059,7 +3078,7 @@ do {
   const esito = await eseguiPowerShellJson(
     script,
     { PI_GUI_TREE_RECORDS: codificati, PI_GUI_TASKKILL: taskkillWindows },
-    5000,
+    8000,
   );
   return esito?.ok === true;
 }
@@ -5040,7 +5059,7 @@ function intestazioniStatiche(tipo) {
     "referrer-policy": "no-referrer",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
     "content-security-policy":
-      "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self'",
+      "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
   };
 }
 
@@ -5170,6 +5189,8 @@ export function creaPonte({
   rimuoviBackupConfigurazione = rm,
   scadenzaRebindModelloMs = 30_000,
   timeoutRicaricaCatalogoModelliMs = 25_000,
+  gestoreSistemaGuidato = null,
+  launcherToken = null,
 } = {}) {
   const radiceSenzaCartellaRisolta = resolve(radiceSenzaCartella);
   const config = join(home, ".pi", "gui");
@@ -5183,6 +5204,13 @@ export function creaPonte({
   const operazioniRecenti = new Map();
   const operazioniPerRpc = new Map();
   const tokenApi = randomUUID();
+  const tokenLauncher = /^[a-f0-9]{64}$/u.test(String(launcherToken || ""))
+    ? String(launcherToken)
+    : null;
+  const sistemaGuidato = gestoreSistemaGuidato || creaGestoreSistemaGuidato({
+    guiDirectory: QUI,
+    piCliPath: cliPi,
+  });
   const cacheProviderLocali = new Map();
   let ultimaSessioneId = null;
   let codaMutazioni = Promise.resolve();
@@ -6781,6 +6809,15 @@ $processo.WaitForExit()
 
   const eseguiAperturaTerminale = apriTerminale || apriPiNelTerminale;
 
+  function launcherAutorizzato(richiesta) {
+    const ricevuto = richiesta.headers["x-pi-gui-launcher-token"];
+    if (!tokenLauncher || typeof ricevuto !== "string") return false;
+    const attesoBuffer = Buffer.from(tokenLauncher, "utf8");
+    const ricevutoBuffer = Buffer.from(ricevuto, "utf8");
+    return ricevutoBuffer.length === attesoBuffer.length
+      && timingSafeEqual(ricevutoBuffer, attesoBuffer);
+  }
+
   function postAutorizzato(richiesta) {
     const tipo = String(richiesta.headers["content-type"] || "").toLowerCase();
     const essenza = tipo.split(";", 1)[0].trim();
@@ -6802,6 +6839,24 @@ $processo.WaitForExit()
       }
     }
     return null;
+  }
+
+  function origineSistemaGuidatoAutorizzata(richiesta) {
+    const origine = richiesta.headers.origin;
+    const host = richiesta.headers.host;
+    if (typeof origine !== "string" || !origine || typeof host !== "string" || !host) return false;
+    try {
+      const urlOrigine = new URL(origine);
+      return urlOrigine.protocol === "http:"
+        && urlOrigine.host.toLowerCase() === host.toLowerCase()
+        && urlOrigine.pathname === "/"
+        && !urlOrigine.search
+        && !urlOrigine.hash
+        && !urlOrigine.username
+        && !urlOrigine.password;
+    } catch {
+      return false;
+    }
   }
 
   async function gestisci(richiesta, risposta) {
@@ -6864,6 +6919,132 @@ $processo.WaitForExit()
           { errore: "Host locale non autorizzato" },
           403,
         );
+      }
+
+      if (via === "/api/prepara-aggiornamento") {
+        if (metodo !== "POST") {
+          risposta.setHeader("allow", "POST");
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: "Metodo GET non consentito" },
+            405,
+          );
+        }
+        if (!launcherAutorizzato(richiesta)) {
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: "Launcher Tauri non autorizzato" },
+            403,
+          );
+        }
+        await leggiCorpo(richiesta);
+        if (chiusuraDefinitiva) {
+          return json(risposta, { errore: "Il bridge si sta gia chiudendo" }, 409);
+        }
+        if (sessioni.size > 0) {
+          return json(
+            risposta,
+            {
+              errore: "Chiudi tutte le conversazioni di Pi prima di installare l'aggiornamento.",
+            },
+            409,
+          );
+        }
+        if (terminali.size > 0) {
+          return json(
+            risposta,
+            {
+              errore: "Chiudi le sessioni aperte nel terminale prima di installare l'aggiornamento.",
+            },
+            409,
+          );
+        }
+        if (ascoltatori.size > 1) {
+          return json(
+            risposta,
+            {
+              errore: "Chiudi le altre finestre di Interfaccia pi prima di installare l'aggiornamento.",
+            },
+            409,
+          );
+        }
+        if (preparazioniFileAllegatiAttive.size > 0) {
+          return json(
+            risposta,
+            { errore: "Attendi il completamento degli allegati prima di aggiornare." },
+            409,
+          );
+        }
+        try {
+          await chiudiTutto({ definitiva: true, ripristinaSuErrore: true });
+        } catch (errore) {
+          return json(
+            risposta,
+            { errore: `Preparazione dell'aggiornamento annullata: ${String(errore?.message || errore)}` },
+            409,
+          );
+        }
+        const esito = json(risposta, { ok: true, stato: "arresto-ordinato" });
+        setTimeout(() => {
+          server.close(() => onAutoStop?.());
+        }, 25);
+        return esito;
+      }
+
+      if (via === "/sistema" || via.startsWith("/sistema/")) {
+        const metodiConsentiti = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
+        if (!metodiConsentiti.has(metodo)) {
+          risposta.setHeader("allow", [...metodiConsentiti].join(", "));
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: `Metodo ${metodo} non consentito` },
+            405,
+          );
+        }
+        if (via === "/sistema") {
+          risposta.writeHead(308, {
+            location: `/sistema/${url.search}`,
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+          });
+          return risposta.end();
+        }
+        if (chiusuraDefinitiva) {
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: "Il ponte si sta chiudendo" },
+            503,
+          );
+        }
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(metodo)
+          && !origineSistemaGuidatoAutorizzata(richiesta)) {
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: "Origine Sistema Guidato non autorizzata" },
+            403,
+          );
+        }
+        const percorsoBackend = `${via.slice("/sistema".length) || "/"}${url.search}`;
+        try {
+          await sistemaGuidato.proxy(richiesta, risposta, percorsoBackend);
+        } catch {
+          if (risposta.headersSent) {
+            if (!risposta.destroyed) risposta.destroy();
+            return;
+          }
+          return rifiutaPrimaDelCorpo(
+            richiesta,
+            risposta,
+            { errore: "Sistema Guidato non disponibile. Ricarica il pannello per riprovare." },
+            503,
+          );
+        }
+        return;
       }
 
       const metodoAtteso = vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
@@ -8949,6 +9130,7 @@ $processo.WaitForExit()
       ascoltatori.clear();
       await Promise.all([...sessioni.values()].map((sessione) => sessione.ferma({ notifica: false })));
       sessioni.clear();
+      await sistemaGuidato.chiudi();
       preparazioniFileAllegatiAttive.clear();
       ultimaSessioneId = null;
     } catch (errore) {
@@ -8978,6 +9160,7 @@ $processo.WaitForExit()
     tokenApi,
     programmaAutoStop,
     emetti,
+    sistemaGuidato,
     pulisciFileAllegatiPendentiOrfani,
     numeroAscoltatori: () => ascoltatori.size,
   };
@@ -9010,11 +9193,16 @@ if (eseguitoDirettamente) {
     if (migrazione.chiuso) console.log("  Vecchio ponte 1.x chiuso in sicurezza.");
   }
   const autoStopMs = durataAutoStopConfigurata(process.env.PI_GUI_AUTO_STOP_MS);
+  // Il segreto serve soltanto al confine Tauri -> bridge. Dopo averlo catturato
+  // lo togliamo dall'ambiente affinche Pi, tool e backend figli non lo ereditino.
+  const launcherToken = process.env.PI_GUI_LAUNCHER_TOKEN;
+  delete process.env.PI_GUI_LAUNCHER_TOKEN;
   const ponte = creaPonte({
     cliPi: cliPiDiretto,
     autoStopMs,
     onAutoStop: () => process.exit(0),
-    estensioniBuiltinConsentite: new Set(["llama", "sistema"]),
+    estensioniBuiltinConsentite: new Set(["llama"]),
+    launcherToken,
   });
   ponte.server.listen(PORTA, "127.0.0.1", () => {
     console.log("");

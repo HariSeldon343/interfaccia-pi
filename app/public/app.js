@@ -32,6 +32,8 @@ const VISTA_CORE = globalThis.PiGuiViewCore;
 if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
 const ATTACHMENT_CORE = globalThis.PiGuiAttachmentCore;
 if (!ATTACHMENT_CORE) throw new Error("Il modulo degli allegati non e stato caricato");
+const UPDATER_CORE = globalThis.PI_GUI_UPDATER;
+if (!UPDATER_CORE) throw new Error("Il modulo degli aggiornamenti non e stato caricato");
 const {
   MASSIMO_FILE,
   allegatoFile,
@@ -88,6 +90,13 @@ const DOM = {
   btnAlbero: $("#btn-albero"),
   btnControlli: $("#btn-controlli"),
   btnFermaTop: $("#btn-ferma-top"),
+  btnSistemaGuidato: $("#btn-sistema-guidato"),
+  pannelloSistemaGuidato: $("#pannello-sistema-guidato"),
+  statoSistemaGuidato: $("#stato-sistema-guidato"),
+  attesaSistemaGuidato: $("#attesa-sistema-guidato"),
+  frameSistemaGuidato: $("#frame-sistema-guidato"),
+  btnRicaricaSistemaGuidato: $("#btn-ricarica-sistema-guidato"),
+  btnChiudiSistemaGuidato: $("#btn-chiudi-sistema-guidato"),
   statiEstensioni: $("#stati-estensioni"),
   widgetSopra: $("#widget-sopra"),
   widgetSotto: $("#widget-sotto"),
@@ -99,6 +108,112 @@ const DOM = {
   modaleChiudi: $("#modale-chiudi"),
   toastArea: $("#toast-area"),
 };
+
+const PANNELLO_SISTEMA_GUIDATO = {
+  generazione: 0,
+  controller: null,
+  focusPrecedente: null,
+};
+
+function sfondoSistemaGuidatoInerte(inerte) {
+  for (const elemento of [document.querySelector(".barra"), document.querySelector(".corpo")]) {
+    if (elemento) elemento.inert = inerte;
+  }
+}
+
+function statoAttesaSistemaGuidato(titolo, dettaglio, { errore = false } = {}) {
+  const titoloNodo = DOM.attesaSistemaGuidato.querySelector("strong");
+  const dettaglioNodo = DOM.attesaSistemaGuidato.querySelector("small");
+  if (titoloNodo) titoloNodo.textContent = titolo;
+  if (dettaglioNodo) dettaglioNodo.textContent = dettaglio;
+  DOM.attesaSistemaGuidato.classList.toggle("errore", errore);
+  DOM.attesaSistemaGuidato.hidden = false;
+  DOM.frameSistemaGuidato.hidden = true;
+  DOM.statoSistemaGuidato.textContent = errore ? "Servizio non disponibile" : titolo;
+}
+
+function nonceSistemaGuidato() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(18));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function caricaPannelloSistemaGuidato() {
+  const generazione = ++PANNELLO_SISTEMA_GUIDATO.generazione;
+  PANNELLO_SISTEMA_GUIDATO.controller?.abort();
+  const controller = new AbortController();
+  PANNELLO_SISTEMA_GUIDATO.controller = controller;
+  DOM.frameSistemaGuidato.src = "about:blank";
+  statoAttesaSistemaGuidato(
+    "Avvio del percorso guidato…",
+    "Il servizio locale viene avviato soltanto quando serve.",
+  );
+  const nonce = nonceSistemaGuidato();
+  try {
+    const risposta = await fetch("/sistema/api/health", {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "X-SG-Nonce": nonce },
+      signal: controller.signal,
+    });
+    if (!risposta.ok || risposta.headers.get("X-SG-Nonce") !== nonce) {
+      throw new Error("Il servizio locale non ha confermato la propria identita");
+    }
+    const salute = await risposta.json();
+    if (salute?.service !== "sistema-guidato" || salute?.status !== "ok") {
+      throw new Error("Risposta inattesa dal servizio locale");
+    }
+    if (generazione !== PANNELLO_SISTEMA_GUIDATO.generazione
+      || DOM.pannelloSistemaGuidato.hidden) return;
+    DOM.frameSistemaGuidato.src = "/sistema/";
+    DOM.frameSistemaGuidato.hidden = false;
+    DOM.attesaSistemaGuidato.hidden = true;
+    DOM.statoSistemaGuidato.textContent = salute.pi?.available
+      ? "Pronto · runtime Pi disponibile"
+      : "Pronto · modalita locale";
+    requestAnimationFrame(() => DOM.frameSistemaGuidato.focus());
+  } catch (errore) {
+    if (controller.signal.aborted || generazione !== PANNELLO_SISTEMA_GUIDATO.generazione) return;
+    statoAttesaSistemaGuidato(
+      "Sistema Guidato non si e avviato",
+      "Premi Ricarica per riprovare. Il progetto locale non viene cancellato.",
+      { errore: true },
+    );
+    throw errore;
+  }
+}
+
+async function apriPannelloSistemaGuidato() {
+  if (DOM.pannelloSistemaGuidato.hidden) {
+    PANNELLO_SISTEMA_GUIDATO.focusPrecedente = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    DOM.pannelloSistemaGuidato.hidden = false;
+    document.body.classList.add("pannello-sistema-guidato-aperto");
+    sfondoSistemaGuidatoInerte(true);
+    requestAnimationFrame(() => DOM.btnChiudiSistemaGuidato.focus());
+  } else if (!DOM.frameSistemaGuidato.hidden && DOM.frameSistemaGuidato.src !== "about:blank") {
+    DOM.btnChiudiSistemaGuidato.focus();
+    return;
+  }
+  await caricaPannelloSistemaGuidato();
+}
+
+function chiudiPannelloSistemaGuidato() {
+  if (DOM.pannelloSistemaGuidato.hidden) return;
+  PANNELLO_SISTEMA_GUIDATO.generazione += 1;
+  PANNELLO_SISTEMA_GUIDATO.controller?.abort();
+  PANNELLO_SISTEMA_GUIDATO.controller = null;
+  DOM.frameSistemaGuidato.src = "about:blank";
+  DOM.frameSistemaGuidato.hidden = true;
+  DOM.pannelloSistemaGuidato.hidden = true;
+  document.body.classList.remove("pannello-sistema-guidato-aperto");
+  sfondoSistemaGuidatoInerte(false);
+  const precedente = PANNELLO_SISTEMA_GUIDATO.focusPrecedente;
+  PANNELLO_SISTEMA_GUIDATO.focusPrecedente = null;
+  precedente?.focus?.();
+}
 
 const CHIAVE_BOZZE = "pi-gui-bozze-v1";
 const PREFISSO_BOZZA = CHIAVE_BOZZE + ":";
@@ -4572,7 +4687,7 @@ function abilitaAzioni(attiva) {
     const azione = bottone.dataset.azione;
     const nuovaConsentita = azione === "nuova" && !sessione?.compattazioneInCorso;
     const sempre = APP.bridgeOnline
-      && (nuovaConsentita || ["cartella", "conversazioni"].includes(azione));
+      && (nuovaConsentita || ["cartella", "conversazioni", "sistema", "aggiornamenti"].includes(azione));
     bottone.disabled = !attiva && !sempre;
   });
   document.querySelectorAll("#lista-esempi button").forEach((bottone) => {
@@ -5198,6 +5313,141 @@ function conferma(titolo, messaggio, etichetta = "Conferma") {
     };
     DOM.modalePiede.append(annulla, confermaBtn);
   });
+}
+
+function invocaTauri(comando, argomenti = {}) {
+  const invoca = globalThis.__TAURI__?.core?.invoke;
+  if (typeof invoca !== "function") {
+    throw new Error("Gli aggiornamenti integrati sono disponibili soltanto nell'app desktop.");
+  }
+  return invoca(comando, argomenti);
+}
+
+async function apriAggiornamenti() {
+  const contesto = { tipo: "aggiornamenti", timer: null };
+  const corpo = apriModale("Aggiornamenti di Interfaccia pi", {
+    larga: true,
+    contesto,
+    onCancel: () => {
+      if (contesto.timer) clearInterval(contesto.timer);
+    },
+  });
+  const stato = crea("p", "nota", "Leggo lo stato locale dell'app…");
+  stato.setAttribute("role", "status");
+  stato.setAttribute("aria-live", "polite");
+  const dettaglio = crea("p", "nota");
+  const erroreVisibile = crea("p", "avviso-inline");
+  erroreVisibile.setAttribute("role", "alert");
+  erroreVisibile.hidden = true;
+  const noteTitolo = crea("h4", null, "Note della versione");
+  const note = crea("div", "risultato-codice");
+  noteTitolo.hidden = true;
+  note.hidden = true;
+  corpo.append(stato, dettaglio, erroreVisibile, noteTitolo, note);
+
+  const controlla = bottoneAzione("Controlla ora", () => esegui("updater_check"));
+  const scarica = bottoneAzione("Scarica e verifica firma", () => esegui("updater_download"));
+  const installa = bottoneAzione("Installa aggiornamento", installaConConferma, "bottone primario");
+  const chiudi = bottoneAzione("Chiudi", () => chiudiModale());
+  DOM.modalePiede.hidden = false;
+  DOM.modalePiede.append(chiudi, controlla, scarica, installa);
+
+  let ultimaFotografia = null;
+  let operazioneInCorso = false;
+
+  function modaleAncoraAperta() {
+    return APP.modale?.contesto === contesto;
+  }
+
+  function presenta(fotografia) {
+    if (!modaleAncoraAperta()) return;
+    ultimaFotografia = fotografia;
+    const vista = UPDATER_CORE.presenta(fotografia);
+    stato.textContent = vista.status;
+    const conversazioniAperte = APP.sessioni.size;
+    dettaglio.textContent = vista.canInstall && conversazioniAperte > 0
+      ? `${vista.detail} Chiudi prima ${conversazioniAperte === 1 ? "la conversazione aperta" : `le ${conversazioniAperte} conversazioni aperte`}.`
+      : vista.detail;
+    erroreVisibile.textContent = vista.error || "";
+    erroreVisibile.hidden = !vista.error;
+    const noteDisponibili = typeof fotografia?.notes === "string" && fotografia.notes.trim();
+    noteTitolo.hidden = !noteDisponibili;
+    note.hidden = !noteDisponibili;
+    note.textContent = noteDisponibili ? fotografia.notes.trim() : "";
+    controlla.hidden = !vista.canCheck;
+    scarica.hidden = !vista.canDownload;
+    installa.hidden = !vista.canInstall;
+    controlla.disabled = operazioneInCorso || vista.busy;
+    scarica.disabled = operazioneInCorso || vista.busy;
+    installa.disabled = operazioneInCorso || vista.busy || conversazioniAperte > 0;
+    installa.title = conversazioniAperte > 0
+      ? "Chiudi tutte le conversazioni prima di installare"
+      : "Il bridge verifichera anche terminali e altre finestre prima di arrestarsi";
+  }
+
+  async function leggiStato({ ignoraErrori = false } = {}) {
+    try {
+      const fotografia = await invocaTauri("updater_status");
+      presenta(fotografia);
+      return fotografia;
+    } catch (errore) {
+      if (!ignoraErrori && modaleAncoraAperta()) {
+        presenta({
+          enabled: false,
+          phase: "unavailable",
+          currentVersion: ultimaFotografia?.currentVersion || "sconosciuta",
+          error: testoErrore(errore),
+        });
+      }
+      return null;
+    }
+  }
+
+  async function esegui(comando) {
+    if (operazioneInCorso || !modaleAncoraAperta()) return;
+    operazioneInCorso = true;
+    presenta(ultimaFotografia || { enabled: true, phase: "ready" });
+    if (comando === "updater_download") {
+      contesto.timer = setInterval(() => void leggiStato({ ignoraErrori: true }), 350);
+    }
+    try {
+      presenta(await invocaTauri(comando));
+    } catch (errore) {
+      const fotografia = await leggiStato({ ignoraErrori: true });
+      if (!fotografia && modaleAncoraAperta()) {
+        presenta({
+          ...(ultimaFotografia || {}),
+          error: testoErrore(errore),
+        });
+      }
+    } finally {
+      if (contesto.timer) clearInterval(contesto.timer);
+      contesto.timer = null;
+      operazioneInCorso = false;
+      if (modaleAncoraAperta() && ultimaFotografia) presenta(ultimaFotografia);
+    }
+  }
+
+  async function installaConConferma() {
+    if (operazioneInCorso || APP.sessioni.size > 0) return;
+    if (contesto.timer) clearInterval(contesto.timer);
+    contesto.timer = null;
+    const confermato = await conferma(
+      "Installare l'aggiornamento?",
+      "Il bridge controllera che non esistano conversazioni, terminali o altre finestre ancora attive. Solo dopo un arresto ordinato avviera l'installer; l'app verra chiusa.",
+      "Installa e chiudi l'app",
+    );
+    if (!confermato) return;
+    try {
+      await invocaTauri("updater_install");
+      toast("Installazione avviata. Riavvia l'app al termine.");
+    } catch (errore) {
+      toast(testoErrore(errore), "errore");
+      await apriAggiornamenti();
+    }
+  }
+
+  await leggiStato();
 }
 
 function chiediTesto(titolo, etichetta, valore = "", multilinea = false) {
@@ -6702,6 +6952,7 @@ function nomeComandoLeggibile(nome) {
 // Il catalogo e l'instradamento restano autorevoli nel ponte. Questa tabella
 // traduce soltanto il testo mostrato per i built-in che pi espone davvero.
 const TESTI_BUILTIN = Object.freeze({
+  sistema: ["Sistema guidato", "Progetta, documenta e verifica un sistema ISO 9001/HLS."],
   settings: ["Impostazioni", "Configura comportamento automatico, coda e altre preferenze di pi."],
   model: ["Modello", "Scegli il modello e il fornitore da usare."],
   "scoped-models": ["Modelli rapidi", "Configura i modelli disponibili nella selezione rapida."],
@@ -7974,7 +8225,15 @@ async function eseguiWorkflowComando(
 ) {
   if (APP.sessioni.get(sessione.id) !== sessione) return;
   const azione = String(azioneOriginale || "").trim().toLowerCase().replace(/_/g, "-");
-  if (["settings", "impostazioni"].includes(azione)) {
+  if (["sistema", "sistema-guidato-panel"].includes(azione)) {
+    try {
+      await apriPannelloSistemaGuidato();
+      operazione?.completa();
+    } catch (errore) {
+      operazione?.fallisce(errore);
+      toast(testoErrore(errore), "errore");
+    }
+  } else if (["settings", "impostazioni"].includes(azione)) {
     await apriImpostazioniPi(sessione, operazione);
   } else if (["advanced", "avanzate"].includes(azione)) {
     apriControlliAvanzati(sessione);
@@ -8829,6 +9088,15 @@ async function interrompi() {
 async function eseguiAzione(azione) {
   chiudiMenuLaterale();
   const sessione = sessioneAttiva();
+  if (azione === "aggiornamenti") return apriAggiornamenti();
+  if (azione === "sistema") {
+    try {
+      return await apriPannelloSistemaGuidato();
+    } catch (errore) {
+      toast(testoErrore(errore), "errore");
+      return;
+    }
+  }
   if (azione === "cartella") return apriSceltaCartella();
   if (azione === "conversazioni") return apriConversazioniSalvate();
   if (azione === "nuova" && !sessione) {
@@ -10126,6 +10394,12 @@ DOM.conversazione.addEventListener("scroll", () => {
   sessione.seguiFondo = distanza < 72;
 });
 document.addEventListener("keydown", (evento) => {
+  if (evento.key === "Escape" && !DOM.pannelloSistemaGuidato.hidden) {
+    evento.preventDefault();
+    evento.stopPropagation();
+    chiudiPannelloSistemaGuidato();
+    return;
+  }
   if (evento.key === "Escape" && DOM.velo.hidden) {
     if (APP.menuAzioniComposer.aperto) {
       evento.preventDefault();
@@ -10138,6 +10412,13 @@ document.addEventListener("keydown", (evento) => {
 });
 $("#btn-apri-cartella").onclick = () => apriSceltaCartella();
 $("#btn-nuova-chat").onclick = avviaNuovaSchedaNelContestoCorrente;
+DOM.btnSistemaGuidato.onclick = () => {
+  void apriPannelloSistemaGuidato().catch((errore) => toast(testoErrore(errore), "errore"));
+};
+DOM.btnRicaricaSistemaGuidato.onclick = () => {
+  void caricaPannelloSistemaGuidato().catch((errore) => toast(testoErrore(errore), "errore"));
+};
+DOM.btnChiudiSistemaGuidato.onclick = chiudiPannelloSistemaGuidato;
 DOM.btnModello.onclick = () => apriSceltaModello();
 DOM.btnRagionamento.onclick = apriSceltaRagionamento;
 DOM.btnControlli.onclick = apriControlliAvanzati;

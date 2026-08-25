@@ -28,7 +28,6 @@ test("il guard richiede percorsi assoluti espliciti per i tool file", () => {
 
 test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   const estensione = join(QUI, "..", "no-workspace-guard.mjs");
-  const estensioneSistema = join(QUI, "..", "extensions", "sistema-guidato", "index.ts");
   const senza = argomentiAvvioPi({
     cliPi: FAKE_PI,
     senzaCartella: true,
@@ -59,10 +58,7 @@ test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   assert.match(promptCartella, /GUI desktop Windows/);
   assert.match(promptCartella, /\[etichetta descrittiva\]\(target\)/);
   assert.doesNotMatch(promptCartella, /Nessuna cartella di lavoro/);
-  assert.deepEqual(
-    cartella.slice(cartella.indexOf("--extension"), cartella.indexOf("--extension") + 2),
-    ["--extension", estensioneSistema],
-  );
+  assert.equal(cartella.includes("--extension"), false);
   assert.ok(cartella.includes("--approve"));
 
   const nuova = argomentiAvvioPi({ cliPi: FAKE_PI, sessionId: "gui-session-1" });

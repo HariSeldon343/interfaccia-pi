@@ -203,8 +203,11 @@ test("tutti i comandi built-in del Pi installato hanno una strategia GUI", async
   );
   assert.deepEqual(
     new Set(capacita.filter((voce) => voce.source === "builtin").map((voce) => voce.name)),
-    new Set(catalogo.comandi.map((voce) => voce.name)),
+    new Set([...catalogo.comandi.map((voce) => voce.name), "sistema"]),
   );
+  const sistema = capacita.find((voce) => voce.name === "sistema");
+  assert.equal(sistema?.dispatch.kind, "workflow");
+  assert.equal(sistema?.dispatch.action, "sistema-guidato-panel");
 });
 
 test("la GUI legge da Pi i modelli predefiniti usati dopo il primo login", async () => {

@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.5.3, aggiornata il 25/08/2026.
+Versione 2.6.0 RC, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -69,36 +69,36 @@ a sei sessioni complessive.
   sempre conferma prima di avviare la shell;
 - usare, sotto **Controlli avanzati**, le operazioni del protocollo RPC che non
   mettono a rischio la cronologia e la shell diretta con un avviso esplicito.
+- aprire **Sistema Guidato** dal pulsante nella testata o da `/sistema`, anche
+  senza cartella, senza lasciare la finestra dell'app.
 
 ## Creare un sistema di gestione guidato
 
-In una scheda con cartella di lavoro digita `/sistema`, oppure cercalo nella
-palette aperta da `/`. Il percorso grafico consente di:
+Premi **Sistema Guidato** nella testata oppure digita `/sistema` e seleziona il
+comando nella palette. Non serve aprire prima una cartella: il pannello occupa
+la finestra dell'app e si puo chiudere per tornare alle chat senza interromperle.
 
-1. creare più progetti cliente nello stesso workspace;
-2. raccogliere le informazioni in blocchi di massimo quattro domande;
-3. distinguere dichiarazioni, fatti verificati, fonti normative ed evidenze da
-   verificare;
-4. collegare evidenze tramite percorso e SHA-256, senza copiarle;
-5. collegare una cartella di template scelta dall'utente e associare ciascun
-   modello al documento previsto;
-6. compilare placeholder `{{CHIAVE}}` o `[[CHIAVE]]`, oppure creare un dossier
-   fattuale Word conservando le sezioni iniziali e l'identità visiva del template;
-7. approvare esplicitamente una bozza già controllata ed esportare soltanto i
-   documenti approvati in un pacchetto nuovo con manifesto.
+Il percorso comprende dodici aree: cliente e progetto, perimetro ISO 9001/HLS,
+intervista guidata, processi/rischi/KPI, evidenze, matrice requisiti-gap, piano
+documentale, generazione e approvazione, pre-audit, audit esterno simulato
+Stage 1/Stage 2, correzioni ed esportazione. Nove workflow specializzati
+collaborano tramite input e output tipizzati; le valutazioni e le approvazioni
+restano sempre sotto controllo umano.
 
-Lo stato vive sotto `.pi/sistemi-gestione/progetti/` nella cartella di lavoro.
-Originali, evidenze e librerie cliente non entrano nel repository, nel runtime o
-nell'installer. Il motore non include testi di norme e non inventa requisiti:
-fonti pubbliche o copie licenziate devono essere collegate al progetto.
+I progetti sono locali e indipendenti dalla cartella delle chat. Vivono nello
+spazio applicativo Windows di Sistema Guidato sotto
+`%LOCALAPPDATA%\it.amodeo.sistema-guidato`; template, revisioni e audit log non
+vengono sovrascritti. Il pack incluso usa riferimenti e parafrasi operative ISO
+9001/HLS, non riproduce il testo della norma.
 
-Al primo avvio di una cartella viene chiesto se considerare attendibili le
-istruzioni, skill e risorse del progetto. L'opzione è visibile perché possono
-guidare `pi` a usare strumenti con i permessi dell'utente.
+I progetti della precedente estensione sotto `.pi/sistemi-gestione/progetti/`
+non vengono caricati come dati attivi ne modificati. Possono essere scelti
+soltanto come sorgente read-only di una migrazione esplicita: prima viene
+mostrata l'anteprima, poi serve conferma e il risultato e una nuova revisione.
 
 ## Tutto pi: cosa significa con precisione
 
-La versione 2.5 è un'impalcatura grafica sopra la modalità RPC della stessa
+La versione 2.6 è un'impalcatura grafica sopra la modalità RPC della stessa
 build `pi` 0.84.2 inclusa nell'installer. Il bridge legge il catalogo originale
 dei comandi incorporati, lo unisce a prompt e skill della cartella e lo espone
 alla palette aperta da `/`. Ogni comando viene tradotto in un'operazione RPC
@@ -117,10 +117,10 @@ anteprima limitata.
 Rimane una distinzione intenzionale. I processi della GUI partono con
 `--no-extensions`: in PI 0.84.2 un'estensione arbitraria può cambiare file di
 sessione dall'interno senza comunicarlo al bridge e aggirerebbe il blocco
-anti-doppia-apertura. Il bridge carica poi esplicitamente soltanto le estensioni
-integrate, versionate e testate dall'app, fra cui `/sistema`; `/llama` resta
-ammessa come componente inline verificata. Skill, prompt template, file di
-contesto, strumenti e i 22 comandi incorporati restano disponibili. Le altre
+anti-doppia-apertura. `/sistema` non e piu un'estensione Pi caricata per ogni
+chat: e un comando virtuale dell'host che apre il pannello condiviso. Il solo
+componente inline integrato ammesso resta `/llama`. Skill, prompt template, file
+di contesto, strumenti e i 22 comandi incorporati restano disponibili. Le altre
 estensioni e i componenti TUI personalizzati si usano con **Nuova conversazione
 nel terminale**.
 
@@ -146,7 +146,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.5.3\release\bundle\nsis\Interfaccia pi_2.5.3_x64-setup.exe`
+`src-tauri\target-final-2.6.0\release\bundle\nsis\Interfaccia pi_2.6.0_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -158,6 +158,12 @@ L'installer è autocontenuto: distribuisce Node.js 24.18.0 con npm/Corepack,
 funziona anche se non sono presenti nel `PATH`. Il runtime estratto pesa circa
 201 MiB; versioni, sorgenti, digest e licenze sono descritti in
 `licenses/RUNTIME-COMPONENTS.md` e nel manifesto incluso.
+
+L'installer contiene anche un bundle verificato di Sistema Guidato: servizio
+locale, dashboard rilocabile e template neutri. Il monorepo `sistema-guidato`
+resta la fonte di verita durante lo sviluppo; nel pacchetto distribuito ogni
+file e registrato con dimensione e SHA-256 insieme alla compatibilita con Pi
+0.84.2 e con gli schemi dati supportati.
 
 Configurazione, login, modelli, sessioni, trust, skill e pacchetti personali
 non vengono incorporati nell'installer: restano nella cartella `.pi` del
@@ -190,6 +196,14 @@ Il bridge ascolta solo su `127.0.0.1`. Le operazioni che cambiano stato
 richiedono un token casuale valido per il singolo avvio, JSON, `Origin` e
 `Host` locali coerenti. Le pagine sono servite con una Content Security Policy
 restrittiva e i processi vengono avviati senza shell intermedia.
+
+Sistema Guidato e raggiunto dal browser soltanto tramite `/sistema/` sulla
+stessa origine. Il bridge avvia un unico backend su una porta loopback casuale,
+inietta il token interno e una sessione backend conservata solo in memoria e
+filtra cookie e header in entrambe le direzioni. Ne il token ne il cookie
+compaiono in URL, HTML, JavaScript, storage del browser o log. Se la sessione
+backend scade, viene rinnovata senza ritentare automaticamente una mutazione:
+un `commit` preparato prima del rinnovo deve essere preparato di nuovo.
 
 Questo impedisce a una normale pagina web esterna di pilotare il bridge locale.
 Il token non sostituisce comunque la prudenza verso estensioni o comandi che
@@ -254,7 +268,9 @@ chiesto a `pi` di lasciare in esecuzione.
 | Una cronologia supera 128 MB | Usa **Continua questa conversazione nel terminale**; compattare non riduce il JSONL append-only |
 | Ti serve un'estensione personale | Usa **Apri PI completo nel terminale**; la GUI RPC carica soltanto le estensioni integrate e verificate |
 | Vuoi due lavori nella stessa cartella | Premi **Nuova scheda**: la cartella resta la stessa ma Pi usa una sessione distinta |
-| Vuoi creare documenti di un sistema di gestione | Apri una cartella, digita `/sistema` e collega la tua libreria di template |
+| Vuoi creare documenti di un sistema di gestione | Premi **Sistema Guidato** oppure digita `/sistema`; non serve selezionare una cartella |
+| Il pannello Sistema Guidato non parte | Chiudilo e riaprilo: il servizio viene riavviato su richiesta. Se il problema resta, riavvia Interfaccia pi senza cancellare i progetti locali |
+| Aggiornamenti indica “build pilota” | E previsto: questa build non contatta alcun canale e si aggiorna con un installer verificato manualmente |
 
 ## Architettura
 
@@ -262,16 +278,19 @@ chiesto a `pi` di lasciare in esecuzione.
 |---|---|
 | `avvia.mjs` | verifica la firma del bridge, lo avvia e apre l'interfaccia |
 | `app/server.mjs` | gestisce processi `pi` RPC indipendenti e API locale protetta |
-| `app/extensions/sistema-guidato/index.ts` | flusso grafico `/sistema` e dialoghi RPC |
-| `app/extensions/sistema-guidato/core.mjs` | stato persistente, evidenze, revisioni, approvazioni ed export |
-| `app/extensions/sistema-guidato/office-package.mjs` | compilazione confinata dei pacchetti Office e OpenDocument |
+| `app/sistema-guidato-manager.mjs` | verifica e gestisce il backend singleton, la sessione interna e il proxy confinato |
+| `scripts/vendor-sistema-guidato.mjs` | importa dal monorepo soltanto il runtime verificato e genera il manifesto di integrazione |
+| `vendor/sistema-guidato/` | servizio, dashboard e template vendorizzati con inventario SHA-256; mai dati cliente |
 | `app/public/index.html` | struttura semantica della finestra |
 | `app/public/stile.css` | layout desktop, zoom elevato e modalità compatta |
 | `app/public/palette-core.js` | ricerca, completamento e analisi sicura dei comandi `/` |
+| `app/public/updater-core.js` | presentazione pura degli stati dell'updater manuale |
 | `app/public/app.js` | stato delle schede, RPC, sincronizzazione e accessibilità |
 | `scripts/patches/pi-0.84.2-rpc-adapter-v1.patch` | adapter RPC verificato per i comandi mancanti |
 | `tests/fake-pi.mjs` | agente RPC finto per verifiche riproducibili |
 | `tests/server.test.mjs` | test di sicurezza, lifecycle, UTF-8, multi-sessione ed estensioni |
+| `tests/sistema-guidato-manager.test.mjs` | test di singleton, proxy, session binding, rinnovo, crash e shutdown |
+| `tests/sistema-guidato-runtime-bundle.test.mjs` | test di manifesti, compatibilita, migrazione read-only e asset del pannello |
 
 ## Verifica e ricompilazione
 
@@ -282,7 +301,8 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.3'
+npm run vendor:sistema:check
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.0'
 npm run build:desktop:offline
 ```
 
