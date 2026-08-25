@@ -65,7 +65,11 @@ jobs:
         run: npm run check
 
       - name: Test JavaScript e bridge
-        run: npm test
+        # I test avviano processi e timer Windows reali. Sul runner ospitato il
+        # parallelismo fra file puo affamare PowerShell o la coda eventi e
+        # produrre timeout infrastrutturali. Manteniamo l'intera suite, ma con
+        # un file alla volta per una verifica riproducibile.
+        run: node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
 
       - name: Smoke test sul runtime incluso
         run: npm run test:smoke
