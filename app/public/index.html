@@ -171,11 +171,16 @@
         <div class="riga-avvisi" id="avvisi" role="alert" aria-live="assertive"></div>
         <div class="coda" id="coda" hidden aria-live="polite"></div>
         <div class="invii-verifica" id="invii-verifica" hidden aria-live="polite"></div>
-        <div class="allegati" id="allegati" hidden aria-label="Immagini allegate"></div>
+        <div class="allegati" id="allegati" hidden aria-label="File e immagini allegati"></div>
 
         <div class="composer-shell" id="composer-shell">
           <div class="menu-azioni-composer" id="menu-azioni-composer" role="menu"
                aria-label="Azioni rapide della richiesta" hidden>
+            <button id="azione-allega-file" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="allega-file" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">▱</span>
+              <span><strong>Allega file</strong><small>PDF, Word, Excel, testo o altro file locale</small></span>
+            </button>
             <button id="azione-allega-immagine" class="menu-azione-composer" type="button"
                     role="menuitem" data-azione-composer="allega-immagine" tabindex="-1">
               <span class="menu-azione-icona" aria-hidden="true">▧</span>
@@ -208,9 +213,10 @@
           </div>
 
           <div class="scrittura">
+            <input id="scegli-file" type="file" multiple hidden>
             <input id="scegli-immagini" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
             <button id="btn-allega" class="strumento-input" type="button" disabled
-                    aria-label="Apri azioni rapide" title="Allega immagini, richiama skill o usa estensioni"
+                    aria-label="Allega file o apri altre azioni" title="Allega file o immagini, richiama skill o usa estensioni"
                     aria-haspopup="menu" aria-expanded="false"
                     aria-controls="menu-azioni-composer">＋</button>
             <label class="solo-lettori" for="input">Richiesta per pi</label>
@@ -225,7 +231,7 @@
         </div>
 
         <div class="sotto-scrittura">
-          <span id="suggerimento">Invio per inviare · Maiusc+Invio per andare a capo · Ctrl+V per incollare uno screenshot</span>
+          <span id="suggerimento">Invio per inviare · Trascina o allega file · Ctrl+V per incollare uno screenshot</span>
           <div class="invio-occupato" id="invio-occupato" hidden>
             <button class="stato-reale" id="btn-stato-attivita" type="button"
                     title="Mostra eventi reali senza interrompere Pi">Stato reale</button>
@@ -268,6 +274,7 @@
   <script src="/auth-flow-core.js"></script>
   <script src="/link-core.js"></script>
   <script src="/clipboard-core.js"></script>
+  <script src="/attachment-core.js"></script>
   <script src="/view-core.js"></script>
   <script src="/app.js"></script>
 </body>

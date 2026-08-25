@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  open,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -11,17 +13,20 @@ import {
   link,
   symlink,
   rename,
+  utimes,
 } from "node:fs/promises";
 import { request as richiestaHttp } from "node:http";
 import { createConnection } from "node:net";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
-import { join, dirname, resolve } from "node:path";
+import { basename, join, dirname, resolve, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   creaPonte,
+  caricaAlberoCompattoDaPi,
   caricaCronologiaDaPi,
   caricaCronologiaParzialeDaPi,
   caricaCatalogoBuiltinPi,
@@ -54,6 +59,39 @@ const CLI_PI_REALE = join(RADICE, "vendor", "pi-runtime", "pi", "dist", "cli.js"
 
 function attendi(ms) {
   return new Promise((risolvi) => setTimeout(risolvi, ms));
+}
+
+function catalogoGpt56(contextWindow) {
+  const models = [];
+  for (const provider of ["openai", "openai-codex"]) {
+    for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      models.push({ provider, id, name: id, contextWindow });
+    }
+  }
+  return models;
+}
+
+function intercettaRpcSessione(sessione, gestisci) {
+  const scriviOriginale = sessione.proc.stdin.write;
+  sessione.proc.stdin.write = (riga) => {
+    const comando = JSON.parse(String(riga).trim());
+    const esito = gestisci(comando);
+    if (esito !== null && esito !== undefined) {
+      queueMicrotask(() => sessione.diffondi({
+        type: "response",
+        id: comando.id,
+        command: comando.type,
+        success: esito.success !== false,
+        ...(esito.success === false
+          ? { error: esito.error || "errore simulato" }
+          : { data: esito.data || {} }),
+      }));
+    }
+    return true;
+  };
+  return () => {
+    sessione.proc.stdin.write = scriviOriginale;
+  };
 }
 
 test("l'avviso previsto di creazione sessione non viene presentato come errore", () => {
@@ -222,6 +260,414 @@ test("la cronologia compatta segue il leaf scelto e distingue la radice vuota", 
     fileSessione,
     leafId: null,
   }), []);
+});
+
+test("la cronologia visuale conserva ogni prompt del ramo ma non il lavoro gia sintetizzato", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-prompt-storici-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const messaggio = (id, parentId, role, testo, timestamp, extra = {}) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: new Date(timestamp * 1000).toISOString(),
+    message: {
+      role,
+      content: [{ type: "text", text: testo }],
+      timestamp: timestamp * 1000,
+      ...extra,
+    },
+  });
+  const u1 = messaggio("u1", null, "user", "prompt uno originale", 1);
+  const a1 = messaggio("a1", "u1", "assistant", "risposta vecchia da non ripetere", 2, {
+    provider: "test",
+    model: "test",
+    stopReason: "toolUse",
+  });
+  a1.message.content.push({ type: "toolCall", id: "tool-vecchio", name: "read", arguments: {} });
+  const tool1 = messaggio("tool1", "a1", "toolResult", "output vecchio da non ripetere", 3, {
+    toolCallId: "tool-vecchio",
+    toolName: "read",
+    isError: false,
+  });
+  const primaCompattazione = {
+    type: "compaction",
+    id: "c1",
+    parentId: "tool1",
+    timestamp: new Date(4_000).toISOString(),
+    summary: "riepilogo superato",
+    firstKeptEntryId: "u1",
+    tokensBefore: 100,
+  };
+  const u2 = messaggio("u2", "c1", "user", "prompt due originale", 5);
+  const a2 = messaggio("a2", "u2", "assistant", "risposta recente conservata", 6, {
+    provider: "test",
+    model: "test",
+    stopReason: "stop",
+  });
+  const secondaCompattazione = {
+    type: "compaction",
+    id: "c2",
+    parentId: "a2",
+    timestamp: new Date(7_000).toISOString(),
+    summary: "riepilogo corrente",
+    firstKeptEntryId: "u2",
+    tokensBefore: 200,
+    // Il payload non deve duplicare le voci originali gia presenti nel ramo.
+    retainedTail: [u2.message, a2.message],
+  };
+  const u3 = messaggio("u3", "c2", "user", "prompt tre originale", 8);
+  const a3 = messaggio("a3", "u3", "assistant", "risposta nuova", 9, {
+    provider: "test",
+    model: "test",
+    stopReason: "stop",
+  });
+  const voci = [
+    { type: "session", version: 3, id: "sessione-prompt", timestamp: new Date(0).toISOString(), cwd: cartella },
+    u1,
+    a1,
+    tool1,
+    primaCompattazione,
+    u2,
+    a2,
+    secondaCompattazione,
+    u3,
+    a3,
+  ];
+  await writeFile(fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const cronologia = await caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione });
+  assert.deepEqual(cronologia.map((voce) => voce.role), [
+    "user",
+    "user",
+    "assistant",
+    "compactionSummary",
+    "user",
+    "assistant",
+  ]);
+  assert.deepEqual(
+    cronologia.filter((voce) => voce.role === "user").map((voce) => voce.content[0].text),
+    ["prompt uno originale", "prompt due originale", "prompt tre originale"],
+  );
+  assert.deepEqual(
+    cronologia.filter((voce) => voce.role === "compactionSummary").map((voce) => voce.summary),
+    ["riepilogo corrente"],
+  );
+  assert.equal(
+    cronologia.filter((voce) => voce.role === "user" && voce.content[0].text === "prompt due originale").length,
+    1,
+  );
+  assert.doesNotMatch(JSON.stringify(cronologia), /risposta vecchia|output vecchio|riepilogo superato/);
+});
+
+test("la cronologia completa non ricarica il base64 delle immagini dei prompt storici", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-immagini-storiche-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const base64Storico = "U1RPUklDT19CQVNFNjQ=";
+  const base64Corrente = "Q09SUkVOVEVfQkFTRTY0";
+  const voci = [
+    { type: "session", version: 3, id: "sessione-immagini", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    {
+      type: "message",
+      id: "u1",
+      parentId: null,
+      timestamp: "2026-08-25T00:00:01.000Z",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "testo storico prima" },
+          { type: "image", data: base64Storico, mimeType: "image/png" },
+          { type: "text", text: "testo storico dopo" },
+        ],
+        timestamp: 1,
+      },
+    },
+    { type: "message", id: "a1", parentId: "u1", timestamp: "2026-08-25T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "risposta sintetizzata" }], timestamp: 2 } },
+    { type: "compaction", id: "c1", parentId: "a1", timestamp: "2026-08-25T00:00:03.000Z", summary: "sintesi", firstKeptEntryId: "assente", tokensBefore: 100 },
+    {
+      type: "message",
+      id: "u2",
+      parentId: "c1",
+      timestamp: "2026-08-25T00:00:04.000Z",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "testo corrente" },
+          { type: "image", data: base64Corrente, mimeType: "image/png" },
+        ],
+        timestamp: 4,
+      },
+    },
+  ];
+  await writeFile(fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const cronologia = await caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione });
+  const utenti = cronologia.filter((voce) => voce.role === "user");
+  assert.equal(utenti.length, 2);
+  assert.deepEqual(
+    utenti[0].content.filter((parte) => parte.type === "text").map((parte) => parte.text),
+    [
+      "testo storico prima",
+      "[Immagine allegata nello storico non ricaricata]",
+      "testo storico dopo",
+    ],
+  );
+  assert.equal(utenti[0].guiImmaginiStoricheOmesse, 1);
+  assert.equal(utenti[0].content.some((parte) => parte.type === "image"), false);
+  assert.doesNotMatch(JSON.stringify(utenti[0]), new RegExp(base64Storico));
+  assert.equal(utenti[1].content.find((parte) => parte.type === "image")?.data, base64Corrente);
+});
+
+test("la cronologia principale segue soltanto il ramo attivo", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-ramo-attivo-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const voce = (id, parentId, role, testo, secondo) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: `2026-08-25T00:00:${String(secondo).padStart(2, "0")}.000Z`,
+    message: { role, content: [{ type: "text", text: testo }], timestamp: secondo },
+  });
+  const voci = [
+    { type: "session", version: 3, id: "sessione-rami", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    voce("u-root", null, "user", "prompt condiviso", 1),
+    voce("a-root", "u-root", "assistant", "risposta condivisa", 2),
+    voce("u-sx", "a-root", "user", "prompt ramo sinistro", 3),
+    voce("a-sx", "u-sx", "assistant", "risposta ramo sinistro", 4),
+    voce("u-dx", "a-root", "user", "prompt ramo destro", 5),
+    voce("a-dx", "u-dx", "assistant", "risposta ramo destro", 6),
+  ];
+  await writeFile(fileSessione, voci.map((elemento) => JSON.stringify(elemento)).join("\n") + "\n", "utf8");
+
+  const sinistro = await caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione, leafId: "a-sx" });
+  const destro = await caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione, leafId: "a-dx" });
+  assert.deepEqual(sinistro.map((elemento) => elemento.content[0].text), [
+    "prompt condiviso",
+    "risposta condivisa",
+    "prompt ramo sinistro",
+    "risposta ramo sinistro",
+  ]);
+  assert.deepEqual(destro.map((elemento) => elemento.content[0].text), [
+    "prompt condiviso",
+    "risposta condivisa",
+    "prompt ramo destro",
+    "risposta ramo destro",
+  ]);
+});
+
+test("la cronologia parziale conserva i prompt precedenti alla compattazione una volta sola", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-prefix-compattato-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const righe = [
+    { type: "session", version: 3, id: "sessione-prefix", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    {
+      type: "message",
+      id: "u1",
+      parentId: null,
+      timestamp: "2026-08-25T00:00:01.000Z",
+      message: {
+        role: "user",
+        content: [
+          { type: "text", text: "prompt storico" },
+          { type: "image", data: "UEFSWklBTEVfU1RPUklDTw==", mimeType: "image/jpeg" },
+        ],
+        timestamp: 1,
+      },
+    },
+    { type: "message", id: "a1", parentId: "u1", timestamp: "2026-08-25T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "risposta sintetizzata" }], timestamp: 2 } },
+    { type: "compaction", id: "c1", parentId: "a1", timestamp: "2026-08-25T00:00:03.000Z", summary: "sintesi corrente", firstKeptEntryId: "assente", tokensBefore: 120 },
+    { type: "message", id: "u2", parentId: "c1", timestamp: "2026-08-25T00:00:04.000Z", message: { role: "user", content: [{ type: "text", text: "prompt nuovo" }], timestamp: 4 } },
+  ];
+  const prefisso = righe.map((voce) => JSON.stringify(voce)).join("\n") + "\n";
+  await writeFile(fileSessione, prefisso + '{"type":"message","id":"incompleto"', "utf8");
+
+  const cronologia = await caricaCronologiaParzialeDaPi({
+    cliPi: CLI_PI_REALE,
+    fileSessione,
+    massimoByte: Buffer.byteLength(prefisso) + 20,
+  });
+  assert.deepEqual(cronologia.map((voce) => voce.role), ["user", "compactionSummary", "user"]);
+  assert.deepEqual(
+    cronologia.filter((voce) => voce.role === "user").map((voce) => voce.content[0].text),
+    ["prompt storico", "prompt nuovo"],
+  );
+  const storico = cronologia.find((voce) => voce.role === "user");
+  assert.equal(storico.guiImmaginiStoricheOmesse, 1);
+  assert.equal(storico.content.some((parte) => parte.type === "image"), false);
+  assert.doesNotMatch(JSON.stringify(storico), /UEFSWklBTEVfU1RPUklDTw==/);
+  assert.match(
+    storico.content.map((parte) => parte.text || "").join("\n"),
+    /Immagine allegata nello storico non ricaricata/,
+  );
+});
+
+test("la cronologia rifiuta in modo chiuso leaf e collegamenti corrotti", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-cronologia-corrotta-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const header = { type: "session", version: 3, id: "sessione-corrotta", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella };
+  const utente = (id, parentId, testo) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: "2026-08-25T00:00:01.000Z",
+    message: { role: "user", content: [{ type: "text", text: testo }], timestamp: 1 },
+  });
+  const casi = [
+    { nome: "ciclo", voci: [utente("u1", "u2", "uno"), utente("u2", "u1", "due")] },
+    { nome: "genitore-mancante", voci: [utente("u1", "assente", "uno")] },
+    { nome: "id-duplicato", voci: [utente("u1", null, "uno"), utente("u1", null, "due")] },
+  ];
+  for (const caso of casi) {
+    const fileSessione = join(cartella, caso.nome + ".jsonl");
+    await writeFile(fileSessione, [header, ...caso.voci].map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+    await assert.rejects(
+      () => caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione }),
+      (errore) => errore?.statusHttp === 409,
+      caso.nome,
+    );
+  }
+
+  const fileValido = join(cartella, "leaf-sconosciuto.jsonl");
+  await writeFile(fileValido, [header, utente("u1", null, "uno")].map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+  await assert.rejects(
+    () => caricaCronologiaDaPi({ cliPi: CLI_PI_REALE, fileSessione: fileValido, leafId: "assente" }),
+    (errore) => errore?.statusHttp === 409,
+  );
+});
+
+test("l'anteprima assistant dell'albero non espone le parti thinking", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-tree-preview-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const voci = [
+    { type: "session", version: 3, id: "sessione-anteprima", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    {
+      type: "message",
+      id: "a1",
+      parentId: null,
+      timestamp: "2026-08-25T00:00:01.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Planning..." },
+          { type: "text", text: "`ottimizzazione: OK`\n\n**orchestrazione: OK**\n\nCOLLAUDO OK" },
+        ],
+        timestamp: 1,
+      },
+    },
+    {
+      type: "message",
+      id: "a2",
+      parentId: "a1",
+      timestamp: "2026-08-25T00:00:02.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Thinking soltanto" },
+          { type: "text", text: "__orchestrazione: OK__" },
+        ],
+        timestamp: 2,
+      },
+    },
+    {
+      type: "message",
+      id: "a3",
+      parentId: "a2",
+      timestamp: "2026-08-25T00:00:03.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+        timestamp: 3,
+      },
+    },
+    {
+      type: "message",
+      id: "a4",
+      parentId: "a3",
+      timestamp: "2026-08-25T00:00:04.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "orchestrazione: OK — stack e goal confermati\n\nRisultato utile" }],
+        timestamp: 4,
+      },
+    },
+    {
+      type: "message",
+      id: "a5",
+      parentId: "a4",
+      timestamp: "2026-08-25T00:00:05.000Z",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "orchestrazione: OK — ma il collaudo e fallito" }],
+        timestamp: 5,
+      },
+    },
+  ];
+  await writeFile(fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const albero = await caricaAlberoCompattoDaPi({ cliPi: CLI_PI_REALE, fileSessione });
+
+  assert.deepEqual(albero.nodi.map((nodo) => nodo.descrizione), [
+    "assistant: COLLAUDO OK",
+    "assistant: [immagine]",
+    "assistant: Risultato utile",
+    "assistant: ma il collaudo e fallito",
+  ]);
+  assert.equal(albero.nodi[1].parentId, "a1");
+  assert.equal(albero.leafId, "a5");
+  assert.equal(albero.totale, 4);
+  assert.equal(albero.tecniciNascosti, 1);
+  assert.doesNotMatch(albero.nodi[0].descrizione, /Planning/);
+  assert.doesNotMatch(albero.nodi[0].descrizione, /ottimizzazione|orchestrazione/i);
+});
+
+test("l'albero nasconde le voci tecniche e conserva la struttura dei rami", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-tree-visible-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const messaggio = (id, parentId, ruolo, content, secondo) => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: `2026-08-25T00:00:${String(secondo).padStart(2, "0")}.000Z`,
+    message: { role: ruolo, content, timestamp: secondo },
+  });
+  const voci = [
+    { type: "session", version: 3, id: "sessione-struttura", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    messaggio("u1", null, "user", [{ type: "text", text: "Domanda iniziale" }], 1),
+    { type: "branch_summary", id: "ramo", parentId: "u1", timestamp: "2026-08-25T00:00:02.000Z", summary: "Ramo alternativo" },
+    messaggio("tool-1", "u1", "toolResult", [{ type: "text", text: "blocco tecnico" }], 3),
+    { type: "model_change", id: "modello", parentId: "tool-1", timestamp: "2026-08-25T00:00:04.000Z", provider: "test", modelId: "test" },
+    { type: "compaction", id: "riepilogo", parentId: "modello", timestamp: "2026-08-25T00:00:05.000Z", summary: "Contesto compattato" },
+    { type: "thinking_level_change", id: "livello", parentId: "riepilogo", timestamp: "2026-08-25T00:00:06.000Z", thinkingLevel: "high" },
+    { type: "session_info", id: "info", parentId: "livello", timestamp: "2026-08-25T00:00:07.000Z", name: "Titolo tecnico" },
+    messaggio("solo-thinking", "info", "assistant", [{ type: "thinking", thinking: "Non mostrare" }], 8),
+    messaggio("a1", "solo-thinking", "assistant", [{ type: "text", text: "Risposta utile" }], 9),
+    { type: "custom", id: "custom", parentId: "a1", timestamp: "2026-08-25T00:00:10.000Z", customType: "estensione" },
+    messaggio("u2", "custom", "user", [{ type: "text", text: "Seconda domanda" }], 11),
+    { type: "label", id: "label", parentId: "u2", targetId: "u2", timestamp: "2026-08-25T00:00:12.000Z", label: "ramo scelto" },
+    messaggio("a2", "label", "assistant", [{ type: "image", data: "AA==", mimeType: "image/png" }], 13),
+    messaggio("tool-leaf", "a2", "toolResult", [{ type: "text", text: "leaf tecnico" }], 14),
+  ];
+  await writeFile(fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const albero = await caricaAlberoCompattoDaPi({ cliPi: CLI_PI_REALE, fileSessione });
+
+  assert.deepEqual(albero.nodi.map(({ id, parentId, profondita }) => ({ id, parentId, profondita })), [
+    { id: "u1", parentId: null, profondita: 0 },
+    { id: "ramo", parentId: "u1", profondita: 1 },
+    { id: "riepilogo", parentId: "u1", profondita: 1 },
+    { id: "a1", parentId: "riepilogo", profondita: 2 },
+    { id: "u2", parentId: "a1", profondita: 3 },
+    { id: "a2", parentId: "u2", profondita: 4 },
+  ]);
+  assert.equal(albero.nodi.find((nodo) => nodo.id === "u2")?.label, "ramo scelto");
+  assert.equal(albero.leafId, "a2");
+  assert.equal(albero.totale, 6);
+  assert.equal(albero.tecniciNascosti, 8);
 });
 
 test("LettoreJsonl rifiuta primitivi, array e response malformate", () => {
@@ -452,6 +898,366 @@ test("tutti i comandi che cambiano cronologia rendono subito incerta l'identita"
     assert.equal(sessione.fileSessione, null, tipo);
     assert.equal(scritte[0].type, tipo);
   }
+});
+
+test("compaction_start blocca atomicamente i comandi incompatibili fino a compaction_end", () => {
+  const scritte = [];
+  const sessione = new SessionePi({ id: "barriera-compattazione", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      destroyed: false,
+      write: (riga) => { scritte.push(JSON.parse(riga)); },
+    },
+  };
+
+  sessione.diffondi({ type: "compaction_start", reason: "threshold" });
+  assert.equal(sessione.compattazioneInCorso, true);
+  for (const comando of [
+    { type: "prompt", message: "non inviare" },
+    { type: "steer", message: "non intervenire" },
+    { type: "follow_up", message: "non accodare" },
+    { type: "refresh_models" },
+    { type: "set_model", provider: "fake", modelId: "altro" },
+    { type: "new_session" },
+  ]) {
+    assert.throws(
+      () => sessione.invia({ ...comando, id: `bloccato-${comando.type}` }),
+      (errore) => errore?.statusHttp === 409 && /compattazione/i.test(errore.message),
+      comando.type,
+    );
+  }
+  sessione.invia({ type: "get_state", id: "lettura-consentita" });
+  assert.equal(scritte.at(-1).type, "get_state");
+
+  sessione.diffondi({ type: "compaction_end", aborted: false });
+  assert.equal(sessione.compattazioneInCorso, false);
+  sessione.invia({ type: "set_model", id: "modello-consentito", provider: "fake", modelId: "altro" });
+  assert.equal(scritte.at(-1).type, "set_model");
+});
+
+test("compact prenota atomicamente il canale prima di compaction_start", () => {
+  const scritte = [];
+  const sessione = new SessionePi({
+    id: "prenotazione-compattazione",
+    cliPi: FAKE_PI,
+    emetti: () => {},
+    scadenzaAvvioCompattazioneMs: 5_000,
+  });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      destroyed: false,
+      write: (riga) => { scritte.push(JSON.parse(riga)); return true; },
+    },
+  };
+
+  sessione.invia({ type: "compact", id: "compact-a" }, "finestra-a");
+  assert.equal(sessione.riassunto().compattazionePrenotata, true);
+  assert.equal(sessione.compattazioneInCorso, true);
+  for (const comando of [
+    { type: "compact", id: "compact-b" },
+    { type: "prompt", id: "prompt-b", message: "non interrompere" },
+    { type: "new_session", id: "nuova-b" },
+  ]) {
+    assert.throws(
+      () => sessione.invia(comando, "finestra-b"),
+      (errore) => errore?.statusHttp === 409 && /compattazione/i.test(errore.message),
+      comando.type,
+    );
+  }
+  assert.deepEqual(scritte.map((voce) => voce.id), ["compact-a"]);
+
+  sessione.diffondi({ type: "compaction_start", reason: "manual" });
+  assert.equal(sessione.riassunto().compattazionePrenotata, false);
+  assert.equal(sessione.compattazioneInCorso, true,
+    "lo start libera la sola prenotazione, non la barriera della compattazione attiva");
+  assert.throws(
+    () => sessione.invia({ type: "prompt", id: "prompt-durante", message: "ancora no" }),
+    /compattazione/i,
+  );
+
+  sessione.diffondi({ type: "compaction_end", reason: "manual", aborted: false });
+  sessione.invia({ type: "prompt", id: "prompt-dopo", message: "ora si" });
+  assert.equal(scritte.at(-1).id, "prompt-dopo");
+});
+
+test("la prenotazione compact si libera su response, errore di scrittura, timeout e stop", async () => {
+  const creaSessione = (id, write, opzioni = {}) => {
+    const eventi = [];
+    const sessione = new SessionePi({
+      id,
+      cliPi: FAKE_PI,
+      emetti: (evento) => eventi.push(evento),
+      scadenzaAvvioCompattazioneMs: 5_000,
+      ...opzioni,
+    });
+    sessione.proc = {
+      killed: false,
+      exitCode: null,
+      signalCode: null,
+      stdin: { writable: true, destroyed: false, write },
+    };
+    return { sessione, eventi };
+  };
+
+  const scritteResponse = [];
+  const risposta = creaSessione("compact-response", (riga) => {
+    scritteResponse.push(JSON.parse(riga));
+    return true;
+  });
+  risposta.sessione.invia({ type: "compact", id: "compact-response" });
+  risposta.sessione.diffondi({
+    type: "response",
+    id: "compact-response",
+    command: "compact",
+    success: false,
+    error: "rifiuto simulato",
+  });
+  assert.equal(risposta.sessione.compattazioneInCorso, false);
+  risposta.sessione.invia({ type: "prompt", id: "prompt-response", message: "sbloccato" });
+  assert.equal(scritteResponse.at(-1).id, "prompt-response");
+
+  const scrittura = creaSessione("compact-write-error", () => {
+    throw new Error("EPIPE simulato");
+  });
+  assert.throws(
+    () => scrittura.sessione.invia({ type: "compact", id: "compact-write-error" }),
+    /comunicare con pi/i,
+  );
+  assert.equal(scrittura.sessione.compattazioneInCorso, false);
+  assert.equal(scrittura.sessione.prenotazioneCompattazione, null);
+
+  const scritteTimeout = [];
+  const scadenza = creaSessione(
+    "compact-timeout",
+    (riga) => { scritteTimeout.push(JSON.parse(riga)); return true; },
+    { scadenzaAvvioCompattazioneMs: 20 },
+  );
+  scadenza.sessione.invia({ type: "compact", id: "compact-timeout" });
+  await attendi(40);
+  assert.equal(scadenza.sessione.prenotazioneCompattazione, null,
+    "il timer della prenotazione deve essere rilasciato");
+  assert.equal(scadenza.sessione.riassunto().compattazioneAvvioIncerto, true);
+  assert.equal(scadenza.sessione.compattazioneInCorso, true,
+    "il comando gia scritto resta fail-closed finche Pi non ne chiarisce l'esito");
+  assert.ok(scadenza.eventi.some((evento) =>
+    evento.type === "gui_errore" && /ancora pendente/i.test(evento.messaggio)));
+  assert.throws(
+    () => scadenza.sessione.invia({ type: "prompt", id: "prompt-timeout-bloccato", message: "ancora no" }),
+    /compattazione/i,
+  );
+  assert.deepEqual(scritteTimeout.map((voce) => voce.id), ["compact-timeout"]);
+  scadenza.sessione.diffondi({
+    type: "response",
+    id: "compact-timeout",
+    command: "compact",
+    success: false,
+    error: "timeout confermato",
+  });
+  assert.equal(scadenza.sessione.compattazioneInCorso, false);
+  scadenza.sessione.invia({ type: "prompt", id: "prompt-timeout", message: "sbloccato" });
+  assert.equal(scritteTimeout.at(-1).id, "prompt-timeout");
+
+  const arresto = creaSessione("compact-stop", () => true);
+  arresto.sessione.invia({ type: "compact", id: "compact-stop" });
+  arresto.sessione.proc = null;
+  await arresto.sessione.ferma({ notifica: false });
+  assert.equal(arresto.sessione.compattazioneInCorso, false);
+  assert.equal(arresto.sessione.prenotazioneCompattazione, null);
+});
+
+test("la riserva rebind blocca client concorrenti e si libera sulla response anche di errore", () => {
+  const scritte = [];
+  const sessione = new SessionePi({
+    id: "riserva-rebind",
+    cliPi: FAKE_PI,
+    emetti: () => {},
+    scadenzaRebindModelloMs: 5_000,
+  });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      destroyed: false,
+      write: (riga) => { scritte.push(JSON.parse(riga)); return true; },
+    },
+  };
+
+  sessione.invia({ type: "refresh_models", id: "refresh-a" }, "client-a");
+  assert.equal(sessione.riassunto().rebindModelloInCorso, true);
+  for (const comando of [
+    { type: "refresh_models", id: "refresh-b" },
+    { type: "set_model", id: "model-b", provider: "fake", modelId: "altro" },
+    { type: "prompt", id: "prompt-b", message: "non inviare" },
+    { type: "steer", id: "steer-b", message: "non guidare" },
+    { type: "follow_up", id: "follow-b", message: "non accodare" },
+  ]) {
+    assert.throws(
+      () => sessione.invia(comando, "client-b"),
+      (errore) => errore?.statusHttp === 409 && /ricollegando/i.test(errore.message),
+      comando.type,
+    );
+  }
+  assert.deepEqual(scritte.map((voce) => voce.id), ["refresh-a"]);
+
+  sessione.diffondi({
+    type: "response",
+    id: "refresh-a",
+    command: "get_state",
+    success: true,
+    data: {},
+  });
+  assert.equal(sessione.riassunto().rebindModelloInCorso, true,
+    "una response con lo stesso id ma comando diverso non libera la riserva");
+
+  sessione.diffondi({
+    type: "response",
+    id: "refresh-a",
+    command: "refresh_models",
+    success: false,
+    error: "provider non disponibile",
+  });
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+  sessione.invia({ type: "prompt", id: "prompt-dopo", message: "ora invia" }, "client-b");
+  assert.equal(scritte.at(-1).id, "prompt-dopo");
+});
+
+test("la riserva rebind si libera su timeout e su errore di scrittura", async () => {
+  const sessione = new SessionePi({
+    id: "timeout-rebind",
+    cliPi: FAKE_PI,
+    emetti: () => {},
+    scadenzaRebindModelloMs: 20,
+  });
+  const scritte = [];
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      destroyed: false,
+      write: (riga) => { scritte.push(JSON.parse(riga)); return true; },
+    },
+  };
+  sessione.invia({ type: "refresh_models", id: "refresh-timeout" });
+  assert.throws(
+    () => sessione.invia({ type: "prompt", id: "prima-timeout", message: "no" }),
+    /ricollegando/i,
+  );
+  await attendi(40);
+  sessione.invia({ type: "prompt", id: "dopo-timeout", message: "si" });
+  assert.equal(scritte.at(-1).id, "dopo-timeout");
+
+  sessione.proc.stdin.write = () => { throw new Error("EPIPE simulato"); };
+  assert.throws(
+    () => sessione.invia({ type: "set_model", id: "write-error", provider: "fake", modelId: "x" }),
+    /comunicare con pi/i,
+  );
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+});
+
+test("la riserva rebind esiste gia quando stdin.write puo rispondere sincronicamente", () => {
+  const sessione = new SessionePi({ id: "rebind-sincrono", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: {
+      writable: true,
+      destroyed: false,
+      write: (riga) => {
+        const comando = JSON.parse(riga);
+        assert.equal(sessione.riassunto().rebindModelloInCorso, true);
+        sessione.diffondi({
+          type: "response",
+          id: comando.id,
+          command: comando.type,
+          success: true,
+          data: {},
+        });
+        return true;
+      },
+    },
+  };
+  sessione.invia({ type: "refresh_models", id: "risposta-sincrona" });
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+});
+
+test("la sequenza catalogo blocca login, compattazione e cambio ciclico del modello", () => {
+  const sessione = new SessionePi({ id: "sequenza-isolata", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true },
+  };
+  sessione.sequenzaCatalogoModelliInCorso = { revisione: 1, contextWindow: 1_050_000 };
+  for (const comando of [
+    { type: "login_provider", id: "login-race", provider: "openai" },
+    { type: "compact", id: "compact-race" },
+    { type: "cycle_model", id: "cycle-race" },
+  ]) {
+    assert.throws(
+      () => sessione.invia(comando, "client-race"),
+      (errore) => errore?.statusHttp === 409 && /ricollegando/i.test(errore.message),
+      comando.type,
+    );
+  }
+  sessione.sequenzaCatalogoModelliInCorso = null;
+});
+
+test("la barriera di compattazione vale anche per API comando e configurazione GPT", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "api-compattazione");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  sessione.diffondi({ type: "compaction_start", reason: "threshold" });
+  assert.equal(sessione.inEsecuzione, false, "il test copre la race prima di agent_start");
+
+  for (const comando of [
+    { type: "prompt", id: "api-prompt-bloccato", message: "non inviare" },
+    { type: "refresh_models", id: "api-refresh-bloccato" },
+    { type: "set_model", id: "api-model-bloccato", provider: "fake", modelId: "altro" },
+    { type: "new_session", id: "api-nuova-bloccata" },
+  ]) {
+    const esito = await ambiente.post("/api/comando", {
+      sessionId: sessione.id,
+      ...comando,
+    }, ambiente.stato.tokenApi, "finestra-compattazione");
+    assert.equal(esito.risposta.status, 409, `${comando.type}: ${JSON.stringify(esito.dati)}`);
+    assert.match(esito.dati.errore, /compattazione/i);
+  }
+  const gptBloccato = await ambiente.post("/api/contesto-esteso-gpt", {
+    sessionId: sessione.id,
+    enabled: true,
+  });
+  assert.equal(gptBloccato.risposta.status, 409, JSON.stringify(gptBloccato.dati));
+  await assert.rejects(stat(join(ambiente.home, ".pi", "agent", "models.json")), { code: "ENOENT" });
+
+  sessione.diffondi({ type: "compaction_end", aborted: false });
+  const consentito = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "refresh_models",
+    id: "api-refresh-consentito",
+  }, ambiente.stato.tokenApi, "finestra-compattazione");
+  assert.equal(consentito.risposta.status, 200, JSON.stringify(consentito.dati));
+  const gptConsentito = await ambiente.post("/api/contesto-esteso-gpt", {
+    sessionId: sessione.id,
+    enabled: true,
+  });
+  assert.equal(gptConsentito.risposta.status, 200, JSON.stringify(gptConsentito.dati));
 });
 
 test("un get_state vecchio non puo sovrascrivere l'identita nuova", async () => {
@@ -1069,7 +1875,7 @@ test("la migrazione riconosce solo lo schema del ponte 1.x", () => {
 });
 
 test("un ponte corrente resta riconoscibile mentre sta chiudendo", () => {
-  assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 6, stato: "chiusura" }), true);
+  assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 7, stato: "chiusura" }), true);
   assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: "5" }), false);
   assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 3 }), false);
 });
@@ -1082,7 +1888,7 @@ test("la migrazione legacy e fail-closed e non termina mai la versione precedent
     inEsecuzione: false,
     preferite: [],
   };
-  assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 6 }, null), {
+  assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 7 }, null), {
     azione: "riusa",
   });
   assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 3 }, null), {
@@ -1161,10 +1967,10 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
     readFile(join(RADICE, "src-tauri", "tauri.conf.json"), "utf8"),
   ]);
   assert.match(server, /predefinita = 4666/);
-  assert.match(server, /VERSIONE_PONTE = 6/);
+  assert.match(server, /VERSIONE_PONTE = 7/);
   assert.match(launcher, /predefinita = 4666/);
-  assert.match(launcher, /dati\.versione === 6/);
-  assert.match(frontend, /stato\.versione !== 6/);
+  assert.match(launcher, /dati\.versione === 7/);
+  assert.match(frontend, /stato\.versione !== 7/);
   assert.match(launcher, /x-pi-gui-client["']:\s*["']launcher-node/);
   assert.match(launcher, /Date\.now\(\) \+ 30_000/);
   assert.match(launcher, /processo\.signalCode !== null/);
@@ -1185,6 +1991,7 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(frontend, /clientId:\s*IDENTITA_DOCUMENTO\.id/);
   assert.match(frontend, /replayId:\s*clientIdPagina\(\)/);
   assert.match(server, /"--no-extensions"/);
+  assert.match(server, /<pi_gui_files_v1>[\s\S]*percorsi assoluti/);
   assert.match(server, /VERSIONE_PI_VERIFICATA = "0\.84\.2"/);
   assert.match(server, /estensioniBuiltinConsentite: new Set\(\["llama", "sistema"\]\)/);
   assert.match(server, /"extensions", "sistema-guidato", "index\.ts"/);
@@ -1226,7 +2033,7 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(frontend, /sessione\.chiusuraInCorso = true/);
   assert.match(frontend, /La bozza e cambiata: la chiusura e stata annullata/);
   assert.match(rust, /const PORTA: u16 = 4666/);
-  assert.match(rust, /versione.*== 6/);
+  assert.match(rust, /versione.*== 7/);
   assert.match(rust, /X-Pi-Gui-Client: launcher-tauri/);
   assert.match(rust, /finestra\.navigate\(url\)/);
   assert.match(rust, /if !pronto && ponte_attivo\(\)/);
@@ -1245,6 +2052,1882 @@ test("il ponte richiede il token per ogni operazione POST", async (t) => {
   const { risposta, dati } = await ambiente.post("/api/avvia", { cartella }, null);
   assert.equal(risposta.status, 403);
   assert.match(dati.errore, /autorizzata/i);
+});
+
+test("il contesto GPT esteso espone lo stato breve e richiede mutazioni esatte autenticate", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const cartella = join(ambiente.home, "progetto-contesto");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+
+  const senzaToken = await ambiente.post("/api/contesto-esteso-gpt", {}, null);
+  assert.equal(senzaToken.risposta.status, 403);
+  assert.match(senzaToken.dati.errore, /autorizzata/i);
+  const lettura = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.deepEqual(lettura.dati, {
+    mode: "short",
+    managed: false,
+    mutable: true,
+    conflict: false,
+    enabled: false,
+    contextWindow: 272_000,
+    restartRequired: false,
+    refreshRequired: false,
+  });
+  await assert.rejects(stat(percorso), { code: "ENOENT" });
+
+  for (const corpo of [
+    { enabled: true },
+    { sessionId: avvio.dati.id },
+    { enabled: true, sessionId: avvio.dati.id, inatteso: true },
+  ]) {
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", corpo);
+    assert.equal(esito.risposta.status, 400, JSON.stringify(esito.dati));
+  }
+  const tipoInvalido = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: "true",
+    sessionId: avvio.dati.id,
+  });
+  assert.equal(tipoInvalido.risposta.status, 400);
+  const sessioneInesistente = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: "inesistente",
+  });
+  assert.equal(sessioneInesistente.risposta.status, 404);
+  await assert.rejects(stat(percorso), { code: "ENOENT" });
+});
+
+test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e contenitori", async (t) => {
+  const originale = {
+    versioneUtente: 7,
+    _interfacciaPi: { preferenzaGrafica: "compatta" },
+    providers: {
+      openai: {
+        apiKey: "segreto-da-preservare",
+        headers: { "x-config": "immutata" },
+        modelOverrides: {
+          "gpt-5.6-sol": { contextWindow: 272_000, maxTokens: 77_000 },
+          "gpt-5.6-terra": { reasoning: true },
+          "modello-personale": { contextWindow: 99_000 },
+        },
+      },
+      "openai-codex": { notaLocale: "mantienimi" },
+      anthropic: {
+        apiKey: "altro-segreto",
+        modelOverrides: { "claude-opus-5": { contextWindow: 1_000_000 } },
+      },
+    },
+  };
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      await writeFile(join(cartella, "models.json"), JSON.stringify(originale), "utf8");
+    },
+  });
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const cartella = join(ambiente.home, "round-trip");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+
+  const attivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+  assert.equal(attivazione.risposta.status, 200, JSON.stringify(attivazione.dati));
+  assert.deepEqual(attivazione.dati, {
+    mode: "extended",
+    managed: true,
+    mutable: true,
+    conflict: false,
+    enabled: true,
+    contextWindow: 1_050_000,
+    restartRequired: false,
+    refreshRequired: true,
+  });
+  assert.doesNotMatch(JSON.stringify(attivazione.dati), /segreto/i);
+  const testoAttivo = await readFile(percorso, "utf8");
+  const configurazioneAttiva = JSON.parse(testoAttivo);
+  const provenienza = configurazioneAttiva._interfacciaPi.gptExtendedContextV1;
+  assert.equal(provenienza.version, 1);
+  assert.equal(provenienza.managedBy, "interfaccia-pi");
+  assert.equal(provenienza.fileExisted, true);
+  assert.equal(provenienza.providersContainerExisted, true);
+  assert.equal(provenienza.metadataContainerExisted, true);
+  assert.deepEqual(provenienza.providers.openai.models["gpt-5.6-sol"], {
+    overrideExisted: true,
+    contextWindowExisted: true,
+    contextWindow: 272_000,
+  });
+  assert.deepEqual(provenienza.providers.openai.models["gpt-5.6-terra"], {
+    overrideExisted: true,
+    contextWindowExisted: false,
+  });
+  assert.equal(provenienza.providers.openai.models["gpt-5.6-luna"].overrideExisted, false);
+  assert.equal(provenienza.providers["openai-codex"].providerExisted, true);
+  assert.equal(provenienza.providers["openai-codex"].modelOverridesExisted, false);
+  for (const providerId of ["openai", "openai-codex"]) {
+    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.equal(
+        configurazioneAttiva.providers[providerId].modelOverrides[modelloId].contextWindow,
+        1_050_000,
+      );
+    }
+  }
+  assert.equal(
+    configurazioneAttiva.providers.openai.modelOverrides["gpt-5.6-sol"].maxTokens,
+    77_000,
+  );
+  assert.deepEqual(configurazioneAttiva._interfacciaPi.preferenzaGrafica, "compatta");
+
+  const idempotente = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+  assert.equal(idempotente.dati.refreshRequired, false);
+  assert.equal(await readFile(percorso, "utf8"), testoAttivo);
+  const disattivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(false));
+  assert.deepEqual(disattivazione.dati, {
+    mode: "short",
+    managed: false,
+    mutable: true,
+    conflict: false,
+    enabled: false,
+    contextWindow: 272_000,
+    restartRequired: false,
+    refreshRequired: true,
+  });
+  assert.deepEqual(JSON.parse(await readFile(percorso, "utf8")), originale);
+  const disattivazioneIdempotente = await ambiente.post(
+    "/api/contesto-esteso-gpt",
+    richiesta(false),
+  );
+  assert.equal(disattivazioneIdempotente.dati.refreshRequired, false);
+  assert.deepEqual(JSON.parse(await readFile(percorso, "utf8")), originale);
+});
+
+test("il contesto GPT esteso rimuove file e contenitori creati soltanto dalla GUI", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const cartella = join(ambiente.home, "contenitori-gpt");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+
+  const attivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+  assert.equal(attivazione.risposta.status, 200, JSON.stringify(attivazione.dati));
+  const configurazione = JSON.parse(await readFile(percorso, "utf8"));
+  const provenienza = configurazione._interfacciaPi.gptExtendedContextV1;
+  assert.equal(provenienza.fileExisted, false);
+  assert.equal(provenienza.providersContainerExisted, false);
+  assert.equal(provenienza.metadataContainerExisted, false);
+  for (const providerId of ["openai", "openai-codex"]) {
+    assert.equal(provenienza.providers[providerId].providerExisted, false);
+    assert.equal(provenienza.providers[providerId].modelOverridesExisted, false);
+  }
+
+  const disattivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(false));
+  assert.equal(disattivazione.risposta.status, 200, JSON.stringify(disattivazione.dati));
+  await assert.rejects(stat(percorso), { code: "ENOENT" });
+});
+
+test("il contesto GPT esteso classifica custom e mixed e non sovrascrive override esterni", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartellaConfig = join(ambiente.home, ".pi", "agent");
+  const percorso = join(cartellaConfig, "models.json");
+  await mkdir(cartellaConfig, { recursive: true });
+  const cartella = join(ambiente.home, "conflitti-gpt");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+
+  const personalizzata = {
+    providers: {
+      openai: { modelOverrides: { "gpt-5.6-sol": { contextWindow: 500_000 } } },
+    },
+  };
+  const testoPersonalizzato = JSON.stringify(personalizzata);
+  await writeFile(percorso, testoPersonalizzato, "utf8");
+  const statoCustom = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(statoCustom.dati.mode, "custom");
+  assert.equal(statoCustom.dati.managed, false);
+  assert.equal(statoCustom.dati.mutable, false);
+  assert.equal(statoCustom.dati.conflict, true);
+  assert.equal(statoCustom.dati.enabled, false);
+  assert.equal(Object.hasOwn(statoCustom.dati, "contextWindow"), false);
+  for (const enabled of [true, false]) {
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", richiesta(enabled));
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(await readFile(percorso, "utf8"), testoPersonalizzato);
+  }
+
+  const mista = {
+    providers: {
+      openai: { modelOverrides: { "gpt-5.6-sol": { contextWindow: 1_050_000 } } },
+    },
+  };
+  await writeFile(percorso, JSON.stringify(mista), "utf8");
+  const statoMixed = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(statoMixed.dati.mode, "mixed");
+  assert.equal(statoMixed.dati.conflict, true);
+  assert.equal(Object.hasOwn(statoMixed.dati, "contextWindow"), false);
+
+  const uniforme = { providers: {} };
+  for (const providerId of ["openai", "openai-codex"]) {
+    uniforme.providers[providerId] = { modelOverrides: {} };
+    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      uniforme.providers[providerId].modelOverrides[modelloId] = { contextWindow: 500_000 };
+    }
+  }
+  await writeFile(percorso, JSON.stringify(uniforme), "utf8");
+  const statoUniforme = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(statoUniforme.dati.mode, "custom");
+  assert.equal(statoUniforme.dati.contextWindow, 500_000);
+  assert.equal(statoUniforme.dati.conflict, true);
+});
+
+test("il contesto GPT esteso fallisce chiuso se un override gestito cambia esternamente", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const cartella = join(ambiente.home, "drift-gpt");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+  const attivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+  assert.equal(attivazione.risposta.status, 200, JSON.stringify(attivazione.dati));
+
+  const configurazione = JSON.parse(await readFile(percorso, "utf8"));
+  configurazione.providers.openai.modelOverrides["gpt-5.6-sol"].contextWindow = 500_000;
+  await writeFile(percorso, JSON.stringify(configurazione, null, 2) + "\n", "utf8");
+  const testoConDrift = await readFile(percorso, "utf8");
+  const stato = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(stato.dati.mode, "custom");
+  assert.equal(stato.dati.managed, true);
+  assert.equal(stato.dati.mutable, false);
+  assert.equal(stato.dati.conflict, true);
+  assert.equal(stato.dati.enabled, false);
+  assert.equal(Object.hasOwn(stato.dati, "contextWindow"), false);
+  for (const enabled of [true, false]) {
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", richiesta(enabled));
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(await readFile(percorso, "utf8"), testoConDrift);
+  }
+});
+
+test("il contesto GPT esteso richiede una sessione realmente inattiva", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const cartella = join(ambiente.home, "guardia-gpt");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const richiesta = { enabled: true, sessionId: avvio.dati.id };
+  const provaGuardia = async (imposta, ripristina) => {
+    imposta();
+    try {
+      const esito = await ambiente.post("/api/contesto-esteso-gpt", richiesta);
+      assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    } finally {
+      ripristina();
+    }
+    await assert.rejects(stat(percorso), { code: "ENOENT" });
+  };
+  await provaGuardia(() => { sessione.inEsecuzione = true; }, () => { sessione.inEsecuzione = false; });
+  await provaGuardia(
+    () => { sessione.proprietariTurni.push({ id: "prenotato" }); },
+    () => { sessione.proprietariTurni.length = 0; },
+  );
+  await provaGuardia(
+    () => { sessione.cambioSessioneInCorso = true; },
+    () => { sessione.cambioSessioneInCorso = false; },
+  );
+  await provaGuardia(() => { sessione.inChiusura = true; }, () => { sessione.inChiusura = false; });
+  await provaGuardia(() => { sessione.handoffInCorso = true; }, () => { sessione.handoffInCorso = false; });
+  await provaGuardia(
+    () => { sessione.configurazioneModelliInCorso = true; },
+    () => { sessione.configurazioneModelliInCorso = false; },
+  );
+  await provaGuardia(
+    () => { sessione.rebindModelloInCorso = { id: "rebind-pendente", timer: null }; },
+    () => { sessione.rebindModelloInCorso = null; },
+  );
+
+  sessione.configurazioneModelliInCorso = true;
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "prompt",
+    message: "non inoltrare",
+  });
+  sessione.configurazioneModelliInCorso = false;
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  assert.match(prompt.dati.errore, /configurazione dei modelli/i);
+
+  ambiente.ponte.sessioni.set("sessione-inattiva-gpt", {
+    id: "sessione-inattiva-gpt",
+    proc: null,
+  });
+  const inattiva = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: "sessione-inattiva-gpt",
+  });
+  ambiente.ponte.sessioni.delete("sessione-inattiva-gpt");
+  assert.equal(inattiva.risposta.status, 409, JSON.stringify(inattiva.dati));
+  await assert.rejects(stat(percorso), { code: "ENOENT" });
+});
+
+test("il contesto GPT esteso non sovrascrive models.json malformato", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, ".pi", "agent");
+  const percorso = join(cartella, "models.json");
+  await mkdir(cartella, { recursive: true });
+  const workspace = join(ambiente.home, "malformato-gpt");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const mutazione = { enabled: true, sessionId: avvio.dati.id };
+
+  const sintassiInvalida = '{"providers":';
+  await writeFile(percorso, sintassiInvalida, "utf8");
+  for (const corpo of [{}, mutazione]) {
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", corpo);
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(await readFile(percorso, "utf8"), sintassiInvalida);
+  }
+  for (const configurazioneInvalida of [
+    [],
+    { providers: null },
+    { providers: { openai: null } },
+    { providers: { openai: { modelOverrides: [] } } },
+    { providers: { openai: { modelOverrides: { "gpt-5.6-sol": null } } } },
+    { _interfacciaPi: { gptExtendedContextV1: {} } },
+  ]) {
+    const testo = JSON.stringify(configurazioneInvalida);
+    await writeFile(percorso, testo, "utf8");
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", mutazione);
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(await readFile(percorso, "utf8"), testo);
+  }
+});
+
+test("il CAS di models.json preserva una modifica esterna fra lettura e commit", async (t) => {
+  const originale = '{"preferenza":"prima"}\n';
+  const esterno = '{"preferenza":"editor-esterno","nuovo":true}\r\n';
+  let modifica = true;
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      await writeFile(join(cartella, "models.json"), originale, "utf8");
+    },
+    primaCommitConfigurazioneModelli: async ({ percorso, fase }) => {
+      if (modifica && fase === "prima-riserva") {
+        modifica = false;
+        await writeFile(percorso, esterno, "utf8");
+      }
+    },
+  });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "cas-edit-esterno");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvio.dati.id,
+  });
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  assert.equal(await readFile(percorso, "utf8"), esterno);
+  const residui = await readdir(dirname(percorso));
+  assert.equal(residui.some((nome) => nome.endsWith(".tmp")), false, residui.join(", "));
+  assert.equal(residui.some((nome) => nome.endsWith(".cas-backup")), false, residui.join(", "));
+});
+
+test("il CAS rileva una scrittura tramite l'handle originale dopo il rename a backup", async (t) => {
+  const originale = '{"preferenza":"prima"}\n';
+  const esterno = '{"preferenza":"handle-editor","preserva":true}\r\n';
+  let handleEsterno = null;
+  let modifica = true;
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      const percorso = join(cartella, "models.json");
+      await writeFile(percorso, originale, "utf8");
+      handleEsterno = await open(percorso, "r+");
+    },
+    primaCommitConfigurazioneModelli: async ({ fase }) => {
+      if (!modifica || fase !== "prima-installazione") return;
+      modifica = false;
+      await handleEsterno.truncate(0);
+      await handleEsterno.writeFile(esterno, "utf8");
+      await handleEsterno.sync();
+    },
+  });
+  t.after(async () => {
+    await handleEsterno?.close().catch(() => {});
+    await ambiente.chiudi();
+  });
+  const workspace = join(ambiente.home, "cas-handle-aperto");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvio.dati.id,
+  });
+  await handleEsterno.close();
+  handleEsterno = null;
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  assert.equal(await readFile(percorso, "utf8"), esterno);
+  assert.equal(
+    ambiente.ponte.sessioni.get(avvio.dati.id).riassunto().catalogoModelliDaRicaricare,
+    false,
+  );
+  const residui = await readdir(dirname(percorso));
+  assert.equal(residui.some((nome) => nome.endsWith(".tmp")), false, residui.join(", "));
+  assert.equal(residui.some((nome) => nome.endsWith(".cas-backup")), false, residui.join(", "));
+  assert.equal(residui.some((nome) => nome.endsWith(".cas-rejected")), false, residui.join(", "));
+});
+
+test("un errore di cleanup del backup non annulla il commit ne il latch", async (t) => {
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      await writeFile(join(cartella, "models.json"), '{"preferenza":"preserva"}\n', "utf8");
+    },
+    rimuoviBackupConfigurazione: async (percorso, opzioni) => {
+      if (percorso.endsWith(".cas-backup")) {
+        const errore = new Error("backup occupato");
+        errore.code = "EPERM";
+        throw errore;
+      }
+      return rm(percorso, opzioni);
+    },
+  });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "cas-cleanup-backup");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvio.dati.id,
+  });
+  assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+  assert.equal(esito.dati.refreshRequired, true);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const configurazione = JSON.parse(await readFile(percorso, "utf8"));
+  for (const provider of ["openai", "openai-codex"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.equal(
+        configurazione.providers[provider].modelOverrides[modello].contextWindow,
+        1_050_000,
+      );
+    }
+  }
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "prompt",
+    id: "prompt-dopo-cleanup-fallito",
+    message: "non inoltrare",
+  });
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  const residui = await readdir(dirname(percorso));
+  assert.equal(residui.filter((nome) => nome.endsWith(".cas-backup")).length, 1, residui.join(", "));
+  assert.equal(residui.some((nome) => nome.endsWith(".tmp")), false, residui.join(", "));
+});
+
+test("il CAS non sovrascrive un models.json creato mentre il target era assente", async (t) => {
+  const esterno = '{"creatoDa":"altro-processo"}\n';
+  let crea = true;
+  const ambiente = await avviaPonteTest({
+    primaCommitConfigurazioneModelli: async ({ percorso, fase }) => {
+      if (crea && fase === "prima-riserva") {
+        crea = false;
+        await writeFile(percorso, esterno, "utf8");
+      }
+    },
+  });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "cas-creazione-esterna");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvio.dati.id,
+  });
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  assert.equal(await readFile(percorso, "utf8"), esterno);
+  const residui = await readdir(dirname(percorso));
+  assert.equal(residui.some((nome) => nome.endsWith(".tmp")), false, residui.join(", "));
+});
+
+test("il CAS non sovrascrive un nuovo target comparso dopo la riserva", async (t) => {
+  const originale = '{"preferenza":"prima"}\n';
+  const esterno = '{"creatoDopoRename":true}\n';
+  let crea = true;
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      await writeFile(join(cartella, "models.json"), originale, "utf8");
+    },
+    primaCommitConfigurazioneModelli: async ({ percorso, fase }) => {
+      if (crea && fase === "prima-installazione") {
+        crea = false;
+        await writeFile(percorso, esterno, "utf8");
+      }
+    },
+  });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "cas-race-installazione");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvio.dati.id,
+  });
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  assert.equal(await readFile(percorso, "utf8"), esterno);
+  const residui = await readdir(dirname(percorso));
+  assert.equal(residui.some((nome) => nome.endsWith(".tmp")), false, residui.join(", "));
+  assert.equal(residui.some((nome) => nome.endsWith(".cas-backup")), true,
+    "il backup atteso resta recuperabile quando ripristinarlo sovrascriverebbe il nuovo target");
+});
+
+test("il CAS protegge anche il ripristino/disattivazione da edit esterni", async (t) => {
+  let intercettaDisattivazione = false;
+  let giaModificato = false;
+  let byteEsterni = null;
+  const ambiente = await avviaPonteTest({
+    primaCommitConfigurazioneModelli: async ({ percorso, azione, fase }) => {
+      if (!intercettaDisattivazione || giaModificato || azione !== "remove" || fase !== "prima-riserva") return;
+      giaModificato = true;
+      const configurazione = JSON.parse(await readFile(percorso, "utf8"));
+      configurazione.editEsterno = { preserva: true };
+      byteEsterni = JSON.stringify(configurazione, null, 2) + "\n";
+      await writeFile(percorso, byteEsterni, "utf8");
+    },
+  });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "cas-disattivazione");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+  const attiva = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+  intercettaDisattivazione = true;
+  const disattiva = await ambiente.post("/api/contesto-esteso-gpt", richiesta(false));
+  assert.equal(disattiva.risposta.status, 409, JSON.stringify(disattiva.dati));
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  assert.equal(await readFile(percorso, "utf8"), byteEsterni);
+});
+
+test("il latch del catalogo e server-side, sopravvive a nuovi client e resta dirty sui fallimenti", async (t) => {
+  const ambiente = await avviaPonteTest({
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      // Il bridge preserva provider estranei; se PI rigetta il loro schema e
+      // ripiega sul catalogo builtin, la verifica dei sei target deve fallire.
+      await writeFile(join(cartella, "models.json"), JSON.stringify({
+        providers: { altro: { models: "schema-estraneo-invalido" } },
+      }), "utf8");
+    },
+    timeoutRicaricaCatalogoModelliMs: 100,
+  });
+  t.after(ambiente.chiudi);
+  const workspaceA = join(ambiente.home, "latch-a");
+  const workspaceB = join(ambiente.home, "latch-b");
+  const workspaceC = join(ambiente.home, "latch-creata-dopo-config");
+  await mkdir(workspaceA);
+  await mkdir(workspaceB);
+  await mkdir(workspaceC);
+  const avvioA = await ambiente.post("/api/avvia", { cartella: workspaceA });
+  const avvioB = await ambiente.post("/api/avvia", { cartella: workspaceB });
+  const attiva = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvioA.dati.id,
+  });
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+  const avvioC = await ambiente.post("/api/avvia", { cartella: workspaceC });
+  assert.equal(avvioC.risposta.status, 200, JSON.stringify(avvioC.dati));
+
+  const snapshot = async () => (await (await fetch(ambiente.base + "/api/stato")).json());
+  for (const stato of [await snapshot(), await snapshot()]) {
+    for (const id of [avvioA.dati.id, avvioB.dati.id, avvioC.dati.id]) {
+      const meta = stato.sessioni.find((voce) => voce.id === id);
+      assert.equal(meta.catalogoModelliDaRicaricare, true);
+      assert.equal(meta.revisioneCatalogoModelliAttesa, 1);
+      assert.equal(meta.contextWindowCatalogoModelliAttesa, 1_050_000);
+    }
+  }
+
+  const sessione = ambiente.ponte.sessioni.get(avvioA.dati.id);
+  const getState = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "get_state",
+    id: "get-state-non-bypassa-latch",
+  }, ambiente.stato.tokenApi, "client-f5");
+  assert.equal(getState.risposta.status, 200, JSON.stringify(getState.dati));
+  await attendi(20);
+  assert.equal((await snapshot()).sessioni.find((voce) => voce.id === sessione.id)
+    .catalogoModelliDaRicaricare, true);
+
+  for (const comando of [
+    { type: "prompt", id: "prompt-dirty", message: "non inviare" },
+    { type: "steer", id: "steer-dirty", message: "non guidare" },
+    { type: "follow_up", id: "follow-dirty", message: "non accodare" },
+    { type: "set_model", id: "model-dirty", provider: "openai", modelId: "gpt-5.6-sol" },
+  ]) {
+    const bloccato = await ambiente.post("/api/comando", {
+      sessionId: sessione.id,
+      ...comando,
+    }, ambiente.stato.tokenApi, "client-nuovo");
+    assert.equal(bloccato.risposta.status, 409, `${comando.type}: ${JSON.stringify(bloccato.dati)}`);
+    assert.match(bloccato.dati.errore, /catalogo modelli/i);
+  }
+
+  const ripristinaErroreRefresh = intercettaRpcSessione(sessione, (comando) =>
+    comando.type === "refresh_models"
+      ? { success: false, error: "refresh provider fallito" }
+      : null);
+  const refreshFallito = await ambiente.post("/api/ricarica-contesto-gpt", {
+    sessionId: sessione.id,
+  });
+  ripristinaErroreRefresh();
+  assert.equal(refreshFallito.risposta.status, 409, JSON.stringify(refreshFallito.dati));
+  assert.equal((await snapshot()).sessioni.find((voce) => voce.id === sessione.id)
+    .catalogoModelliDaRicaricare, true);
+
+  // Simuliamo un refresh RPC formalmente riuscito seguito dal fallback
+  // builtin senza i sei GPT-5.6: la verifica esatta resta fail-closed.
+  const ripristinaFallback = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: [{ provider: "fake", id: "modello-test", contextWindow: 32_000 }] } };
+    }
+    return null;
+  });
+  const fallback = await ambiente.post("/api/ricarica-contesto-gpt", {
+    sessionId: sessione.id,
+  });
+  ripristinaFallback();
+  assert.equal(fallback.risposta.status, 409, JSON.stringify(fallback.dati));
+  assert.equal((await snapshot()).sessioni.find((voce) => voce.id === sessione.id)
+    .catalogoModelliDaRicaricare, true);
+});
+
+test("una nuova sessione eredita il latch gestito anche dopo il riavvio del bridge", async (t) => {
+  let primo = await avviaPonteTest({
+    conservaHome: true,
+    preparaHome: async (home) => {
+      const cartella = join(home, ".pi", "agent");
+      await mkdir(cartella, { recursive: true });
+      await writeFile(join(cartella, "models.json"), JSON.stringify({
+        providers: { altro: { models: "schema-estraneo-invalido" } },
+      }), "utf8");
+    },
+  });
+  const home = primo.home;
+  let secondo = null;
+  t.after(async () => {
+    await secondo?.chiudi();
+    await primo?.chiudi();
+    await rm(home, { recursive: true, force: true });
+  });
+  const cartellaPrima = join(home, "latch-prima-del-riavvio");
+  await mkdir(cartellaPrima);
+  const avvioPrima = await primo.post("/api/avvia", { cartella: cartellaPrima });
+  const attiva = await primo.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: avvioPrima.dati.id,
+  });
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+  await primo.chiudi();
+  primo = null;
+
+  secondo = await avviaPonteTest({ home, conservaHome: true });
+  const cartellaDopo = join(home, "latch-dopo-il-riavvio");
+  await mkdir(cartellaDopo);
+  const avvioDopo = await secondo.post("/api/avvia", { cartella: cartellaDopo });
+  assert.equal(avvioDopo.risposta.status, 200, JSON.stringify(avvioDopo.dati));
+  const sessione = secondo.ponte.sessioni.get(avvioDopo.dati.id);
+  const meta = sessione.riassunto();
+  assert.equal(meta.catalogoModelliDaRicaricare, true);
+  assert.equal(meta.revisioneCatalogoModelliAttesa, 1);
+  assert.equal(meta.contextWindowCatalogoModelliAttesa, 1_050_000);
+  const prompt = await secondo.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "prompt",
+    id: "prompt-dopo-riavvio-dirty",
+    message: "non inoltrare",
+  }, secondo.stato.tokenApi, "client-dopo-riavvio");
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  assert.match(prompt.dati.errore, /catalogo modelli/i);
+});
+
+test("OAuth openai-codex verifica solo i provider disponibili e sempre quello corrente", async (t) => {
+  const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "latch-oauth-codex");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const attiva = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: sessione.id,
+  });
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-sol";
+  sessione.nomeModello = "GPT-5.6 Sol";
+
+  let setModelInviati = 0;
+  let ripristina = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: {
+        models: catalogoGpt56(1_050_000).filter((voce) => voce.provider === "openai"),
+      } };
+    }
+    if (comando.type === "set_model") setModelInviati += 1;
+    return null;
+  });
+  const providerCorrenteAssente = await ambiente.post("/api/ricarica-contesto-gpt", {
+    sessionId: sessione.id,
+  });
+  ripristina();
+  assert.equal(providerCorrenteAssente.risposta.status, 409, JSON.stringify(providerCorrenteAssente.dati));
+  assert.match(providerCorrenteAssente.dati.errore, /provider corrente openai-codex/i);
+  assert.equal(setModelInviati, 0);
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+
+  const tipi = [];
+  ripristina = intercettaRpcSessione(sessione, (comando) => {
+    tipi.push(comando.type);
+    if (comando.type === "refresh_models") {
+      return { data: {
+        aborted: false,
+        timedOut: false,
+        errors: [{ providerId: "openai", message: "API key non disponibile" }],
+      } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: {
+        models: catalogoGpt56(1_050_000).filter((voce) => voce.provider === "openai-codex"),
+      } };
+    }
+    if (comando.type === "set_model") {
+      assert.equal(comando.provider, "openai-codex");
+      assert.equal(comando.modelId, "gpt-5.6-sol");
+      return { data: { provider: comando.provider, id: comando.modelId } };
+    }
+    if (comando.type === "get_state") {
+      return { data: {
+        model: {
+          provider: "openai-codex",
+          id: "gpt-5.6-sol",
+          name: "GPT-5.6 Sol",
+          contextWindow: 1_050_000,
+        },
+        sessionFile: sessione.fileSessione,
+        isStreaming: false,
+        isCompacting: false,
+      } };
+    }
+    return { success: false, error: "comando inatteso" };
+  });
+  const esito = await ambiente.post("/api/ricarica-contesto-gpt", {
+    sessionId: sessione.id,
+  });
+  ripristina();
+  assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+  assert.deepEqual(tipi, ["refresh_models", "get_available_models", "set_model", "get_state"]);
+  assert.equal(esito.dati.catalogoModelliDaRicaricare, false);
+
+  const configurazione = JSON.parse(await readFile(
+    join(ambiente.home, ".pi", "agent", "models.json"),
+    "utf8",
+  ));
+  for (const provider of ["openai", "openai-codex"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.equal(
+        configurazione.providers[provider].modelOverrides[modello].contextWindow,
+        1_050_000,
+      );
+    }
+  }
+});
+
+test("solo la sequenza server verificata chiude il latch e conferma la finestra GPT effettiva", async (t) => {
+  const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "latch-successo");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const attiva = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: sessione.id,
+  });
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+  sessione.provider = "openai";
+  sessione.modello = "gpt-5.6-sol";
+  sessione.nomeModello = "GPT-5.6 Sol";
+
+  const cambioPrematuro = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "set_model",
+    id: "set-prima-verifica",
+    provider: "openai",
+    modelId: "gpt-5.6-terra",
+  }, ambiente.stato.tokenApi, "client-prima");
+  assert.equal(cambioPrematuro.risposta.status, 409, JSON.stringify(cambioPrematuro.dati));
+
+  const tipi = [];
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    tipi.push(comando.type);
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: catalogoGpt56(1_050_000), errors: [] } };
+    }
+    if (comando.type === "set_model") {
+      assert.equal(comando.provider, "openai");
+      assert.equal(comando.modelId, "gpt-5.6-sol");
+      return { data: { provider: comando.provider, id: comando.modelId, name: "GPT-5.6 Sol" } };
+    }
+    if (comando.type === "get_state") {
+      return { data: {
+        model: {
+          provider: "openai",
+          id: "gpt-5.6-sol",
+          name: "GPT-5.6 Sol",
+          contextWindow: 1_050_000,
+        },
+        sessionFile: sessione.fileSessione,
+        isStreaming: false,
+      } };
+    }
+    return { success: false, error: "comando inatteso" };
+  });
+  const esito = await ambiente.post("/api/ricarica-contesto-gpt", {
+    sessionId: sessione.id,
+  });
+  ripristina();
+  assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+  assert.deepEqual(tipi, [
+    "refresh_models",
+    "get_available_models",
+    "set_model",
+    "get_state",
+  ]);
+  assert.equal(esito.dati.catalogoModelliDaRicaricare, false);
+  const stato = await (await fetch(ambiente.base + "/api/stato")).json();
+  const meta = stato.sessioni.find((voce) => voce.id === sessione.id);
+  assert.equal(meta.catalogoModelliDaRicaricare, false);
+  assert.equal(meta.rebindModelloInCorso, false);
+
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: sessione.id,
+    type: "prompt",
+    id: "prompt-dopo-verifica",
+    message: "ora puoi inviare",
+  }, ambiente.stato.tokenApi, "client-dopo");
+  assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
+});
+
+test("refresh abortito e target duplicati restano dirty, mentre un modello non GPT completa il rebind", async (t) => {
+  const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "latch-casi-limite");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const attiva = await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: sessione.id,
+  });
+  assert.equal(attiva.risposta.status, 200, JSON.stringify(attiva.dati));
+
+  let ripristina = intercettaRpcSessione(sessione, (comando) => comando.type === "refresh_models"
+    ? { data: { aborted: true, timedOut: false, errors: [] } }
+    : null);
+  const abortito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+  ripristina();
+  assert.equal(abortito.risposta.status, 409, JSON.stringify(abortito.dati));
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+
+  ripristina = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      const modelli = catalogoGpt56(1_050_000);
+      return { data: { models: [...modelli, { ...modelli[0] }], errors: [] } };
+    }
+    return null;
+  });
+  const duplicato = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+  ripristina();
+  assert.equal(duplicato.risposta.status, 409, JSON.stringify(duplicato.dati));
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+
+  sessione.provider = "anthropic";
+  sessione.modello = "claude-opus-5";
+  sessione.nomeModello = "Claude Opus 5";
+  ripristina = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: catalogoGpt56(1_050_000), errors: [] } };
+    }
+    if (comando.type === "set_model") {
+      return { data: { provider: comando.provider, id: comando.modelId } };
+    }
+    if (comando.type === "get_state") {
+      return { data: {
+        model: {
+          provider: "anthropic",
+          id: "claude-opus-5",
+          name: "Claude Opus 5",
+          contextWindow: 1_000_000,
+        },
+        sessionFile: sessione.fileSessione,
+        isStreaming: false,
+        isCompacting: false,
+      } };
+    }
+    return null;
+  });
+  const nonGpt = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+  ripristina();
+  assert.equal(nonGpt.risposta.status, 200, JSON.stringify(nonGpt.dati));
+  assert.equal(nonGpt.dati.catalogoModelliDaRicaricare, false);
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+});
+
+test("la verifica del catalogo non invia set_model se il JSONL e stato sostituito", async (t) => {
+  const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "latch-jsonl-sostituito");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  await ambiente.post("/api/contesto-esteso-gpt", {
+    enabled: true,
+    sessionId: sessione.id,
+  });
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-sol";
+  const originale = sessione.fileSessione;
+  await rename(originale, originale + ".spostato");
+  await writeFile(originale, "", "utf8");
+
+  let setModelInviati = 0;
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: catalogoGpt56(1_050_000), errors: [] } };
+    }
+    if (comando.type === "set_model") setModelInviati += 1;
+    return null;
+  });
+  const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+  ripristina();
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  assert.match(esito.dati.errore, /file diverso|spostato o sostituito/i);
+  assert.equal(setModelInviati, 0);
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+  assert.equal(sessione.riassunto().rebindModelloInCorso, false);
+  assert.equal(await readFile(originale, "utf8"), "");
+});
+
+test("catalogo esatto ma get_state GPT con finestra errata non puo chiudere il latch", async (t) => {
+  const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
+  t.after(ambiente.chiudi);
+  const workspace = join(ambiente.home, "latch-stato-errato");
+  await mkdir(workspace);
+  const avvio = await ambiente.post("/api/avvia", { cartella: workspace });
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  await ambiente.post("/api/contesto-esteso-gpt", { enabled: true, sessionId: sessione.id });
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-luna";
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    if (comando.type === "refresh_models") {
+      return { data: { aborted: false, timedOut: false, errors: [] } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: catalogoGpt56(1_050_000) } };
+    }
+    if (comando.type === "set_model") {
+      return { data: { provider: comando.provider, id: comando.modelId } };
+    }
+    if (comando.type === "get_state") {
+      return { data: {
+        model: { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 272_000 },
+        sessionFile: sessione.fileSessione,
+        isStreaming: false,
+      } };
+    }
+    return null;
+  });
+  const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+  ripristina();
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  assert.match(esito.dati.errore, /finestra attesa/i);
+  assert.equal(sessione.riassunto().catalogoModelliDaRicaricare, true);
+  assert.throws(
+    () => sessione.invia({ type: "prompt", id: "ancora-dirty", message: "no" }),
+    (errore) => errore?.statusHttp === 409,
+  );
+});
+
+test("l'endpoint allega file salva soltanto payload autenticati e rigorosamente validi", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "progetto-allegati");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+
+  const contenuto = Buffer.from("contenuto allegato \u03c0", "utf8");
+  const payload = {
+    sessionId: avvio.dati.id,
+    nome: "..\\segreto\\rapporto:<Q1>?.txt. ",
+    mimeType: "text/plain",
+    dimensione: contenuto.length,
+    data: contenuto.toString("base64"),
+  };
+  const senzaToken = await ambiente.post("/api/allega-file", payload, null);
+  assert.equal(senzaToken.risposta.status, 403);
+  assert.match(senzaToken.dati.errore, /autorizzata/i);
+
+  const sessioneInesistente = await ambiente.post("/api/allega-file", {
+    ...payload,
+    sessionId: "sessione-inesistente",
+  });
+  assert.equal(sessioneInesistente.risposta.status, 404);
+  ambiente.ponte.sessioni.set("sessione-inattiva", {
+    id: "sessione-inattiva",
+    proc: null,
+    inChiusura: false,
+  });
+  const sessioneInattiva = await ambiente.post("/api/allega-file", {
+    ...payload,
+    sessionId: "sessione-inattiva",
+  });
+  ambiente.ponte.sessioni.delete("sessione-inattiva");
+  assert.equal(sessioneInattiva.risposta.status, 409);
+  assert.match(sessioneInattiva.dati.errore, /non e attiva/i);
+
+  const salvato = await ambiente.post("/api/allega-file", payload);
+  assert.equal(salvato.risposta.status, 200, JSON.stringify(salvato.dati));
+  assert.equal(salvato.dati.allegato.tipo, "file");
+  assert.match(salvato.dati.allegato.id, /^[0-9a-f-]{36}$/i);
+  assert.equal(salvato.dati.allegato.nome, "rapporto__Q1__.txt");
+  assert.equal(salvato.dati.allegato.mimeType, "text/plain");
+  assert.equal(salvato.dati.allegato.dimensione, contenuto.length);
+  assert.equal(isAbsolute(salvato.dati.allegato.percorso), true);
+  const radiceAllegati = resolve(ambiente.home, ".pi", "gui", "allegati");
+  const scarto = relative(radiceAllegati, resolve(salvato.dati.allegato.percorso));
+  assert.equal(scarto === "" || scarto === ".." || scarto.startsWith(".." + sep), false);
+  assert.match(scarto, /^[0-9a-f]{64}[\\/][0-9a-f-]{36}-rapporto__Q1__\.txt$/i);
+  assert.deepEqual(await readFile(salvato.dati.allegato.percorso), contenuto);
+
+  const riservato = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "C:\\cartella\\CON.txt",
+    mimeType: "",
+    dimensione: 0,
+    data: "",
+  });
+  assert.equal(riservato.risposta.status, 200, JSON.stringify(riservato.dati));
+  assert.equal(riservato.dati.allegato.nome, "_CON.txt");
+  assert.equal(riservato.dati.allegato.mimeType, "application/octet-stream");
+  assert.deepEqual(await readFile(riservato.dati.allegato.percorso), Buffer.alloc(0));
+
+  const extra = await ambiente.post("/api/allega-file", { ...payload, inatteso: true });
+  assert.equal(extra.risposta.status, 400);
+  assert.match(extra.dati.errore, /campi/i);
+  const mancante = { ...payload };
+  delete mancante.mimeType;
+  const senzaCampo = await ambiente.post("/api/allega-file", mancante);
+  assert.equal(senzaCampo.risposta.status, 400);
+  const mimeNonStringa = await ambiente.post("/api/allega-file", { ...payload, mimeType: null });
+  assert.equal(mimeNonStringa.risposta.status, 400);
+
+  const base64NonCanonico = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: 1,
+    data: "YQ",
+  });
+  assert.equal(base64NonCanonico.risposta.status, 400);
+  assert.match(base64NonCanonico.dati.errore, /base64/i);
+  const base64Illegale = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: 3,
+    data: "****",
+  });
+  assert.equal(base64Illegale.risposta.status, 400);
+  const dimensioneDiscorde = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: contenuto.length + 1,
+  });
+  assert.equal(dimensioneDiscorde.risposta.status, 400);
+  assert.match(dimensioneDiscorde.dati.errore, /dimensione dichiarata/i);
+  const dimensioneNonIntera = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: 1.5,
+  });
+  assert.equal(dimensioneNonIntera.risposta.status, 400);
+  const oltreLimiteDichiarato = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: 10 * 1024 * 1024 + 1,
+  });
+  assert.equal(oltreLimiteDichiarato.risposta.status, 413);
+  assert.match(oltreLimiteDichiarato.dati.errore, /10 MiB/i);
+  const oltreLimiteCodificato = await ambiente.post("/api/allega-file", {
+    ...payload,
+    dimensione: 10 * 1024 * 1024,
+    data: "A".repeat(Math.ceil((10 * 1024 * 1024) / 3) * 4 + 4),
+  });
+  assert.equal(oltreLimiteCodificato.risposta.status, 413);
+  assert.match(oltreLimiteCodificato.dati.errore, /10 MiB/i);
+});
+
+test("i file pending si cancellano, mentre un prompt accettato li finalizza in modo irreversibile", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "ciclo-vita-allegati");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const sessionId = avvio.dati.id;
+  const carica = (nome) => ambiente.post("/api/allega-file", {
+    sessionId,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 4,
+    data: Buffer.from("test").toString("base64"),
+  });
+
+  const daRimuovere = (await carica("rimuovi.txt")).dati.allegato;
+  assert.match(daRimuovere.token, /^[0-9a-f-]{36}$/i);
+  const directory = dirname(daRimuovere.percorso);
+  assert.ok((await readdir(directory)).includes(`${daRimuovere.id}.pending.json`));
+  const riferimentoRimozione = [{ id: daRimuovere.id, token: daRimuovere.token }];
+
+  const extra = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId,
+    azione: "elimina",
+    allegati: riferimentoRimozione,
+    inatteso: true,
+  });
+  assert.equal(extra.risposta.status, 400);
+  const tokenErrato = daRimuovere.token.slice(0, -1)
+    + (daRimuovere.token.endsWith("0") ? "1" : "0");
+  const nonProprietario = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId,
+    azione: "elimina",
+    allegati: [{ id: daRimuovere.id, token: tokenErrato }],
+  });
+  assert.equal(nonProprietario.risposta.status, 403);
+  assert.deepEqual(await readFile(daRimuovere.percorso), Buffer.from("test"));
+  const traversal = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId,
+    azione: "elimina",
+    allegati: [{ id: "../../segreto", token: daRimuovere.token }],
+  });
+  assert.equal(traversal.risposta.status, 400);
+
+  const eliminato = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId,
+    azione: "elimina",
+    allegati: riferimentoRimozione,
+  });
+  assert.equal(eliminato.risposta.status, 200, JSON.stringify(eliminato.dati));
+  await assert.rejects(stat(daRimuovere.percorso), { code: "ENOENT" });
+  await assert.rejects(stat(join(directory, `${daRimuovere.id}.pending.json`)), { code: "ENOENT" });
+
+  const inviato = (await carica("inviato.txt")).dati.allegato;
+  const riferimentoInvio = [{ id: inviato.id, token: inviato.token }];
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId,
+    type: "prompt",
+    id: "prompt-con-file",
+    message: "Analizza il file allegato",
+    piGuiFileRefs: riferimentoInvio,
+  }, ambiente.stato.tokenApi, "finestra-allegati");
+  assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
+  assert.equal(prompt.dati.allegatiFinalizzati, undefined);
+  assert.ok((await readdir(directory)).includes(`${inviato.id}.final.json`));
+  assert.equal((await readdir(directory)).includes(`${inviato.id}.pending.json`), false);
+
+  const eliminaDopoInvio = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId,
+    azione: "elimina",
+    allegati: riferimentoInvio,
+  });
+  assert.equal(eliminaDopoInvio.risposta.status, 409);
+  assert.match(eliminaDopoInvio.dati.errore, /gia preparato o inviato/i);
+  assert.deepEqual(await readFile(inviato.percorso), Buffer.from("test"));
+
+  await ambiente.ponte.sessioni.get(sessionId).ferma({ notifica: false });
+  ambiente.ponte.sessioni.delete(sessionId);
+  await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now() + 31 * 24 * 60 * 60 * 1000,
+    { forza: true },
+  );
+  assert.deepEqual(await readFile(inviato.percorso), Buffer.from("test"));
+});
+
+test("un pending sopravvive al riavvio del bridge adottandolo con owner e token nuovi", async (t) => {
+  const primo = await avviaPonteTest({ conservaHome: true });
+  const home = primo.home;
+  let secondo = null;
+  t.after(async () => {
+    if (secondo) await secondo.chiudi().catch(() => {});
+    else await primo.chiudi().catch(() => {});
+    await rm(home, { recursive: true, force: true });
+  });
+  const cartella = join(home, "adozione-dopo-restart");
+  await mkdir(cartella);
+  const avvioA = await primo.post("/api/avvia", { cartella });
+  const originale = (await primo.post("/api/allega-file", {
+    sessionId: avvioA.dati.id,
+    nome: "persistente.txt",
+    mimeType: "text/plain",
+    dimensione: 7,
+    data: Buffer.from("riavvio").toString("base64"),
+  })).dati.allegato;
+  assert.equal(originale.ownerSessionId, avvioA.dati.id);
+  await primo.chiudi();
+
+  secondo = await avviaPonteTest({ home, conservaHome: true });
+  const avvioB = await secondo.post("/api/avvia", { cartella });
+  const extra = await secondo.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [{
+      ownerSessionId: originale.ownerSessionId,
+      id: originale.id,
+      token: originale.token,
+    }],
+    inatteso: true,
+  });
+  assert.equal(extra.risposta.status, 400);
+  const adozione = await secondo.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [{
+      ownerSessionId: originale.ownerSessionId,
+      id: originale.id,
+      token: originale.token,
+    }],
+  });
+  assert.equal(adozione.risposta.status, 200, JSON.stringify(adozione.dati));
+  const adottato = adozione.dati.allegati[0];
+  assert.equal(adottato.ownerSessionId, avvioB.dati.id);
+  assert.notEqual(adottato.id, originale.id);
+  assert.notEqual(adottato.token, originale.token);
+  assert.deepEqual(await readFile(adottato.percorso), Buffer.from("riavvio"));
+
+  const prompt = await secondo.post("/api/comando", {
+    sessionId: avvioB.dati.id,
+    type: "prompt",
+    id: "prompt-file-adottato",
+    message: "usa il file recuperato",
+    piGuiFileRefs: [{ id: adottato.id, token: adottato.token }],
+  });
+  assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
+  assert.ok((await stat(join(dirname(adottato.percorso), `${adottato.id}.final.json`))).isFile());
+});
+
+test("la copia pending di una seconda finestra resta inviabile dopo la rimozione dell'originale", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartellaA = join(ambiente.home, "finestra-a-file");
+  const cartellaB = join(ambiente.home, "finestra-b-file");
+  await mkdir(cartellaA);
+  await mkdir(cartellaB);
+  const avvioA = await ambiente.post("/api/avvia", { cartella: cartellaA });
+  const avvioB = await ambiente.post("/api/avvia", { cartella: cartellaB });
+  const originale = (await ambiente.post("/api/allega-file", {
+    sessionId: avvioA.dati.id,
+    nome: "condiviso.txt",
+    mimeType: "text/plain",
+    dimensione: 6,
+    data: Buffer.from("copia!").toString("base64"),
+  })).dati.allegato;
+  const riferimentoOriginale = {
+    ownerSessionId: avvioA.dati.id,
+    id: originale.id,
+    token: originale.token,
+  };
+  const riferimentoExtra = await ambiente.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [{ ...riferimentoOriginale, percorso: originale.percorso }],
+  });
+  assert.equal(riferimentoExtra.risposta.status, 400);
+  const tokenErrato = originale.token.slice(0, -1)
+    + (originale.token.endsWith("0") ? "1" : "0");
+  const tokenForzato = await ambiente.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [{ ...riferimentoOriginale, token: tokenErrato }],
+  });
+  assert.equal(tokenForzato.risposta.status, 403);
+  const ownerForzato = await ambiente.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [{ ...riferimentoOriginale, ownerSessionId: "../../altra-sessione" }],
+  });
+  assert.equal(ownerForzato.risposta.status, 404);
+  const adozione = await ambiente.post("/api/adotta-file-allegati", {
+    sessionId: avvioB.dati.id,
+    allegati: [riferimentoOriginale],
+  });
+  assert.equal(adozione.risposta.status, 200, JSON.stringify(adozione.dati));
+  const copia = adozione.dati.allegati[0];
+  assert.notEqual(copia.percorso, originale.percorso);
+
+  const rimozioneA = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId: avvioA.dati.id,
+    azione: "elimina",
+    allegati: [{ id: originale.id, token: originale.token }],
+  });
+  assert.equal(rimozioneA.risposta.status, 200, JSON.stringify(rimozioneA.dati));
+  await assert.rejects(stat(originale.percorso), { code: "ENOENT" });
+  assert.deepEqual(await readFile(copia.percorso), Buffer.from("copia!"));
+
+  const promptB = await ambiente.post("/api/comando", {
+    sessionId: avvioB.dati.id,
+    type: "prompt",
+    id: "prompt-copia-finestra-b",
+    message: "usa la copia isolata",
+    piGuiFileRefs: [{ id: copia.id, token: copia.token }],
+  });
+  assert.equal(promptB.risposta.status, 200, JSON.stringify(promptB.dati));
+  assert.deepEqual(await readFile(copia.percorso), Buffer.from("copia!"));
+});
+
+test("la chiusura elimina i pending soltanto dopo l'arresto riuscito della sessione", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "chiusura-con-pending");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const caricato = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "bozza-da-eliminare.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  });
+  const file = caricato.dati.allegato;
+  const manifesto = join(dirname(file.percorso), `${file.id}.pending.json`);
+  const chiusura = await ambiente.post("/api/chiudi", {
+    sessionId: avvio.dati.id,
+    filePendenti: [{ id: file.id, token: file.token }],
+  });
+  assert.equal(chiusura.risposta.status, 200, JSON.stringify(chiusura.dati));
+  assert.equal(ambiente.ponte.sessioni.has(avvio.dati.id), false);
+  await assert.rejects(stat(file.percorso), { code: "ENOENT" });
+  await assert.rejects(stat(manifesto), { code: "ENOENT" });
+});
+
+test("la chiusura riuscita segnala il cleanup parziale senza riaprire una sessione mutilata", async (t) => {
+  let idDaFallire = null;
+  const ambiente = await avviaPonteTest({
+    rimuoviFileAllegato: async (percorso, opzioni) => {
+      if (idDaFallire && basename(percorso).startsWith(idDaFallire + "-")) {
+        const errore = new Error("rimozione simulata non riuscita");
+        errore.code = "EACCES";
+        throw errore;
+      }
+      return rm(percorso, opzioni);
+    },
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "chiusura-cleanup-parziale");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const carica = async (nome) => (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  const primo = await carica("primo.txt");
+  const secondo = await carica("secondo.txt");
+  idDaFallire = secondo.id;
+
+  const chiusura = await ambiente.post("/api/chiudi", {
+    sessionId: avvio.dati.id,
+    filePendenti: [primo, secondo].map(({ id, token }) => ({ id, token })),
+  });
+  assert.equal(chiusura.risposta.status, 200, JSON.stringify(chiusura.dati));
+  assert.equal(chiusura.dati.pendingNonEliminati, 1);
+  assert.match(chiusura.dati.avviso, /cleanup automatico/i);
+  assert.equal(ambiente.ponte.sessioni.has(avvio.dati.id), false);
+  await assert.rejects(stat(primo.percorso), { code: "ENOENT" });
+  assert.deepEqual(await readFile(secondo.percorso), Buffer.from("x"));
+  assert.ok((await stat(join(dirname(secondo.percorso), `${secondo.id}.pending.json`))).isFile());
+});
+
+test("una chiusura fallita conserva file e manifesto pending della bozza", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "chiusura-fallita-pending");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const caricato = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "bozza-da-preservare.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  });
+  const file = caricato.dati.allegato;
+  const manifesto = join(dirname(file.percorso), `${file.id}.pending.json`);
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const fermaOriginale = sessione.ferma.bind(sessione);
+  sessione.ferma = async () => {
+    throw new Error("arresto simulato non riuscito");
+  };
+  const chiusura = await ambiente.post("/api/chiudi", {
+    sessionId: avvio.dati.id,
+    filePendenti: [{ id: file.id, token: file.token }],
+  });
+  sessione.ferma = fermaOriginale;
+
+  assert.equal(chiusura.risposta.status, 500, JSON.stringify(chiusura.dati));
+  assert.equal(ambiente.ponte.sessioni.has(avvio.dati.id), true);
+  assert.deepEqual(await readFile(file.percorso), Buffer.from("x"));
+  assert.ok((await stat(manifesto)).isFile());
+});
+
+test("la preparazione multi-file torna tutta pending se una rinomina intermedia fallisce", async (t) => {
+  let rinominePending = 0;
+  const ambiente = await avviaPonteTest({
+    rinominaFileAllegato: async (sorgente, destinazione) => {
+      if (sorgente.endsWith(".pending.json") && destinazione.endsWith(".prepared.json")) {
+        rinominePending += 1;
+        if (rinominePending === 2) throw new Error("seconda rinomina simulata non riuscita");
+      }
+      return rename(sorgente, destinazione);
+    },
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "rollback-preparazione-file");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const carica = async (nome) => (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  const file = [await carica("uno.txt"), await carica("due.txt")];
+  const riferimenti = file.map(({ id, token }) => ({ id, token }));
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: avvio.dati.id,
+    type: "prompt",
+    id: "prompt-rollback-file",
+    message: "non deve entrare nel canale",
+    piGuiFileRefs: riferimenti,
+  });
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  for (const allegato of file) {
+    const voci = await readdir(dirname(allegato.percorso));
+    assert.ok(voci.includes(`${allegato.id}.pending.json`));
+    assert.equal(voci.includes(`${allegato.id}.prepared.json`), false);
+  }
+  const eliminazione = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId: avvio.dati.id,
+    azione: "elimina",
+    allegati: riferimenti,
+  });
+  assert.equal(eliminazione.risposta.status, 200, JSON.stringify(eliminazione.dati));
+});
+
+test("il rollback dell'inoltro ripristina solo i pending preparati dal tentativo corrente", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "rollback-selettivo-file");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const carica = async (nome) => (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  const giaPreparato = await carica("gia-preparato.txt");
+  const preparatoOra = await carica("preparato-ora.txt");
+  const directory = dirname(giaPreparato.percorso);
+  await rename(
+    join(directory, `${giaPreparato.id}.pending.json`),
+    join(directory, `${giaPreparato.id}.prepared.json`),
+  );
+
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  sessione.diffondi({ type: "compaction_start", reason: "test" });
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: avvio.dati.id,
+    type: "prompt",
+    id: "prompt-rollback-selettivo",
+    message: "non inoltrare durante la compattazione",
+    piGuiFileRefs: [giaPreparato, preparatoOra]
+      .map(({ id, token }) => ({ id, token })),
+  });
+  sessione.diffondi({ type: "compaction_end", aborted: false });
+
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  assert.match(prompt.dati.errore, /compattazione/i);
+  let voci = await readdir(directory);
+  assert.ok(voci.includes(`${giaPreparato.id}.prepared.json`));
+  assert.equal(voci.includes(`${giaPreparato.id}.pending.json`), false);
+  assert.ok(voci.includes(`${preparatoOra.id}.pending.json`));
+  assert.equal(voci.includes(`${preparatoOra.id}.prepared.json`), false);
+
+  const riconciliazione = await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now(),
+    { forza: true },
+  );
+  assert.equal(riconciliazione.finalizzati, 1);
+  voci = await readdir(directory);
+  assert.ok(voci.includes(`${giaPreparato.id}.final.json`));
+  assert.ok(voci.includes(`${preparatoOra.id}.pending.json`));
+});
+
+test("un rollback prepare incompleto viene segnalato e il prepared e riconciliato senza cancellarlo", async (t) => {
+  let rinominePending = 0;
+  const ambiente = await avviaPonteTest({
+    rinominaFileAllegato: async (sorgente, destinazione) => {
+      if (sorgente.endsWith(".pending.json") && destinazione.endsWith(".prepared.json")) {
+        rinominePending += 1;
+        if (rinominePending === 2) throw new Error("forward simulato non riuscito");
+      }
+      if (sorgente.endsWith(".prepared.json") && destinazione.endsWith(".pending.json")) {
+        throw new Error("rollback simulato non riuscito");
+      }
+      return rename(sorgente, destinazione);
+    },
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "rollback-incompleto-file");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const carica = async (nome) => (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  const file = [await carica("uno.txt"), await carica("due.txt")];
+  const riferimenti = file.map(({ id, token }) => ({ id, token }));
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: avvio.dati.id,
+    type: "prompt",
+    id: "prompt-rollback-incompleto",
+    message: "non inoltrare",
+    piGuiFileRefs: riferimenti,
+  });
+  assert.equal(prompt.risposta.status, 409, JSON.stringify(prompt.dati));
+  assert.match(prompt.dati.errore, /rollback.*non e completo/i);
+  const directory = dirname(file[0].percorso);
+  assert.ok((await readdir(directory)).includes(`${file[0].id}.prepared.json`));
+
+  const riconciliazione = await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now(),
+    { forza: true },
+  );
+  assert.equal(riconciliazione.finalizzati, 1);
+  assert.ok((await readdir(directory)).includes(`${file[0].id}.final.json`));
+  assert.deepEqual(await readFile(file[0].percorso), Buffer.from("x"));
+});
+
+test("una finalizzazione transitoriamente fallita viene ritentata dal cleanup", async (t) => {
+  let fallisciFinalizzazione = true;
+  const ambiente = await avviaPonteTest({
+    rinominaFileAllegato: async (sorgente, destinazione) => {
+      if (
+        fallisciFinalizzazione
+        && sorgente.endsWith(".prepared.json")
+        && destinazione.endsWith(".final.json")
+      ) {
+        fallisciFinalizzazione = false;
+        throw new Error("finalizzazione simulata non riuscita");
+      }
+      return rename(sorgente, destinazione);
+    },
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "retry-finalizzazione-file");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const file = (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "inviato-con-retry.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  const prompt = await ambiente.post("/api/comando", {
+    sessionId: avvio.dati.id,
+    type: "prompt",
+    id: "prompt-finalizzazione-retry",
+    message: "invia una volta sola",
+    piGuiFileRefs: [{ id: file.id, token: file.token }],
+  });
+  assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
+  assert.equal(prompt.dati.allegatiFinalizzati, false);
+  const directory = dirname(file.percorso);
+  assert.ok((await readdir(directory)).includes(`${file.id}.prepared.json`));
+
+  const riconciliazione = await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now(),
+    { forza: true },
+  );
+  assert.equal(riconciliazione.finalizzati, 1);
+  assert.ok((await readdir(directory)).includes(`${file.id}.final.json`));
+  assert.equal((await readdir(directory)).includes(`${file.id}.prepared.json`), false);
+  assert.deepEqual(await readFile(file.percorso), Buffer.from("x"));
+});
+
+test("la quota pending limita count e byte e raccoglie gli orfani scaduti anche a sessione attiva", async (t) => {
+  const quotaCount = await avviaPonteTest({
+    maxFileAllegatiPendentiPerSessione: 2,
+    maxByteFileAllegatiPendentiPerSessione: 100,
+  });
+  t.after(quotaCount.chiudi);
+  const cartellaCount = join(quotaCount.home, "quota-count-file");
+  await mkdir(cartellaCount);
+  const avvioCount = await quotaCount.post("/api/avvia", { cartella: cartellaCount });
+  const payloadCount = {
+    sessionId: avvioCount.dati.id,
+    nome: "quota.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  };
+  assert.equal((await quotaCount.post("/api/allega-file", payloadCount)).risposta.status, 200);
+  assert.equal((await quotaCount.post("/api/allega-file", payloadCount)).risposta.status, 200);
+  const oltreCount = await quotaCount.post("/api/allega-file", payloadCount);
+  assert.equal(oltreCount.risposta.status, 429, JSON.stringify(oltreCount.dati));
+
+  const quotaByte = await avviaPonteTest({
+    maxFileAllegatiPendentiPerSessione: 40,
+    maxByteFileAllegatiPendentiPerSessione: 3,
+  });
+  t.after(quotaByte.chiudi);
+  const cartellaByte = join(quotaByte.home, "quota-byte-file");
+  await mkdir(cartellaByte);
+  const avvioByte = await quotaByte.post("/api/avvia", { cartella: cartellaByte });
+  const payloadByte = {
+    sessionId: avvioByte.dati.id,
+    nome: "quota-byte.txt",
+    mimeType: "text/plain",
+    dimensione: 2,
+    data: "eHg=",
+  };
+  assert.equal((await quotaByte.post("/api/allega-file", payloadByte)).risposta.status, 200);
+  const oltreByte = await quotaByte.post("/api/allega-file", payloadByte);
+  assert.equal(oltreByte.risposta.status, 413, JSON.stringify(oltreByte.dati));
+
+  const raccolta = await avviaPonteTest({
+    ttlFileAllegatoPendenteMs: 50,
+    maxFileAllegatiPendentiPerSessione: 1,
+  });
+  t.after(raccolta.chiudi);
+  const cartellaRaccolta = join(raccolta.home, "raccolta-attiva-file");
+  await mkdir(cartellaRaccolta);
+  const avvioRaccolta = await raccolta.post("/api/avvia", { cartella: cartellaRaccolta });
+  const payloadRaccolta = {
+    sessionId: avvioRaccolta.dati.id,
+    nome: "orfano.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  };
+  const vecchio = (await raccolta.post("/api/allega-file", payloadRaccolta)).dati.allegato;
+  await attendi(80);
+  const recente = await raccolta.post("/api/allega-file", {
+    ...payloadRaccolta,
+    nome: "recente.txt",
+  });
+  assert.equal(recente.risposta.status, 200, JSON.stringify(recente.dati));
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+});
+
+test("il cleanup TTL elimina soltanto pending orfani vecchi e conserva le bozze recenti", async (t) => {
+  const ambiente = await avviaPonteTest({
+    ttlFileAllegatoPendenteMs: 1000,
+    intervalloPuliziaFileAllegatiMs: 0,
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "ttl-allegati");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const sessionId = avvio.dati.id;
+  const carica = async (nome) => (await ambiente.post("/api/allega-file", {
+    sessionId,
+    nome,
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+
+  const vecchio = await carica("vecchio.txt");
+  const recente = await carica("recente.txt");
+  const manifestoVecchio = join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`);
+  const recordVecchio = JSON.parse(await readFile(manifestoVecchio, "utf8"));
+  const istanteVecchio = Date.now() - 2_000;
+  await writeFile(manifestoVecchio, JSON.stringify({
+    ...recordVecchio,
+    creatoIl: istanteVecchio,
+    toccatoIl: istanteVecchio,
+  }));
+  await utimes(manifestoVecchio, new Date(istanteVecchio), new Date(istanteVecchio));
+  await ambiente.ponte.sessioni.get(sessionId).ferma({ notifica: false });
+  ambiente.ponte.sessioni.delete(sessionId);
+
+  const pulizia = await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now(),
+    { forza: true },
+  );
+  assert.equal(pulizia.eliminati, 1);
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+  assert.deepEqual(await readFile(recente.percorso), Buffer.from("x"));
+  assert.ok((await readdir(dirname(recente.percorso))).includes(`${recente.id}.pending.json`));
+});
+
+test("il cleanup parte col ponte e rimuove un pending orfano senza attendere un nuovo upload", async (t) => {
+  const primo = await avviaPonteTest({
+    conservaHome: true,
+    ttlFileAllegatoPendenteMs: 50,
+    intervalloPuliziaFileAllegatiMs: 10_000,
+  });
+  const home = primo.home;
+  let secondo = null;
+  t.after(async () => {
+    if (secondo) await secondo.chiudi().catch(() => {});
+    else await primo.chiudi().catch(() => {});
+    await rm(home, { recursive: true, force: true });
+  });
+  const cartella = join(home, "cleanup-avvio-file");
+  await mkdir(cartella);
+  const avvio = await primo.post("/api/avvia", { cartella });
+  const vecchio = (await primo.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "orfano-avvio.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+  await primo.chiudi();
+  await attendi(80);
+
+  secondo = await avviaPonteTest({
+    home,
+    conservaHome: true,
+    ttlFileAllegatoPendenteMs: 50,
+    intervalloPuliziaFileAllegatiMs: 10_000,
+  });
+  const scadenza = Date.now() + 1000;
+  while (Date.now() < scadenza) {
+    try {
+      await stat(vecchio.percorso);
+      await attendi(20);
+    } catch (errore) {
+      if (errore?.code === "ENOENT") break;
+      throw errore;
+    }
+  }
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+  await assert.rejects(
+    stat(join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)),
+    { code: "ENOENT" },
+  );
+});
+
+test("il timer TTL raccoglie un pending scaduto anche se la sessione resta attiva", async (t) => {
+  const ambiente = await avviaPonteTest({
+    ttlFileAllegatoPendenteMs: 50,
+    intervalloPuliziaFileAllegatiMs: 20,
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "cleanup-attivo-senza-upload");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const vecchio = (await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "orfano-sessione-attiva.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  })).dati.allegato;
+
+  const scadenza = Date.now() + 1000;
+  while (Date.now() < scadenza) {
+    try {
+      await stat(vecchio.percorso);
+      await attendi(20);
+    } catch (errore) {
+      if (errore?.code === "ENOENT") break;
+      throw errore;
+    }
+  }
+  assert.equal(ambiente.ponte.sessioni.has(avvio.dati.id), true);
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+  await assert.rejects(
+    stat(join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)),
+    { code: "ENOENT" },
+  );
+});
+
+test("una junction non puo spostare gli upload fuori dalla radice della sessione", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "symlink-allegati");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const radice = join(ambiente.home, ".pi", "gui", "allegati");
+  const esterna = join(ambiente.home, "fuori-radice-allegati");
+  await mkdir(radice, { recursive: true });
+  await mkdir(esterna);
+  const hashSessione = createHash("sha256").update(avvio.dati.id, "utf8").digest("hex");
+  await symlink(esterna, join(radice, hashSessione), process.platform === "win32" ? "junction" : "dir");
+
+  const esito = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "evasione.txt",
+    mimeType: "text/plain",
+    dimensione: 1,
+    data: "eA==",
+  });
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  assert.match(esito.dati.errore, /non e sicura/i);
+  assert.deepEqual(await readdir(esterna), []);
 });
 
 test("catalogo e invocazione slash usano nomi verificati, non tipi RPC arbitrari", async (t) => {
@@ -2197,9 +4880,9 @@ test("il ponte rifiuta richieste web forgiate e serve una CSP restrittiva", asyn
   assert.equal(statoPut.headers.get("allow"), "GET");
   const sfogliaSenzaToken = await ambiente.post("/api/sfoglia", { percorso: ambiente.home }, null);
   assert.equal(sfogliaSenzaToken.risposta.status, 403);
-  assert.equal(ambiente.stato.versione, 6);
+  assert.equal(ambiente.stato.versione, 7);
   const salute = await (await fetch(ambiente.base + "/api/salute")).json();
-  assert.deepEqual(salute, { servizio: "pi-gui-bridge", versione: 6 });
+  assert.deepEqual(salute, { servizio: "pi-gui-bridge", versione: 7 });
 });
 
 test("i body rifiutati non tengono socket aperti e gli errori JSON hanno status precisi", async (t) => {
@@ -2789,6 +5472,35 @@ test("l'albero usa il leaf autorevole di Pi dopo una navigazione senza append", 
   assert.equal(albero.dati.totale, 2);
 });
 
+test("l'endpoint mappa un leaf tecnico autorevole sul suo antenato visibile", async (t) => {
+  const ambiente = await avviaPonteTest({
+    caricaAlbero: ({ fileSessione }) => caricaAlberoCompattoDaPi({
+      cliPi: CLI_PI_REALE,
+      fileSessione,
+    }),
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "leaf-tecnico");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200);
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const voci = [
+    { type: "session", version: 3, id: "sessione-leaf-tecnico", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    { type: "message", id: "u1", parentId: null, timestamp: "2026-08-25T00:00:01.000Z", message: { role: "user", content: [{ type: "text", text: "Punto visibile" }], timestamp: 1 } },
+    { type: "model_change", id: "tecnico-leaf", parentId: "u1", timestamp: "2026-08-25T00:00:02.000Z", provider: "test", modelId: "test" },
+  ];
+  await writeFile(sessione.fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const albero = await ambiente.post("/api/albero", { sessionId: avvio.dati.id });
+
+  assert.equal(albero.risposta.status, 200);
+  assert.equal(albero.dati.leafId, "u1");
+  assert.equal(albero.dati.totale, 1);
+  assert.equal(albero.dati.tecniciNascosti, 1);
+  assert.equal(sessione.leafIdAttivo, "tecnico-leaf");
+});
+
 test("dopo navigate_tree anche la cronologia segue il leaf autorevole", async (t) => {
   const leafRicevuti = [];
   const ambiente = await avviaPonteTest({
@@ -3096,7 +5808,7 @@ test("la chiusura definitiva rifiuta nuove sessioni concorrenti", async (t) => {
   assert.equal(saluteInChiusura.status, 503);
   assert.deepEqual(await saluteInChiusura.json(), {
     servizio: "pi-gui-bridge",
-    versione: 6,
+    versione: 7,
     stato: "chiusura",
     errore: "Il ponte si sta chiudendo",
   });

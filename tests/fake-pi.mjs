@@ -55,6 +55,9 @@ function gestisci(comando) {
     if (process.cwd().includes("leaf-autorevole")) {
       return risposta(comando, { entries: [], leafId: "n-old" });
     }
+    if (process.cwd().includes("leaf-tecnico")) {
+      return risposta(comando, { entries: [], leafId: "tecnico-leaf" });
+    }
     if (process.cwd().includes("leaf-cronologia")) {
       return risposta(comando, { entries: [], leafId: leafIdAttivo });
     }

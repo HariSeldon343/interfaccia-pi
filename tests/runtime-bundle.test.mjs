@@ -73,7 +73,10 @@ test("Tauri include runtime completo e il launcher release lo preferisce", async
   assert.equal(config.bundle.resources["../app/public/link-core.js"], "app/public/link-core.js");
   assert.equal(config.bundle.resources["../app/public/clipboard-core.js"], "app/public/clipboard-core.js");
   assert.equal(config.bundle.resources["../app/public/view-core.js"], "app/public/view-core.js");
+  assert.equal(config.bundle.resources["../app/public/attachment-core.js"], "app/public/attachment-core.js");
   assert.equal(config.bundle.resources["../app/extensions"], "app/extensions");
+  assert.equal(config.app.windows[0].dragDropEnabled, false,
+    "WebView2 deve lasciare il drag/drop dei file alla pagina HTML");
   assert.equal(await esiste(join(RADICE, "licenses", "INTERFACCIA-PI-ISC.txt")), true);
   assert.doesNotMatch(JSON.stringify(config.bundle.resources), /(?:Users|AppData|\.pi[\\/])/i);
 

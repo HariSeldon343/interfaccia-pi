@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.5.1, aggiornata il 25/08/2026.
+Versione 2.5.3, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -30,14 +30,21 @@ a sei sessioni complessive.
   all'altra tramite le schede;
 - scegliere e cercare i modelli, distinguendo quelli locali da quelli cloud e
   vedendo subito se LM Studio, Ollama o llama.cpp sono realmente in esecuzione;
+- vedere la finestra di contesto del modello effettivamente selezionato e, per
+  GPT-5.6 Sol, Terra e Luna, scegliere consapevolmente fra 272.000 e 1.050.000
+  token dopo l'avviso sulla tariffazione API long-context; con OAuth la stima
+  non viene presentata come una fattura;
 - scegliere quanto il modello deve ragionare;
 - iniziare, rinominare, clonare, ramificare, comprimere ed esportare una
   conversazione;
 - aprire **Cronologia e rami** dalla barra Strumenti e tornare a un passaggio
   precedente senza cancellare il lavoro successivo, che resta in un altro ramo;
+  l'albero mostra messaggi, immagini e riepiloghi, mentre pensieri, output dei
+  tool e cambi tecnici restano conservati nel JSONL senza occupare la finestra;
 - cercare e riaprire conversazioni salvate realmente da `pi`;
-- inviare testo e immagini, anche incollando direttamente uno screenshot con
-  `Ctrl+V`; mentre Pi lavora, **falla dopo** non interrompe il turno e
+- inviare testo, immagini e file locali tramite selettore o trascinamento,
+  anche incollando direttamente uno screenshot con `Ctrl+V`; mentre Pi lavora,
+  **falla dopo** non interrompe il turno e
   **intervieni adesso** è una scelta esplicita valida per un solo messaggio;
 - vedere risposta e stato in streaming; ragionamenti e strumenti tecnici restano
   raccolti in blocchi compatti, espandibili soltanto quando servono;
@@ -47,9 +54,11 @@ a sei sessioni complessive.
 - leggere token e costo equivalente senza confonderli con una fattura: se il
   provider attuale è `openai-codex` la barra segnala OAuth e ricorda che una
   sessione mista può includere costi di altri provider o API;
-- dopo una compattazione, vedere soltanto una sintesi chiusa e riaprire
-  **Cronologia e rami**: la compattazione non crea un ramo, ma non cancella i
-  nodi già registrati;
+- dopo una compattazione, conservare nella chat il testo di tutti i propri prompt
+  originali del ramo attivo e trovare la sintesi del lavoro in un elemento
+  aggiuntivo chiuso; le immagini storiche non vengono duplicate in memoria e
+  restano indicate da un segnaposto; durante il riassunto si puo continuare a
+  scrivere una bozza, mentre l'invio si riattiva alla conclusione;
 - interrompere sempre il lavoro dalla barra superiore;
 - digitare `/` per cercare e richiamare dalla stessa casella tutti i 22 comandi
   incorporati di `pi`, oltre a prompt e skill, con nome leggibile e spiegazione;
@@ -137,7 +146,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.5.1\release\bundle\nsis\Interfaccia pi_2.5.1_x64-setup.exe`
+`src-tauri\target-final-2.5.3\release\bundle\nsis\Interfaccia pi_2.5.3_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -200,6 +209,26 @@ marker separato; testo e immagini gia inviate sono recuperabili dalla sezione
 in IndexedDB e ripristinate con la bozza; se il salvataggio locale fallisce,
 l'app avverte di non chiudere o ricaricare la finestra.
 
+I file generici scelti dal composer vengono copiati sotto `.pi/gui/allegati`
+con un token locale associato alla sessione. Finché appartengono soltanto a una
+bozza sono `pending` e la rimozione li cancella best-effort; quando il prompt
+entra nel canale RPC diventano permanenti e non possono più essere cancellati
+da una bozza concorrente. Il bridge ripulisce soltanto pending orfani e senza
+alcun rinnovo da almeno 30 giorni; non applica il TTL ai file preparati o già
+inviati. Ogni sessione puo mantenere fino a 40 file pending e 200 MiB
+complessivi: prima di un nuovo upload il bridge raccoglie anche gli orfani
+scaduti della sessione ancora attiva e rifiuta l'upload se la quota restante
+non basta. La pulizia viene eseguita anche all'avvio e poi ogni ora. Dopo un
+riavvio i pending di una bozza sono adottati dalla nuova sessione con nuovi id
+e token; una seconda finestra ne crea invece copie distinte, percio rimuovere
+un file da una finestra non invalida la bozza gia recuperata nell'altra. Una
+bozza lasciata aperta rinnova periodicamente i propri marker; i marker gia
+preparati per un prompt non vengono mai cancellati e una rinomina finale
+transitoriamente fallita viene ritentata dal cleanup. Se,
+dopo un arresto riuscito, Windows tiene ancora aperto un file
+temporaneo, la scheda viene chiusa con un avviso e il cleanup automatico
+ritenta senza coinvolgere i file gia inviati.
+
 La GUI impedisce inoltre a una seconda finestra di chiudere o trasferire le
 sessioni mentre un altro client recente potrebbe conservare dati non inviati.
 
@@ -253,7 +282,7 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.1'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.3'
 npm run build:desktop:offline
 ```
 

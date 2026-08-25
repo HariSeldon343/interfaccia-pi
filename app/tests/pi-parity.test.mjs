@@ -18,6 +18,29 @@ const require = createRequire(import.meta.url);
 const AUTH = require("../public/auth-flow-core.js");
 const PALETTE = require("../public/palette-core.js");
 
+test("la testata compatta limita lo stato reale e il composer rende espliciti i file", async () => {
+  const [html, stile] = await Promise.all([
+    readFile(join(QUI, "../public/index.html"), "utf8"),
+    readFile(join(QUI, "../public/stile.css"), "utf8"),
+  ]);
+  assert.match(
+    html,
+    /id="btn-allega"[\s\S]*?aria-label="[^"]*(?:allega|file)[^"]*"/i,
+    "il nome accessibile del pulsante + deve rendere scopribile l'allegato file",
+  );
+  assert.match(html, /id="azione-allega-file"/);
+  assert.match(html, /id="scegli-file"[^>]*\bmultiple\b/);
+  assert.match(stile, /\.controlli-testata\s*>\s*\.stato\s*\{[\s\S]*?max-width:\s*118px/);
+  assert.doesNotMatch(
+    stile.slice(stile.indexOf("Interfaccia 2.5.1")),
+    /\.barra\s*>\s*\.stato/,
+    "il limite responsive deve corrispondere alla gerarchia DOM reale",
+  );
+  const compatto = stile.slice(stile.lastIndexOf("@media (max-width: 650px)"));
+  assert.match(compatto, /#suggerimento\s*\{[\s\S]*?display:\s*block/,
+    "l'hint file deve restare disponibile anche quando lo spazio si riduce");
+});
+
 const PROVIDER = [
   { id: "anthropic", name: "Anthropic", methods: { oauth: true, apiKey: true } },
   { id: "github-copilot", name: "GitHub Copilot", methods: { oauth: true, apiKey: true } },

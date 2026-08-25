@@ -30,6 +30,16 @@ const {
 } = CLIPBOARD_CORE;
 const VISTA_CORE = globalThis.PiGuiViewCore;
 if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
+const ATTACHMENT_CORE = globalThis.PiGuiAttachmentCore;
+if (!ATTACHMENT_CORE) throw new Error("Il modulo degli allegati non e stato caricato");
+const {
+  MASSIMO_FILE,
+  allegatoFile,
+  allegatoImmagine,
+  creaMessaggioConFile,
+  separaMessaggioConFile,
+  firmaAllegato,
+} = ATTACHMENT_CORE;
 
 const DOM = {
   schede: $("#schede"),
@@ -38,9 +48,11 @@ const DOM = {
   input: $("#input"),
   btnInvia: $("#btn-invia"),
   btnAllega: $("#btn-allega"),
+  scegliFile: $("#scegli-file"),
   scegliImmagini: $("#scegli-immagini"),
   allegati: $("#allegati"),
   menuAzioniComposer: $("#menu-azioni-composer"),
+  azioneAllegaFile: $("#azione-allega-file"),
   azioneAllegaImmagine: $("#azione-allega-immagine"),
   azioneRichiamaSkill: $("#azione-richiama-skill"),
   azioneComandiEstensioni: $("#azione-comandi-estensioni"),
@@ -98,9 +110,29 @@ const PREFISSO_RISULTATI_OPERAZIONI = "pi-gui-risultati-operazioni-v1:";
 const DURATA_BOZZE_MS = 30 * 24 * 60 * 60 * 1000;
 const DURATA_GRAZIA_BUNDLE_MS = 5 * 60 * 1000;
 const LIMITE_IMMAGINI_RICHIESTA = 4 * 1024 * 1024;
+const LIMITE_FILE_ALLEGATO = 10 * 1024 * 1024;
+const INTERVALLO_RINNOVO_FILE_BOZZA_MS = 6 * 60 * 60 * 1000;
 const LIMITE_IMMAGINI_CRONOLOGIA_BASE64 = 16 * 1024 * 1024;
 const LIMITE_TESTO_RICHIESTA = 2 * 1024 * 1024;
 const LIMITE_RECORD_CRONOLOGIA = 22 * 1024 * 1024;
+const PROVIDER_GPT_56 = new Set(["openai", "openai-codex"]);
+const ID_GPT_56 = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const CONTESTO_GPT_56_BREVE = 272_000;
+const CONTESTO_GPT_56_ESTESO = 1_050_000;
+const EVENTI_RIPRESA_DOPO_COMPATTAZIONE = new Set([
+  "agent_start",
+  "agent_settled",
+  "turn_start",
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+  "bash_execution_start",
+  "bash_execution_update",
+  "bash_execution_end",
+]);
 const DATABASE_INVII = "pi-gui-invii-v1";
 const ARCHIVIO_ALLEGATI_INVII = "allegati-pendenti";
 let promessaDatabaseInvii = null;
@@ -153,7 +185,7 @@ function databaseInvii() {
   if (promessaDatabaseInvii) return promessaDatabaseInvii;
   promessaDatabaseInvii = new Promise((risolvi, rifiuta) => {
     if (!globalThis.indexedDB) {
-      rifiuta(new Error("Archivio immagini non disponibile"));
+      rifiuta(new Error("Archivio allegati non disponibile"));
       return;
     }
     const richiesta = indexedDB.open(DATABASE_INVII, 1);
@@ -166,7 +198,7 @@ function databaseInvii() {
       risolvi(richiesta.result);
       setTimeout(() => pulisciArchivioAllegati(richiesta.result), 0);
     };
-    richiesta.onerror = () => rifiuta(richiesta.error || new Error("Archivio immagini non disponibile"));
+    richiesta.onerror = () => rifiuta(richiesta.error || new Error("Archivio allegati non disponibile"));
   }).catch((errore) => {
     promessaDatabaseInvii = null;
     throw errore;
@@ -234,17 +266,21 @@ async function scriviAllegatiInvio(
         tipo,
         markerKey,
         creataIl: Date.now(),
-        allegati: allegati.map(({ id: allegatoId, nome, mimeType, data, dimensione }) => ({
+        allegati: allegati.map(({ id: allegatoId, token, ownerSessionId, tipo, nome, mimeType, data, dimensione, percorso }) => ({
           id: allegatoId,
+          token,
+          ownerSessionId,
+          tipo,
           nome,
           mimeType,
           data,
           dimensione,
+          percorso,
         })),
       });
       transazione.oncomplete = () => risolvi();
-      transazione.onerror = () => rifiuta(transazione.error || new Error("Salvataggio immagini fallito"));
-      transazione.onabort = () => rifiuta(transazione.error || new Error("Salvataggio immagini annullato"));
+      transazione.onerror = () => rifiuta(transazione.error || new Error("Salvataggio allegati fallito"));
+      transazione.onabort = () => rifiuta(transazione.error || new Error("Salvataggio allegati annullato"));
     });
     return true;
   } catch {
@@ -288,6 +324,112 @@ async function eliminaAllegatiInvio(id) {
   } catch {
     // Il record scadra insieme al marker; non blocca il lavoro corrente.
   }
+}
+
+function riferimentiFileServer(allegati) {
+  return Array.from(allegati || [])
+    .filter(allegatoFile)
+    .filter((allegato) => (
+      typeof allegato.id === "string"
+      && typeof allegato.token === "string"
+      && allegato.id
+      && allegato.token
+    ))
+    .map(({ id, token }) => ({ id, token }));
+}
+
+async function gestisciFileServer(sessione, azione, allegati) {
+  const riferimenti = riferimentiFileServer(allegati);
+  if (!sessione || !riferimenti.length) return { ok: true, numero: 0 };
+  return chiedi("/api/gestisci-file-allegati", {
+    corpo: {
+      sessionId: sessione.id,
+      azione,
+      allegati: riferimenti,
+    },
+  });
+}
+
+async function eliminaFilePendentiBestEffort(sessione, allegati) {
+  try {
+    await gestisciFileServer(sessione, "elimina", allegati);
+  } catch {
+    // Un file finalizzato (o una sessione appena chiusa) non va rimosso. Gli
+    // upload davvero abbandonati restano pending e saranno ripuliti dal TTL.
+  }
+}
+
+async function rinnovaFilePendentiBestEffort(sessione, allegati) {
+  try {
+    await gestisciFileServer(sessione, "rinnova", allegati);
+  } catch {
+    // Il rinnovo e opportunistico: il bundle IndexedDB resta la fonte della
+    // bozza e il TTL server e volutamente molto prudente.
+  }
+}
+
+function rinnovaFileBozzeAperte() {
+  for (const sessione of APP.sessioni.values()) {
+    if (!sessione.attiva || sessione.chiusuraInCorso || sessione.handoffInCorso) continue;
+    if (!sessione.allegati.some(allegatoFile)) continue;
+    void rinnovaFilePendentiBestEffort(sessione, sessione.allegati);
+  }
+}
+
+async function adottaFilePendentiBozza(sessione, allegati, { forzaCopia = false } = {}) {
+  const risultato = Array.from(allegati || []).map((allegato) => ({ ...allegato }));
+  const daAdottare = [];
+  risultato.forEach((allegato, indice) => {
+    if (!allegatoFile(allegato)) return;
+    if (typeof allegato.ownerSessionId !== "string" || !allegato.ownerSessionId) {
+      throw new Error(
+        "Un file della bozza non indica piu la sessione proprietaria. Rimuovilo e allegalo di nuovo.",
+      );
+    }
+    if (forzaCopia || allegato.ownerSessionId !== sessione.id) {
+      daAdottare.push({ indice, allegato });
+    }
+  });
+  if (!daAdottare.length) return { allegati: risultato, adottati: [], modificati: false };
+  const risposta = await chiedi("/api/adotta-file-allegati", {
+    corpo: {
+      sessionId: sessione.id,
+      allegati: daAdottare.map(({ allegato }) => ({
+        ownerSessionId: allegato.ownerSessionId,
+        id: allegato.id,
+        token: allegato.token,
+      })),
+    },
+  });
+  const adottati = Array.isArray(risposta?.allegati) ? risposta.allegati : [];
+  try {
+    if (adottati.length !== daAdottare.length) {
+      throw new Error("Il ponte non ha copiato tutti i file della bozza.");
+    }
+    adottati.forEach((adottato, posizione) => {
+      const origine = daAdottare[posizione];
+      if (
+        !allegatoFile(adottato)
+        || riferimentiFileServer([adottato]).length !== 1
+        || adottato.ownerSessionId !== sessione.id
+        || adottato.id === origine.allegato.id
+        || adottato.token === origine.allegato.token
+        || typeof adottato.percorso !== "string"
+        || !adottato.percorso
+      ) {
+        throw new Error("Il ponte ha restituito una copia del file non valida.");
+      }
+      risultato[origine.indice] = {
+        ...origine.allegato,
+        ...adottato,
+        mimeType: origine.allegato.mimeType || "application/octet-stream",
+      };
+    });
+  } catch (errore) {
+    await eliminaFilePendentiBestEffort(sessione, adottati);
+    throw errore;
+  }
+  return { allegati: risultato, adottati, modificati: true };
 }
 
 async function conservaFotografiaAllegati(
@@ -336,6 +478,7 @@ async function conservaFotografiaAllegati(
     await eliminaAllegatiInvio(precedenteBundle);
   }
   sessione.allegatiNonPersistiti = !salvato;
+  if (salvato) void rinnovaFilePendentiBestEffort(sessione, allegati);
   if (!salvato && sessione.id === APP.attivaId) {
     toast(
       "Un'altra finestra ha modificato questa bozza, oppure lo spazio locale non e disponibile. Copia il testo e non chiudere finche non hai risolto il conflitto.",
@@ -369,7 +512,7 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
   const statoBundle = bundleId
     ? await leggiStatoAllegatiInvio(bundleId)
     : { trovato: true, allegati: [], errore: null };
-  const raccolti = statoBundle.allegati;
+  let raccolti = statoBundle.allegati;
   if (
     APP.sessioni.get(sessione.id) !== sessione
     || sessione.chiaveBozza !== chiaveAttesa
@@ -378,40 +521,78 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
   ) return;
   if (bundleId && (!statoBundle.trovato || statoBundle.errore || !raccolti.length)) {
     sessione.erroreAllegatiBozza =
-      "La bozza indica immagini non inviate, ma il loro archivio non e leggibile. Riprova oppure scarta esplicitamente solo il riferimento alle immagini mancanti.";
+      "La bozza indica allegati non inviati, ma il loro archivio non e leggibile. Riprova oppure scarta esplicitamente solo il riferimento agli allegati mancanti.";
     sessione.allegatiNonPersistiti = true;
     if (sessione.id === APP.attivaId) {
-      toast("Non invio una bozza senza le immagini che le appartenevano.", "errore");
+      toast("Non invio una bozza senza gli allegati che le appartenevano.", "errore");
       aggiornaInterfacciaAttiva();
     }
     return;
   }
-  const dimensione = raccolti.reduce((totale, allegato) => totale + Number(allegato.dimensione || 0), 0);
-  if (raccolti.length > 4 || dimensione > LIMITE_IMMAGINI_RICHIESTA) {
+  const immagini = raccolti.filter(allegatoImmagine);
+  const file = raccolti.filter(allegatoFile);
+  const dimensioneImmagini = immagini.reduce((totale, allegato) => totale + Number(allegato.dimensione || 0), 0);
+  if (
+    raccolti.length > MASSIMO_FILE + 4
+    || immagini.length > 4
+    || file.length > MASSIMO_FILE
+    || dimensioneImmagini > LIMITE_IMMAGINI_RICHIESTA
+  ) {
     sessione.allegatiNonPersistiti = true;
     if (sessione.id === APP.attivaId) {
-      toast("Le immagini conservate superano i limiti sicuri e non sono state caricate. Apri la bozza in una sola finestra e rimuovile.", "errore");
+      toast("Gli allegati conservati superano i limiti sicuri e non sono stati caricati. Apri la bozza in una sola finestra e rimuovili.", "errore");
     }
     return;
   }
+  const copiaPerAltroDocumento = Boolean(
+    record && record.documentoId !== APP.clientId && !record.cancellata,
+  );
+  let adozione;
+  try {
+    adozione = await adottaFilePendentiBozza(
+      sessione,
+      raccolti,
+      { forzaCopia: copiaPerAltroDocumento },
+    );
+  } catch (errore) {
+    sessione.erroreAllegatiBozza =
+      `Non riesco a recuperare in sicurezza i file della bozza: ${testoErrore(errore)}`;
+    sessione.allegatiNonPersistiti = true;
+    if (sessione.id === APP.attivaId) {
+      toast(sessione.erroreAllegatiBozza, "errore");
+      aggiornaInterfacciaAttiva();
+    }
+    return;
+  }
+  if (
+    APP.sessioni.get(sessione.id) !== sessione
+    || sessione.chiaveBozza !== chiaveAttesa
+    || sessione.lineageId !== lineageAttesa
+    || lineageRisolta(record)
+  ) {
+    if (adozione.adottati.length) {
+      await eliminaFilePendentiBestEffort(sessione, adozione.adottati);
+    }
+    return;
+  }
+  raccolti = adozione.allegati;
   sessione.versioneBozza = versioneRecordBozza(leggiRecordBozzaProprio(chiaveAttesa));
   sessione.allegatiBundleId = bundleId;
   sessione.lineageId = record?.cancellata
     ? null
     : lineageRecordBozza(record) || sessione.lineageId || globalThis.crypto.randomUUID();
   sessione.lineageModificataLocalmente = false;
-  sessione.allegati = raccolti.map((allegato) => ({
-    ...allegato,
-    url: `data:${allegato.mimeType};base64,${allegato.data}`,
-  }));
+  sessione.allegati = raccolti.map((allegato) => allegatoImmagine(allegato)
+    ? { ...allegato, url: `data:${allegato.mimeType};base64,${allegato.data}` }
+    : { ...allegato });
   sessione.erroreAllegatiBozza = null;
   if (!sessione.bozzaSporca && typeof record?.testo === "string") {
     sessione.bozza = record.testo;
   }
-  // Un nuovo documento non usa direttamente il bundle di un'altra finestra:
-  // ne crea una copia propria prima di abilitare l'editor. Cosi una modifica o
-  // chiusura dell'altra pagina non puo far sparire immagini gia mostrate qui.
-  if (record && record.documentoId !== APP.clientId && !record.cancellata) {
+  // Un nuovo documento copia sia il bundle locale sia i pending server. Anche
+  // dopo un riavvio del bridge i file vengono adottati dalla nuova sessione
+  // con id/token ruotati: nessuna finestra puo cancellare il pending altrui.
+  if (copiaPerAltroDocumento || adozione.modificati) {
     const adottato = raccolti.length
       ? await conservaFotografiaAllegati(
         sessione,
@@ -431,6 +612,7 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
     }
   }
   sessione.allegatiNonPersistiti = false;
+  void rinnovaFilePendentiBestEffort(sessione, sessione.allegati);
   if (sessione.id === APP.attivaId) {
     if (!sessione.bozzaSporca) DOM.input.value = sessione.bozza;
     disegnaAllegati();
@@ -644,7 +826,9 @@ const COMANDI_CAMBIO_SESSIONE = new Set([
   "navigate_tree",
 ]);
 const timerSalvaBozza = new Map();
-const SUGGERIMENTO_PREDEFINITO = "Invio per inviare · Maiusc+Invio per andare a capo · Ctrl+V per incollare uno screenshot";
+const SUGGERIMENTO_PREDEFINITO = "Invio per inviare · Trascina o allega file · Ctrl+V per incollare uno screenshot";
+const SOGLIA_RENDER_CRONOLOGIA_PROGRESSIVO = 60;
+const MESSAGGI_PER_BATCH_CRONOLOGIA = 12;
 let contatoreOpzioniPalette = 0;
 let composizioneInputInCorso = false;
 
@@ -663,6 +847,7 @@ function applicaLineageRisolta(lineageId) {
     sessione.bozza = "";
     sessione.bozzaSporca = false;
     sessione.bozzaNonPersistita = false;
+    void eliminaFilePendentiBestEffort(sessione, sessione.allegati);
     sessione.allegati = [];
     sessione.allegatiBundleId = null;
     sessione.lineageId = null;
@@ -1150,10 +1335,9 @@ async function ripristinaAllegatiInvii(sessione) {
     const allegati = await leggiAllegatiInvio(invio.id);
     if (APP.sessioni.get(sessione.id) !== sessione) return;
     if (allegati.length === invio.allegati.length) {
-      invio.allegatiDati = allegati.map((allegato) => ({
-        ...allegato,
-        url: `data:${allegato.mimeType};base64,${allegato.data}`,
-      }));
+      invio.allegatiDati = allegati.map((allegato) => allegatoImmagine(allegato)
+        ? { ...allegato, url: `data:${allegato.mimeType};base64,${allegato.data}` }
+        : { ...allegato });
       cambiata = true;
     } else {
       sessione.invioNonPersistito = true;
@@ -1175,19 +1359,19 @@ function disegnaInviiDaVerificare(sessione = sessioneAttiva()) {
   DOM.inviiVerifica.hidden = !invii.length && !erroreAllegati;
   if (erroreAllegati) {
     DOM.inviiVerifica.append(
-      crea("strong", null, "Immagini della bozza da recuperare"),
+      crea("strong", null, "Allegati della bozza da recuperare"),
       crea("p", "nota", erroreAllegati),
     );
     const azioni = crea("div", "barra-modale");
     const riprova = crea("button", null, "Riprova");
     riprova.type = "button";
     riprova.onclick = () => void ripristinaAllegatiBozza(sessione);
-    const scarta = crea("button", null, "Scarta immagini mancanti");
+    const scarta = crea("button", null, "Scarta allegati mancanti");
     scarta.type = "button";
     scarta.onclick = async () => {
       const confermato = await conferma(
-        "Scartare il riferimento alle immagini?",
-        "Il testo resta nella bozza. Fallo solo se le immagini non sono recuperabili: non potranno essere aggiunte automaticamente al messaggio.",
+        "Scartare il riferimento agli allegati?",
+        "Il testo resta nella bozza. Fallo solo se gli allegati non sono recuperabili: non potranno essere aggiunti automaticamente al messaggio.",
         "Scarta riferimento",
       );
       if (!confermato) return;
@@ -1254,7 +1438,7 @@ function disegnaInviiDaVerificare(sessione = sessioneAttiva()) {
   }
   for (const invio of invii) {
     const riga = crea("div", "invio-verifica");
-    const allegati = Number(invio.allegati?.length || 0);
+    const numeroAllegati = Number(invio.allegati?.length || 0);
     const manuale = PALETTE_CORE.invioRichiedeVerificaManuale(invio);
     const operazioneDiretta = ["builtin", "shell"].includes(invio.origine);
     const statoBuiltin = operazioneDiretta
@@ -1273,7 +1457,7 @@ function disegnaInviiDaVerificare(sessione = sessioneAttiva()) {
       null,
       (statoBuiltin ? statoBuiltin + " · " : manuale ? "Da verificare manualmente · " : "")
         + invio.testo
-        + (allegati ? ` · ${allegati} immagin${allegati === 1 ? "e" : "i"}` : ""),
+        + (numeroAllegati ? ` · ${numeroAllegati} allegat${numeroAllegati === 1 ? "o" : "i"}` : ""),
     );
     testo.title = invio.erroreComando
       ? `${invio.testo}\n${invio.erroreComando}`
@@ -1395,13 +1579,13 @@ function programmaSalvaBozza(sessione) {
   }, 180));
 }
 
-async function dimenticaBozza(sessione) {
+async function dimenticaBozza(sessione, { preservaInviiPendenti = false } = {}) {
   const id = sessione?.id;
   clearTimeout(timerSalvaBozza.get(id));
   timerSalvaBozza.delete(id);
   if (!id) return;
   await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
-  if (sessione.inviiPendenti.length) {
+  if (sessione.inviiPendenti.length && !preservaInviiPendenti) {
     // Un follow-up puo essere stato soltanto accodato in RAM da PI. Chiudere la
     // scheda non deve eliminare testo/immagini ancora da riconciliare: la chiave
     // stabile del JSONL li rendera visibili alla prossima apertura.
@@ -1411,31 +1595,43 @@ async function dimenticaBozza(sessione) {
   const bundlePrecedente = sessione.allegatiBundleId;
   const lineagePrecedente = sessione.lineageId;
   if (lineagePrecedente && !segnaLineageRisolta(lineagePrecedente)) {
-    // La sessione server e gia chiusa, ma la bozza resta recuperabile invece
-    // di rischiare che una sua copia ricompaia senza relazione fra finestre.
-    return;
+    if (!preservaInviiPendenti) {
+      // Fuori dalla chiusura confermata conserviamo la bozza se non possiamo
+      // pubblicarne in modo affidabile la risoluzione alle altre finestre.
+      return;
+    }
+    // La chiusura server ha gia eliminato i pending correnti: non lasciamo un
+    // bundle locale inevitabilmente invalido soltanto per un marker fallito.
   }
-  const eliminato = scriviRecordBozzaSessione(sessione, {
+  let eliminato = scriviRecordBozzaSessione(sessione, {
     testo: "",
     allegatiBundleId: null,
   });
+  if (!eliminato && preservaInviiPendenti) {
+    const recordProprio = leggiRecordBozzaProprio(sessione.chiaveBozza);
+    eliminato = eliminaRecordBozza(sessione.chiaveBozza, recordProprio);
+  }
   if (eliminato && bundlePrecedente && !bundleBozzaReferenziato(bundlePrecedente)) {
     await dimenticaAllegatiBozza(sessione, bundlePrecedente);
   }
   eliminaRecordBozza(id);
   eliminaRecordBozza("runtime:" + id);
   try {
-    localStorage.removeItem(chiaveArchivioInvii(sessione.chiaveBozza));
-    localStorage.removeItem(chiaveArchivioInvii("runtime:" + id));
-    for (const invio of sessione.inviiPendenti) {
-      localStorage.removeItem(chiaveArchivioInvii(sessione.chiaveBozza, invio.id));
-      localStorage.removeItem(chiaveArchivioInvii("runtime:" + id, invio.id));
+    if (!preservaInviiPendenti) {
+      localStorage.removeItem(chiaveArchivioInvii(sessione.chiaveBozza));
+      localStorage.removeItem(chiaveArchivioInvii("runtime:" + id));
+      for (const invio of sessione.inviiPendenti) {
+        localStorage.removeItem(chiaveArchivioInvii(sessione.chiaveBozza, invio.id));
+        localStorage.removeItem(chiaveArchivioInvii("runtime:" + id, invio.id));
+      }
     }
   } catch {
     // Preferenza non essenziale.
   }
-  sessione.inviiPendenti = [];
-  sessione.invioNonPersistito = false;
+  if (!preservaInviiPendenti) {
+    sessione.inviiPendenti = [];
+    sessione.invioNonPersistito = false;
+  }
 }
 
 function aggiornaIdentitaBozza(sessione, fileSessione) {
@@ -1589,14 +1785,42 @@ function percentualeContesto(usati, finestra) {
   return Math.max(0, Math.min(100, tokenUsati / tokenFinestra * 100));
 }
 
+function identitaModelloSessione(sessione) {
+  if (!sessione?.provider || !sessione?.modello) return null;
+  return { provider: sessione.provider, id: sessione.modello };
+}
+
+function applicaModelloSessione(sessione, modello) {
+  if (!sessione || !modello?.provider || !modello?.id) return false;
+  const precedente = VISTA_CORE.chiaveModello(identitaModelloSessione(sessione));
+  const successivo = VISTA_CORE.chiaveModello(modello);
+  const finestraPrecedente = Number(sessione.statoRpc?.model?.contextWindow);
+  const finestraSuccessiva = Number(modello.contextWindow);
+  const finestraCambiata = Number.isFinite(finestraPrecedente)
+    && Number.isFinite(finestraSuccessiva)
+    && finestraPrecedente !== finestraSuccessiva;
+  const cambiato = precedente !== successivo || finestraCambiata;
+  sessione.provider = modello.provider;
+  sessione.modello = modello.id;
+  sessione.nomeModello = modello.name || modello.id;
+  sessione.statoRpc = { ...sessione.statoRpc, model: { ...modello } };
+  if (cambiato) {
+    sessione.revisioneModello = Number(sessione.revisioneModello || 0) + 1;
+    sessione.statisticheSessione = null;
+    sessione.modelloStatistiche = null;
+    if (sessione.statisticheInCaricamento) sessione.ripetiStatistiche = true;
+  }
+  return cambiato;
+}
+
 function finestraModelloSessione(sessione) {
-  const valoreStato = sessione?.statoRpc?.model?.contextWindow;
-  const dalloStato = valoreStato == null ? NaN : Number(valoreStato);
-  if (Number.isFinite(dalloStato) && dalloStato > 0) return dalloStato;
-  const modello = sessione?.modelli?.find((voce) =>
-    voce?.provider === sessione.provider && voce?.id === sessione.modello);
-  const dalCatalogo = modello?.contextWindow == null ? NaN : Number(modello.contextWindow);
-  return Number.isFinite(dalCatalogo) && dalCatalogo > 0 ? dalCatalogo : null;
+  return VISTA_CORE.finestraContestoModelloCorrente({
+    modelloCorrente: identitaModelloSessione(sessione),
+    modelloStato: sessione?.statoRpc?.model || null,
+    catalogo: sessione?.modelli || [],
+    statistiche: sessione?.statisticheSessione || null,
+    modelloStatistiche: sessione?.modelloStatistiche || null,
+  });
 }
 
 function pressioneContestoCambioModello(sessione, modello) {
@@ -1620,10 +1844,7 @@ function testoContestoSessione(sessione) {
   if (sessione?.compattazioneInCorso) return "Contesto · riassunto in corso…";
   if (sessione?.contestoDaRicalcolare) return "Contesto · ricalcolo dopo il riassunto…";
   const contesto = sessione?.statisticheSessione?.contextUsage || null;
-  const finestraStatistica = contesto?.contextWindow == null ? NaN : Number(contesto.contextWindow);
-  const finestra = Number.isFinite(finestraStatistica) && finestraStatistica > 0
-    ? finestraStatistica
-    : finestraModelloSessione(sessione);
+  const finestra = finestraModelloSessione(sessione);
   // Durante lo streaming Pi espone gia la fotografia di contesto corrente.
   // Alla fine del turno get_session_stats torna a essere la fonte autorevole.
   const usatiLive = sessione?.ultimoUso?.totalTokens == null
@@ -1785,6 +2006,7 @@ function inFondo(sessione, { forza = false } = {}) {
   if (sessione.id !== APP.attivaId) return;
   if (forza) sessione.seguiFondo = true;
   if (sessione.seguiFondo === false) return;
+  if (sessione.renderCronologiaInCorso) return;
   requestAnimationFrame(() => {
     DOM.conversazione.scrollTop = DOM.conversazione.scrollHeight;
   });
@@ -1940,6 +2162,16 @@ async function chiediOperazioneIdempotente(
   }
 }
 
+function staccaEventiCronologiaAccodati(sessione, caricamento) {
+  if (!caricamento || sessione.caricamentoCronologiaInCorso !== caricamento) return [];
+  sessione.caricamentoCronologiaInCorso = null;
+  return caricamento.eventi.splice(0);
+}
+
+function riproduciEventiCronologiaAccodati(eventi) {
+  for (const evento of eventi) gestisciEvento(evento);
+}
+
 async function caricaCronologiaSessione(
   sessione,
   { timeout = 60000, consentiParziale = false } = {},
@@ -1947,6 +2179,19 @@ async function caricaCronologiaSessione(
   if (!sessione?.attiva) return [];
   sessione.richiestaCronologia = Number(sessione.richiestaCronologia || 0) + 1;
   const richiestaCorrente = sessione.richiestaCronologia;
+  // Tra get_state e la fine del download un'altra finestra puo avviare un
+  // turno. Conserviamo quegli eventi finche la fotografia completa non e nel
+  // DOM; una richiesta pi nuova eredita la stessa coda e la riproduce una volta.
+  const caricamentoCronologia = consentiParziale
+    ? null
+    : {
+        richiesta: richiestaCorrente,
+        eventi: sessione.caricamentoCronologiaInCorso?.eventi || [],
+      };
+  if (caricamentoCronologia) {
+    sessione.caricamentoCronologiaInCorso = caricamentoCronologia;
+  }
+  let eventiAccodati = [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   let risposta;
@@ -2028,7 +2273,16 @@ async function caricaCronologiaSessione(
       APP.sessioni.get(sessione.id) === sessione
       && sessione.richiestaCronologia === richiestaCorrente
     ) {
-      renderCronologia(sessione, messaggi);
+      eventiAccodati = staccaEventiCronologiaAccodati(sessione, caricamentoCronologia);
+      sessione.messaggiSincronizzati = false;
+      const renderCompletato = await renderCronologia(sessione, messaggi, {
+        forzaSincrono: eventiAccodati.length > 0,
+      });
+      if (
+        !renderCompletato
+        || APP.sessioni.get(sessione.id) !== sessione
+        || sessione.richiestaCronologia !== richiestaCorrente
+      ) return messaggi;
       sessione.erroreCronologia = null;
       // Durante lo streaming mostriamo un prefisso stabile del JSONL ma non
       // mescoliamo i delta successivi con quella fotografia: agent_settled
@@ -2043,6 +2297,12 @@ async function caricaCronologiaSessione(
     throw errore;
   } finally {
     clearTimeout(timer);
+    eventiAccodati.push(
+      ...staccaEventiCronologiaAccodati(sessione, caricamentoCronologia),
+    );
+    const eventiDaRiprodurre = eventiAccodati;
+    eventiAccodati = [];
+    riproduciEventiCronologiaAccodati(eventiDaRiprodurre);
   }
 }
 
@@ -2223,13 +2483,25 @@ function preparaAttesaRpcEsterna(sessionId, id, { timeout = 5 * 60 * 1000, nome 
   };
 }
 
+function erroreRenderCronologiaInCorso() {
+  const errore = new Error(
+    "La cronologia salvata e ancora in ricostruzione. La bozza resta salvata: attendi il completamento prima di modificarla o inviarla.",
+  );
+  errore.renderCronologiaInCorso = true;
+  return errore;
+}
+
 async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) {
   if (!sessionId || !APP.sessioni.has(sessionId)) throw new Error("Nessuna sessione attiva");
   const sessione = APP.sessioni.get(sessionId);
+  if (
+    sessione.renderCronologiaInCorso
+    && !String(comando?.type || "").startsWith("get_")
+  ) throw erroreRenderCronologiaInCorso();
   if (COMANDI_CAMBIO_SESSIONE.has(comando.type)) {
     await (sessione.codaAllegatiBozza || Promise.resolve());
     if (sessione.erroreAllegatiBozza) {
-      throw new Error("Prima recupera o scarta esplicitamente le immagini mancanti della bozza.");
+      throw new Error("Prima recupera o scarta esplicitamente gli allegati mancanti della bozza.");
     }
     if (sessione.id === APP.attivaId && sessione.bozza !== DOM.input.value) {
       ramificaLineageBozza(sessione);
@@ -2239,7 +2511,7 @@ async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) 
     }
     if (sessione.bozza.length || sessione.allegati.length) {
       throw new Error(
-        "Prima invia, copia o cancella la bozza e rimuovi le immagini: appartengono alla conversazione corrente.",
+        "Prima invia, copia o cancella la bozza e rimuovi gli allegati: appartengono alla conversazione corrente.",
       );
     }
   }
@@ -2260,6 +2532,12 @@ async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) 
     tipoComando: String(comando.type || "comando"),
     inCompattazione: false,
     mutante: !String(comando.type).startsWith("get_"),
+    ...(comando.type === "get_session_stats"
+      ? {
+          modelloStatistiche: modelloCorrenteSessione(sessione),
+          revisioneModello: Number(sessione.revisioneModello || 0),
+        }
+      : {}),
   };
   APP.attese.set(chiave, pendente);
   programmaTimeoutAttesa(chiave, pendente);
@@ -2318,6 +2596,8 @@ async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) 
 
 async function inviaSenzaAttesa(comando, sessionId = APP.attivaId) {
   if (!sessionId) return;
+  const sessione = APP.sessioni.get(sessionId);
+  if (sessione?.renderCronologiaInCorso) throw erroreRenderCronologiaInCorso();
   await chiedi("/api/comando", { corpo: { ...comando, sessionId } });
 }
 
@@ -2415,11 +2695,17 @@ function creaSessione(meta) {
     invioInCorso: false,
     invioNonPersistito: false,
     richiestaCronologia: 0,
+    caricamentoCronologiaInCorso: null,
+    generazioneRenderCronologia: 0,
+    renderCronologiaInCorso: false,
+    frameRenderCronologia: null,
+    annullaRenderCronologia: null,
+    completaRenderCronologiaSincrono: null,
     attiva: meta.attiva !== false,
     riservata: Boolean(meta.riservata),
     inEsecuzione: Boolean(meta.inEsecuzione),
     avvioTurnoIl: meta.inEsecuzione ? Date.now() : null,
-    compattazioneInCorso: false,
+    compattazioneInCorso: Boolean(meta.compattazioneInCorso),
     avvisoCompattazione: null,
     contestoDaRicalcolare: false,
     sincronizzazione: true,
@@ -2443,8 +2729,17 @@ function creaSessione(meta) {
     modoCoda: "followUp",
     statoRpc: {},
     statisticheSessione: null,
+    modelloStatistiche: null,
+    revisioneModello: 0,
     statisticheInCaricamento: false,
     ripetiStatistiche: false,
+    contestoGptDaRicaricare: Boolean(meta.catalogoModelliDaRicaricare),
+    revisioneCatalogoModelliAttesa: meta.revisioneCatalogoModelliAttesa || null,
+    contextWindowCatalogoModelliAttesa: meta.contextWindowCatalogoModelliAttesa || null,
+    rebindModelloInCorso: Boolean(meta.rebindModelloInCorso),
+    ricaricaContestoGptInCorso: null,
+    timerRiprovaContestoGpt: null,
+    tentativiRiprovaContestoGpt: 0,
     ultimoUso: null,
     ultimoCacheHitPercento: null,
     vista,
@@ -2478,7 +2773,9 @@ function creaSessione(meta) {
     allegati: [],
     codaAllegatiBozza: Promise.resolve(),
     codaImportazioneImmagini: Promise.resolve(),
+    codaImportazioneFile: Promise.resolve(),
     importazioniImmaginiInCorso: 0,
+    importazioniFileInCorso: 0,
     allegatiNonPersistiti: false,
     erroreAllegatiBozza: null,
     ripristinoAllegatiInCorso: false,
@@ -2512,11 +2809,19 @@ function unisciSessione(meta) {
     "ragionamento",
     "nomeSessione",
     "inEsecuzione",
+    "compattazioneInCorso",
     "attiva",
     "riservata",
+    "catalogoModelliDaRicaricare",
+    "revisioneCatalogoModelliAttesa",
+    "contextWindowCatalogoModelliAttesa",
+    "rebindModelloInCorso",
   ];
   for (const campo of campi) {
     if (Object.hasOwn(meta, campo) && meta[campo] !== undefined) sessione[campo] = meta[campo];
+  }
+  if (Object.hasOwn(meta, "catalogoModelliDaRicaricare")) {
+    sessione.contestoGptDaRicaricare = Boolean(meta.catalogoModelliDaRicaricare);
   }
   if (Object.hasOwn(meta, "fileSessione") && meta.fileSessione !== undefined) {
     aggiornaIdentitaBozza(sessione, meta.fileSessione);
@@ -2545,6 +2850,14 @@ function applicaSnapshot(sessioni, { sostituisci = false } = {}) {
     const ripiego = idSessioneDiRipiego();
     if (ripiego) attivaSessione(ripiego);
     else mostraNessunaSessione();
+  }
+  // Il latch arriva dal ponte e sopravvive a F5/nuove finestre. La UI puo
+  // tentare la sequenza, ma soltanto il server la chiude dopo aver verificato
+  // le response reali di refresh, catalogo, rebind e get_state.
+  for (const sessione of APP.sessioni.values()) {
+    if (sessione.attiva && sessione.contestoGptDaRicaricare) {
+      setTimeout(() => void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {}), 0);
+    }
   }
 }
 
@@ -2580,6 +2893,7 @@ function azzeraUiEstensioni(sessione) {
 function preparaRimozioneSessione(sessione, motivo) {
   if (!sessione) return;
   rifiutaAtteseSessione(sessione.id, motivo);
+  sessione.annullaRenderCronologia?.();
   if (sessione.frameDelta != null) cancelAnimationFrame(sessione.frameDelta);
   sessione.frameDelta = null;
   sessione.deltaTestoInAttesa = "";
@@ -2667,7 +2981,7 @@ async function chiudiSessione(id, operazione = null) {
   if (APP.sessioni.get(id) !== sessione) return;
   if (sessione.erroreAllegatiBozza) {
     operazione?.annulla();
-    toast("Prima usa Riprova o Scarta immagini mancanti: chiudere ora potrebbe perdere una parte della bozza.", "errore");
+    toast("Prima usa Riprova o Scarta allegati mancanti: chiudere ora potrebbe perdere una parte della bozza.", "errore");
     return;
   }
   if (sessione.id === APP.attivaId && sessione.bozza !== DOM.input.value) {
@@ -2680,7 +2994,7 @@ async function chiudiSessione(id, operazione = null) {
   const nonInviati = [
     testoConfermato.length ? "la bozza" : null,
     sessione.allegati.length
-      ? `${sessione.allegati.length} immagin${sessione.allegati.length === 1 ? "e" : "i"}`
+      ? `${sessione.allegati.length} allegat${sessione.allegati.length === 1 ? "o" : "i"}`
       : null,
   ].filter(Boolean).join(" e ");
   const dettaglio = [
@@ -2714,20 +3028,23 @@ async function chiudiSessione(id, operazione = null) {
     const operationId = operazione
       ? operazione.preparaPasso("quit").operationId
       : null;
+    const filePendenti = riferimentiFileServer(sessione.allegati);
     const corpoChiusura = {
         sessionId: id,
+        ...(filePendenti.length ? { filePendenti } : {}),
         ...(operationId ? { operationId } : {}),
     };
+    let esitoChiusura;
     if (operationId) {
-      await chiediOperazioneIdempotente("/api/chiudi", corpoChiusura, {
+      esitoChiusura = await chiediOperazioneIdempotente("/api/chiudi", corpoChiusura, {
         sessionId: id,
         operationId,
         timeout: 60000,
       });
-    } else await chiedi("/api/chiudi", { corpo: corpoChiusura });
+    } else esitoChiusura = await chiedi("/api/chiudi", { corpo: corpoChiusura });
     operazione?.completa();
     preparaRimozioneSessione(sessione, "La sessione e stata chiusa.");
-    await dimenticaBozza(sessione);
+    await dimenticaBozza(sessione, { preservaInviiPendenti: true });
     APP.sessioni.delete(id);
     if (APP.attivaId === id) {
       const ripiego = idSessioneDiRipiego();
@@ -2735,6 +3052,12 @@ async function chiudiSessione(id, operazione = null) {
       else mostraNessunaSessione();
     }
     disegnaSchede();
+    if (Number(esitoChiusura?.pendingNonEliminati || 0) > 0) {
+      toast(
+        "Sessione chiusa. Alcuni file temporanei non sono stati rimossi subito: il cleanup automatico ritentera in sicurezza.",
+        "avviso",
+      );
+    }
   } catch (errore) {
     operazione?.fallisce(errore);
     sessione.chiusuraInCorso = false;
@@ -2981,7 +3304,7 @@ function aggiungiRiepilogoContesto(sessione, tipo, testo) {
   return box;
 }
 
-function aggiornaEventoCompattazione(sessione, { completato = false, errore = "" } = {}) {
+function aggiornaEventoCompattazione(sessione, { completato = false, errore = "", nota = "" } = {}) {
   viaBenvenuto(sessione);
   sessione.haMessaggi = true;
   let box = sessione.avvisoCompattazione;
@@ -2993,15 +3316,36 @@ function aggiornaEventoCompattazione(sessione, { completato = false, errore = ""
     sessione.avvisoCompattazione = box;
   }
   box.classList.toggle("errore", Boolean(errore));
-  box.textContent = errore
+  box.textContent = nota || (errore
     ? `Compattazione non completata: ${errore}`
     : completato
       ? "Spazio liberato. La sintesi resta chiusa e i rami precedenti sono conservati."
-      : "Sto liberando spazio senza cancellare la cronologia…";
+      : "Sto liberando spazio senza cancellare la cronologia…");
   inFondo(sessione);
 }
 
-function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdown = true } = {}) {
+function dimensioneFile(dimensione) {
+  const byte = Number(dimensione);
+  if (!Number.isFinite(byte) || byte < 0) return "dimensione non disponibile";
+  if (byte < 1024) return `${byte.toLocaleString("it-IT")} B`;
+  if (byte < 1024 * 1024) return `${(byte / 1024).toLocaleString("it-IT", { maximumFractionDigits: 1 })} KB`;
+  return `${(byte / (1024 * 1024)).toLocaleString("it-IT", { maximumFractionDigits: 1 })} MB`;
+}
+
+function creaFileMessaggio(file) {
+  const chip = crea("div", "messaggio-file");
+  chip.title = file.percorso || file.nome || "File allegato";
+  chip.appendChild(crea("span", "messaggio-file-icona", "▱"));
+  const testo = crea("span", "messaggio-file-testo");
+  testo.append(
+    crea("strong", null, file.nome || "File allegato"),
+    crea("small", null, dimensioneFile(file.dimensione)),
+  );
+  chip.appendChild(testo);
+  return chip;
+}
+
+function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], file = [], markdown = true } = {}) {
   viaBenvenuto(sessione);
   // Un messaggio visibile interrompe la sequenza di attivita interne. Gli
   // strumenti successivi formeranno un nuovo gruppo nel punto cronologico
@@ -3009,9 +3353,13 @@ function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdo
   finalizzaGruppoAttivita(sessione.gruppoAttivita);
   sessione.gruppoAttivita = null;
   sessione.haMessaggi = true;
+  const separato = classe === "utente"
+    ? separaMessaggioConFile(testo)
+    : { testo: String(testo || ""), file: [] };
   const testoVisibile = classe === "agente"
-    ? VISTA_CORE.pulisciRispostaAgente(testo)
-    : String(testo || "");
+    ? VISTA_CORE.pulisciRispostaAgente(separato.testo)
+    : separato.testo;
+  const fileVisibili = [...separato.file, ...Array.from(file || [])];
   const msg = crea("article", "msg " + classe);
   const autore = crea("div", "msg-chi", chi);
   const corpo = crea("div", "msg-corpo");
@@ -3030,6 +3378,12 @@ function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdo
       galleria.appendChild(img);
     }
     corpo.appendChild(galleria);
+  }
+
+  if (fileVisibili.length) {
+    const elenco = crea("div", "messaggio-file-elenco");
+    for (const allegato of fileVisibili) elenco.appendChild(creaFileMessaggio(allegato));
+    corpo.appendChild(elenco);
   }
 
   if (testoVisibile) {
@@ -3063,14 +3417,13 @@ function immaginiDaContenuto(contenuto) {
     .map((parte) => ({ data: parte.data, mimeType: parte.mimeType, nome: "Immagine allegata" }));
 }
 
-function firmaImmagine(immagine) {
-  const dati = String(immagine?.data || "");
-  return [
-    String(immagine?.mimeType || ""),
-    dati.length,
-    dati.slice(0, 32),
-    dati.slice(-32),
-  ].join(":");
+function allegatiDaContenuto(contenuto) {
+  const separato = separaMessaggioConFile(testoDaContenuto(contenuto));
+  return [...separato.file, ...immaginiDaContenuto(contenuto)];
+}
+
+function firmeAllegati(allegati) {
+  return Array.from(allegati || []).map(firmaAllegato).sort();
 }
 
 function riconciliaInviiPendenti(sessione, messaggi) {
@@ -3088,14 +3441,14 @@ function riconciliaInviiPendenti(sessione, messaggi) {
     if (PALETTE_CORE.invioRichiedeVerificaManuale(invio)) continue;
     const indice = utenti.findIndex((messaggio, posizione) => (
       !messaggiUsati.has(posizione)
-      && testoDaContenuto(messaggio.content).trim() === invio.testo.trim()
+      && testoDaContenuto(messaggio.content).trim() === (invio.testoRpc || invio.testo).trim()
       && (() => {
         const attese = invio.allegati || [];
-        const presenti = immaginiDaContenuto(messaggio.content);
-        return attese.length === presenti.length
-          && attese.every((allegato, indiceAllegato) => (
-            allegato.firma === firmaImmagine(presenti[indiceAllegato])
-          ));
+        const presenti = allegatiDaContenuto(messaggio.content);
+        const firmeAttese = attese.map((allegato) => allegato.firma).sort();
+        const firmePresenti = firmeAllegati(presenti);
+        return firmeAttese.length === firmePresenti.length
+          && firmeAttese.every((firma, indiceAllegato) => firma === firmePresenti[indiceAllegato]);
       })()
       && Number(messaggio.timestamp || 0) >= Number(invio.creatoIl || 0)
     ));
@@ -3130,11 +3483,17 @@ function riconciliaInviiPendenti(sessione, messaggi) {
       leggiRecordBozzaProprio(sessione.chiaveBozza)?.testo || "",
     ).trim();
     const risolti = [];
+    let notificaRiconciliazione = false;
     for (const invio of consegnati) {
       if (invio.lineageId && !segnaLineageRisolta(invio.lineageId)) {
         sessione.invioNonPersistito = true;
         continue;
       }
+      // Gli invii appena fatti restano nascosti mentre Pi li persiste: la loro
+      // normale conferma non deve sembrare il recupero di una richiesta persa.
+      // Dopo un reload o un esito incerto, invece, la copia e visibile e la
+      // conferma e utile all'utente.
+      if (!sessione.inviiNascosti.has(invio.id)) notificaRiconciliazione = true;
       dimenticaInvioPendente(sessione, invio.id);
       risolti.push(invio);
     }
@@ -3161,7 +3520,7 @@ function riconciliaInviiPendenti(sessione, messaggi) {
       }
     }
     sessione.avvisoInvioPendente = false;
-    if (sessione.id === APP.attivaId) {
+    if (notificaRiconciliazione && sessione.id === APP.attivaId) {
       toast("La richiesta precedente risulta presente nella cronologia: non verra reinviata.");
     }
   } else if (
@@ -3202,11 +3561,12 @@ function aggiornaGruppoAttivita(gruppo) {
     inCorso,
     finalizzato: Boolean(gruppo.finalizzato),
   });
+  const attivitaInCorso = inCorso || !gruppo.finalizzato;
   gruppo.stato.textContent = stato.testo;
   gruppo.stato.title = tentativiFalliti
     ? "Sono tentativi tecnici non riusciti; apri il gruppo per i dettagli. Un errore finale viene mostrato separatamente."
     : "";
-  gruppo.box.classList.toggle("in-corso", stato.livello === "lavoro");
+  gruppo.box.classList.toggle("in-corso", attivitaInCorso);
   gruppo.box.classList.toggle("con-avvisi", stato.livello === "avviso");
   gruppo.box.classList.remove("con-errori");
 }
@@ -3220,6 +3580,9 @@ function ottieniGruppoAttivita(sessione) {
   const titolo = crea("span", "titolo", "Attività tecniche");
   const conteggio = crea("span", "conteggio", "");
   const stato = crea("span", "stato", "in corso…");
+  stato.setAttribute("role", "status");
+  stato.setAttribute("aria-live", "polite");
+  stato.setAttribute("aria-atomic", "true");
   summary.append(titolo, conteggio, stato);
   const corpo = crea("div", "attivita-corpo");
   box.append(summary, corpo);
@@ -3314,7 +3677,12 @@ function apriStrumento(sessione, id, nome, argomenti, output = "", finito = fals
   return riferimento;
 }
 
-function renderCronologia(sessione, messaggi) {
+function renderCronologia(sessione, messaggi, { forzaSincrono = false } = {}) {
+  sessione.annullaRenderCronologia?.();
+  const listaMessaggi = Array.from(messaggi || []);
+  const generazione = Number(sessione.generazioneRenderCronologia || 0) + 1;
+  sessione.generazioneRenderCronologia = generazione;
+  sessione.messaggiSincronizzati = false;
   rimuoviErroreCronologia(sessione);
   if (sessione.frameDelta != null) cancelAnimationFrame(sessione.frameDelta);
   sessione.frameDelta = null;
@@ -3344,7 +3712,7 @@ function renderCronologia(sessione, messaggi) {
   sessione.avvisoCompattazione = null;
   sessione.ultimoErrorePi = null;
   sessione.ultimoErrorePiIl = 0;
-  sessione.byteImmaginiCronologia = (messaggi || []).reduce(
+  sessione.byteImmaginiCronologia = listaMessaggi.reduce(
     (totale, messaggio) => totale + (Array.isArray(messaggio?.content)
       ? messaggio.content
           .filter((parte) => parte?.type === "image")
@@ -3353,13 +3721,16 @@ function renderCronologia(sessione, messaggi) {
     0,
   );
 
-  for (const messaggio of messaggi || []) {
-    if (!messaggio) continue;
+  const renderizzaMessaggio = (messaggio) => {
+    if (!messaggio) return;
     if (messaggio.role === "user") {
+      // Il contenuto originale dell'utente viene letto integralmente, nello
+      // stesso ordine del JSONL: il batching cambia soltanto quando il DOM cede
+      // il main thread, mai quali prompt vengono mostrati.
       aggiungiMessaggio(sessione, "tu", testoDaContenuto(messaggio.content), "utente", {
         immagini: immaginiDaContenuto(messaggio.content),
       });
-      continue;
+      return;
     }
     if (messaggio.role === "assistant") {
       const parti = Array.isArray(messaggio.content) ? messaggio.content : [];
@@ -3376,7 +3747,7 @@ function renderCronologia(sessione, messaggi) {
       if (messaggio.errorMessage && !testo) {
         mostraErrorePi(sessione, messaggio.errorMessage);
       }
-      continue;
+      return;
     }
     if (messaggio.role === "toolResult") {
       const riferimento =
@@ -3386,7 +3757,7 @@ function renderCronologia(sessione, messaggi) {
       riferimento.esito.textContent = messaggio.isError ? "errore" : "fatto";
       if (messaggio.isError) riferimento.box.classList.add("fallito");
       aggiornaGruppoDiStrumento(riferimento);
-      continue;
+      return;
     }
     if (messaggio.role === "bashExecution") {
       apriStrumento(
@@ -3398,24 +3769,117 @@ function renderCronologia(sessione, messaggi) {
         true,
         Boolean(messaggio.cancelled || (messaggio.exitCode && messaggio.exitCode !== 0)),
       );
-      continue;
+      return;
     }
     if (messaggio.role === "custom" && messaggio.display !== false) {
       aggiungiMessaggio(sessione, "estensione", testoDaContenuto(messaggio.content), "sistema");
-      continue;
+      return;
     }
     if (messaggio.role === "compactionSummary") {
       aggiungiRiepilogoContesto(sessione, "compaction", messaggio.summary);
-      continue;
+      return;
     }
     if (messaggio.role === "branchSummary") {
       aggiungiRiepilogoContesto(sessione, "branch", messaggio.summary);
     }
+  };
+
+  const renderProgressivo = !forzaSincrono
+    && listaMessaggi.length >= SOGLIA_RENDER_CRONOLOGIA_PROGRESSIVO
+    && !sessione.inEsecuzione
+    && !sessione.compattazioneInCorso;
+  let indice = 0;
+  let conclusa = false;
+  let risolviRender = null;
+
+  const generazioneCorrente = () => APP.sessioni.get(sessione.id) === sessione
+    && sessione.generazioneRenderCronologia === generazione;
+  const concludi = (completata) => {
+    if (conclusa) return;
+    conclusa = true;
+    if (sessione.frameRenderCronologia != null) {
+      cancelAnimationFrame(sessione.frameRenderCronologia);
+      sessione.frameRenderCronologia = null;
+    }
+    if (generazioneCorrente()) {
+      sessione.renderCronologiaInCorso = false;
+      sessione.annullaRenderCronologia = null;
+      sessione.completaRenderCronologiaSincrono = null;
+      sessione.vista.setAttribute("aria-busy", "false");
+      if (completata) inFondo(sessione);
+      if (sessione.id === APP.attivaId) {
+        disegnaAllegati();
+        aggiornaInterfacciaAttiva();
+      }
+    }
+    risolviRender?.(completata);
+  };
+  const finalizza = () => {
+    if (!generazioneCorrente()) return false;
+    finalizzaGruppoAttivita(sessione.gruppoAttivita);
+    riconciliaInviiPendenti(sessione, listaMessaggi);
+    if (!sessione.haMessaggi) sessione.vista.appendChild(benvenuto(sessione));
+    inFondo(sessione);
+    return true;
+  };
+  const completaSincrono = () => {
+    if (!generazioneCorrente() || conclusa) {
+      concludi(false);
+      return false;
+    }
+    try {
+      while (indice < listaMessaggi.length) {
+        renderizzaMessaggio(listaMessaggi[indice]);
+        indice += 1;
+      }
+      const completata = finalizza();
+      concludi(completata);
+      return completata;
+    } catch (errore) {
+      concludi(false);
+      mostraErroreCronologia(sessione, errore);
+      return false;
+    }
+  };
+
+  if (!renderProgressivo) return Promise.resolve(completaSincrono());
+
+  sessione.renderCronologiaInCorso = true;
+  sessione.vista.setAttribute("aria-busy", "true");
+  if (sessione.id === APP.attivaId) {
+    disegnaAllegati();
+    aggiornaInterfacciaAttiva();
   }
-  finalizzaGruppoAttivita(sessione.gruppoAttivita);
-  riconciliaInviiPendenti(sessione, messaggi || []);
-  if (!sessione.haMessaggi) sessione.vista.appendChild(benvenuto(sessione));
-  inFondo(sessione);
+
+  return new Promise((risolvi) => {
+    risolviRender = risolvi;
+    sessione.annullaRenderCronologia = () => concludi(false);
+    sessione.completaRenderCronologiaSincrono = completaSincrono;
+    const renderizzaBatch = () => {
+      sessione.frameRenderCronologia = null;
+      try {
+        if (!generazioneCorrente() || conclusa) {
+          concludi(false);
+          return;
+        }
+        const fineBatch = Math.min(indice + MESSAGGI_PER_BATCH_CRONOLOGIA, listaMessaggi.length);
+        while (indice < fineBatch) {
+          renderizzaMessaggio(listaMessaggi[indice]);
+          indice += 1;
+        }
+        if (indice < listaMessaggi.length) {
+          sessione.frameRenderCronologia = requestAnimationFrame(renderizzaBatch);
+          return;
+        }
+        const completata = finalizza();
+        concludi(completata);
+      } catch (errore) {
+        concludi(false);
+        mostraErroreCronologia(sessione, errore);
+      }
+    };
+    renderizzaBatch();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -3500,6 +3964,8 @@ function gestisciDelta(sessione, evento) {
 
 function spiegaErrorePi(errore, sessione = sessioneAttiva()) {
   const testo = String(errore || "Errore sconosciuto");
+  const compattazione = VISTA_CORE.presentaErroreCompattazione(testo);
+  if (compattazione.nonNecessaria) return compattazione.testo;
   if (/LM Studio non risponde|Ollama non risponde|provider locale.+non risponde/i.test(testo)) {
     return testo;
   }
@@ -3516,7 +3982,6 @@ function spiegaErrorePi(errore, sessione = sessioneAttiva()) {
   }
   const regole = [
     [/nothing to export/i, "Non c'e ancora niente da esportare: scrivi almeno un messaggio."],
-    [/nothing to compact|too small/i, "La conversazione e ancora troppo breve per essere riassunta."],
     [/no active|not streaming|nothing to abort/i, "Non c'e nulla da interrompere in questo momento."],
     [/model not found/i, "Quel modello non e disponibile. Scegline un altro dal menu Modello."],
     [/no credentials|unauthorized|api key/i, "Mancano le credenziali del modello cloud. Scegli un modello gia collegato o locale."],
@@ -3662,6 +4127,9 @@ function aggiornaDaRisposta(sessione, evento) {
   if (evento.command === "login_provider") {
     chiudiInterfacciaLoginProvider(sessione, evento.id);
   }
+  const attesaRisposta = evento.id && evento.guiSessionId
+    ? APP.attese.get(chiaveAttesa(evento.guiSessionId, evento.id))
+    : null;
   const avevaAttesa = completaAttesa(evento);
   const invioCorrelato = evento.id
     ? sessione.inviiPendenti.find((voce) => (
@@ -3727,7 +4195,14 @@ function aggiornaDaRisposta(sessione, evento) {
   }
   if (evento.guiObsoleta) return;
   if (!evento.success) {
-    if (evento.error && !["builtin", "shell"].includes(invioCorrelato?.origine)) {
+    const compattazione = evento.command === "compact"
+      ? VISTA_CORE.presentaErroreCompattazione(evento.error)
+      : null;
+    if (
+      evento.error
+      && !(avevaAttesa && compattazione?.nonNecessaria)
+      && !["builtin", "shell"].includes(invioCorrelato?.origine)
+    ) {
       toast(spiegaErrorePi(evento.error, sessione), "errore");
     }
     return;
@@ -3735,11 +4210,7 @@ function aggiornaDaRisposta(sessione, evento) {
   const dati = evento.data || {};
   if (evento.command === "get_state") {
     sessione.statoRpc = { ...sessione.statoRpc, ...dati };
-    if (dati.model) {
-      sessione.provider = dati.model.provider;
-      sessione.modello = dati.model.id;
-      sessione.nomeModello = dati.model.name || dati.model.id;
-    }
+    if (dati.model) applicaModelloSessione(sessione, dati.model);
     sessione.ragionamento = dati.thinkingLevel || sessione.ragionamento;
     sessione.nomeSessione = dati.sessionName || null;
     aggiornaIdentitaBozza(sessione, dati.sessionFile || null);
@@ -3747,14 +4218,34 @@ function aggiornaDaRisposta(sessione, evento) {
     sessione.compattazioneInCorso = Boolean(dati.isCompacting);
   }
   if (evento.command === "get_messages") {
-    renderCronologia(sessione, dati.messages || []);
-    sessione.messaggiSincronizzati = true;
+    sessione.messaggiSincronizzati = false;
+    const generazioneAttesa = Number(sessione.generazioneRenderCronologia || 0) + 1;
+    void renderCronologia(sessione, dati.messages || []).then((completata) => {
+      if (
+        !completata
+        || APP.sessioni.get(sessione.id) !== sessione
+        || sessione.generazioneRenderCronologia !== generazioneAttesa
+      ) return;
+      sessione.messaggiSincronizzati = true;
+      if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+    }).catch((errore) => {
+      if (APP.sessioni.get(sessione.id) === sessione) mostraErroreCronologia(sessione, errore);
+    });
   }
   if (evento.command === "get_session_stats") {
-    sessione.statisticheSessione = dati;
-    sessione.contestoDaRicalcolare = false;
-    // I cumulativi includono ormai l'ultimo messaggio: non sommarlo due volte.
-    sessione.ultimoUso = null;
+    const revisioneRichiesta = Number(attesaRisposta?.revisioneModello);
+    const modelloRichiesta = attesaRisposta?.modelloStatistiche || null;
+    const ancoraCorrente = Number.isInteger(revisioneRichiesta)
+      && revisioneRichiesta === Number(sessione.revisioneModello || 0)
+      && VISTA_CORE.chiaveModello(modelloRichiesta)
+        === VISTA_CORE.chiaveModello(modelloCorrenteSessione(sessione));
+    if (ancoraCorrente) {
+      sessione.statisticheSessione = dati;
+      sessione.modelloStatistiche = { ...modelloRichiesta };
+      sessione.contestoDaRicalcolare = false;
+      // I cumulativi includono ormai l'ultimo messaggio: non sommarlo due volte.
+      sessione.ultimoUso = null;
+    }
   }
   if (evento.command === "get_available_models") sessione.modelli = dati.models || [];
   if (evento.command === "get_available_thinking_levels") sessione.livelli = dati.levels || [];
@@ -3763,21 +4254,20 @@ function aggiornaDaRisposta(sessione, evento) {
     if (!sessione.capacitaComplete) sessione.comandi = sessione.comandiPi;
   }
   if (evento.command === "set_model" && dati.id) {
-    sessione.provider = dati.provider;
-    sessione.modello = dati.id;
-    sessione.nomeModello = dati.name || dati.id;
+    applicaModelloSessione(sessione, dati);
+    setTimeout(() => void aggiornaStatisticheSessione(sessione), 0);
   }
   if (evento.command === "cycle_model" && dati.model) {
-    sessione.provider = dati.model.provider;
-    sessione.modello = dati.model.id;
-    sessione.nomeModello = dati.model.name || dati.model.id;
+    applicaModelloSessione(sessione, dati.model);
     if (dati.thinkingLevel) sessione.ragionamento = dati.thinkingLevel;
+    setTimeout(() => void aggiornaStatisticheSessione(sessione), 0);
   }
   if (evento.command === "cycle_thinking_level" && dati.level) sessione.ragionamento = dati.level;
   if (COMANDI_CAMBIO_SESSIONE.has(evento.command)) {
     azzeraUiEstensioni(sessione);
     sessione.fileSessione = null;
     sessione.statisticheSessione = null;
+    sessione.modelloStatistiche = null;
     sessione.ultimoUso = null;
     sessione.ultimoCacheHitPercento = null;
     sessione.messaggiSincronizzati = false;
@@ -3797,6 +4287,16 @@ function segnalaTurnoVuoto(sessione) {
   );
 }
 
+function confermaRipresaDopoCompattazione(sessione, tipoEvento) {
+  if (
+    !sessione?.contestoDaRicalcolare
+    || !EVENTI_RIPRESA_DOPO_COMPATTAZIONE.has(tipoEvento)
+  ) return false;
+  sessione.contestoDaRicalcolare = false;
+  if (sessione.id === APP.attivaId) disegnaBarraStatoSessione(sessione);
+  return true;
+}
+
 function gestisciEvento(evento) {
   if (evento.type === "gui_snapshot") {
     applicaSnapshot(evento.sessioni, { sostituisci: true });
@@ -3811,6 +4311,43 @@ function gestisciEvento(evento) {
     disegnaSchede();
   }
   if (!sessione) return;
+
+  const caricamentoCronologia = sessione.caricamentoCronologiaInCorso;
+  if (
+    caricamentoCronologia
+    && caricamentoCronologia.richiesta === sessione.richiestaCronologia
+    && evento.type !== "response"
+    && !String(evento.type || "").startsWith("gui_")
+  ) {
+    caricamentoCronologia.eventi.push(evento);
+    return;
+  }
+
+  const statoDiventatoLive = evento.type === "response"
+    && evento.command === "get_state"
+    && Boolean(evento.data?.isStreaming || evento.data?.isCompacting);
+  if (
+    sessione.renderCronologiaInCorso
+    && (
+      EVENTI_RIPRESA_DOPO_COMPATTAZIONE.has(evento.type)
+      || evento.type === "compaction_start"
+      || statoDiventatoLive
+    )
+  ) {
+    // Un'altra finestra puo avviare un turno mentre questa sta ricostruendo una
+    // cronologia grande. Completiamo prima la fotografia JSONL in modo sincrono:
+    // cosi i delta live successivi non si mescolano a un DOM ancora parziale.
+    const renderCompletato = sessione.completaRenderCronologiaSincrono?.();
+    // completaSincrono risolve la Promise soltanto in una microtask successiva:
+    // il delta che ha causato la promozione deve pero essere accettato adesso.
+    if (renderCompletato) sessione.messaggiSincronizzati = true;
+  }
+
+  // Una compattazione automatica puo riprendere lo stesso turno senza un
+  // secondo agent_start. Il primo delta, strumento o evento di turno prova
+  // comunque che PI ha concluso il ricalcolo: l'etichetta non deve restare
+  // bloccata mentre il lavoro sta gia avanzando.
+  confermaRipresaDopoCompattazione(sessione, evento.type);
 
   if (evento.type === "response") {
     aggiornaDaRisposta(sessione, evento);
@@ -3844,6 +4381,13 @@ function gestisciEvento(evento) {
     if (/error|failed|exception|epipe/i.test(evento.messaggio || "")) {
       mostraErrorePi(sessione, evento.messaggio);
     }
+  } else if (evento.type === "gui_catalogo_modelli_da_ricaricare") {
+    sessione.contestoGptDaRicaricare = true;
+    sessione.revisioneCatalogoModelliAttesa = evento.revisioneCatalogoModelliAttesa || null;
+    sessione.contextWindowCatalogoModelliAttesa = evento.contextWindowCatalogoModelliAttesa || null;
+    if (!contestoGptSessioneOccupata(sessione)) {
+      setTimeout(() => void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {}), 0);
+    }
   } else if (evento.type === "agent_start") {
     sessione.inEsecuzione = true;
     sessione.avvioTurnoIl = Date.now();
@@ -3869,6 +4413,11 @@ function gestisciEvento(evento) {
     // sempre qui, quando la snapshot su disco e finalmente autorevole.
     sincronizzaMessaggiFinali(sessione);
     setTimeout(() => void aggiornaStatisticheSessione(sessione), 0);
+    if (sessione.contestoGptDaRicaricare) {
+      setTimeout(() => {
+        void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {});
+      }, 0);
+    }
   } else if (evento.type === "turn_start") {
     sessione.turnoAperto = true;
   } else if (evento.type === "turn_end") {
@@ -3939,9 +4488,10 @@ function gestisciEvento(evento) {
     sessione.compattazioneInCorso = false;
     riprendiTimeoutPromptDopoCompattazione(sessione.id);
     if (evento.aborted || evento.errorMessage) {
-      aggiornaEventoCompattazione(sessione, {
-        errore: evento.errorMessage || "Riassunto annullato.",
-      });
+      const compattazione = VISTA_CORE.presentaErroreCompattazione(evento.errorMessage);
+      aggiornaEventoCompattazione(sessione, compattazione.nonNecessaria
+        ? { nota: compattazione.testo }
+        : { errore: evento.errorMessage || "Riassunto annullato." });
     } else {
       sessione.statisticheSessione = null;
       sessione.ultimoUso = null;
@@ -3959,6 +4509,11 @@ function gestisciEvento(evento) {
           && !sessione.compattazioneInCorso
         ) void aggiornaStatisticheSessione(sessione);
       }, 250);
+    }
+    if (sessione.contestoGptDaRicaricare && !sessione.inEsecuzione) {
+      setTimeout(() => {
+        void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {});
+      }, 0);
     }
   } else if (evento.type === "auto_retry_start") {
     if (sessione.id === APP.attivaId) avvisa(`Errore temporaneo: nuovo tentativo ${evento.attempt || ""}…`);
@@ -4012,9 +4567,12 @@ function segnaStato(tipo, testo) {
 }
 
 function abilitaAzioni(attiva) {
+  const sessione = sessioneAttiva();
   document.querySelectorAll("[data-azione]").forEach((bottone) => {
+    const azione = bottone.dataset.azione;
+    const nuovaConsentita = azione === "nuova" && !sessione?.compattazioneInCorso;
     const sempre = APP.bridgeOnline
-      && ["nuova", "cartella", "conversazioni"].includes(bottone.dataset.azione);
+      && (nuovaConsentita || ["cartella", "conversazioni"].includes(azione));
     bottone.disabled = !attiva && !sempre;
   });
   document.querySelectorAll("#lista-esempi button").forEach((bottone) => {
@@ -4025,38 +4583,50 @@ function abilitaAzioni(attiva) {
 function aggiornaInterfacciaAttiva() {
   const sessione = sessioneAttiva();
   disegnaInviiDaVerificare(sessione);
-  const utilizzabile = Boolean(
+  const composerScrivibile = Boolean(
     APP.bridgeOnline
       && sessione?.attiva
-      && !sessione.sincronizzazione
+      && (!sessione.sincronizzazione || sessione.renderCronologiaInCorso)
       && !sessione.handoffInCorso
       && !sessione.chiusuraInCorso
       && !sessione.invioInCorso
-      && !sessione.compattazioneInCorso
       && !sessione.ripristinoAllegatiInCorso
       && !sessione.importazioniImmaginiInCorso
+      && !sessione.importazioniFileInCorso
       && !sessione.erroreAllegatiBozza,
   );
-  if (!utilizzabile) {
-    chiudiPaletteComandi();
-    chiudiMenuAzioniComposer();
+  const utilizzabile = composerScrivibile && !sessione?.compattazioneInCorso;
+  const mutazioniUtilizzabili = utilizzabile && !sessione?.renderCronologiaInCorso;
+  if (!composerScrivibile) chiudiPaletteComandi();
+  if (!mutazioniUtilizzabili) chiudiMenuAzioniComposer();
+  DOM.input.disabled = !composerScrivibile;
+  if (!APP.paletteComandi.aperta) {
+    DOM.suggerimento.textContent = sessione?.renderCronologiaInCorso && composerScrivibile
+      ? "Ricostruisco la cronologia salvata: scrivi pure, la bozza resta salvata; invio e modifiche si riattivano al termine"
+      : sessione?.compattazioneInCorso && composerScrivibile
+        ? "Scrivi pure: la bozza resta salvata e potrai inviarla appena il riassunto e concluso"
+        : SUGGERIMENTO_PREDEFINITO;
   }
-  DOM.input.disabled = !utilizzabile;
   const cronologiaVerificata = !sessione?.erroreCronologia;
-  DOM.btnAllega.disabled = !utilizzabile;
-  DOM.btnInvia.disabled = !utilizzabile
+  DOM.btnAllega.disabled = !mutazioniUtilizzabili;
+  DOM.btnInvia.disabled = !mutazioniUtilizzabili
     || !cronologiaVerificata
     || (!DOM.input.value.trim() && !(sessione?.allegati.length));
-  DOM.btnModello.disabled = !utilizzabile;
-  DOM.btnRagionamento.disabled = !utilizzabile;
-  DOM.btnControlli.disabled = !utilizzabile;
+  DOM.btnModello.disabled = !mutazioniUtilizzabili;
+  DOM.btnRagionamento.disabled = !mutazioniUtilizzabili;
+  DOM.btnControlli.disabled = !mutazioniUtilizzabili;
+  DOM.modoCoda.disabled = !mutazioniUtilizzabili;
   DOM.conversazione.setAttribute(
     "aria-busy",
-    String(Boolean(sessione?.inEsecuzione || sessione?.compattazioneInCorso)),
+    String(Boolean(
+      sessione?.inEsecuzione
+      || sessione?.compattazioneInCorso
+      || sessione?.renderCronologiaInCorso
+    )),
   );
-  abilitaAzioni(utilizzabile);
+  abilitaAzioni(mutazioniUtilizzabili);
   const ricaricaRisorseInCorso = Boolean(sessione?.ricaricaRisorseInCorso);
-  DOM.btnRicaricaRisorse.disabled = !utilizzabile
+  DOM.btnRicaricaRisorse.disabled = !mutazioniUtilizzabili
     || Boolean(sessione?.inEsecuzione)
     || Boolean(sessione?.compattazioneInCorso)
     || ricaricaRisorseInCorso;
@@ -4064,12 +4634,14 @@ function aggiornaInterfacciaAttiva() {
   DOM.btnRicaricaRisorse.querySelector("strong").textContent = ricaricaRisorseInCorso
     ? "Ricaricamento…"
     : "Ricarica estensioni";
-  DOM.azioneAllegaImmagine.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneAllegaImmagine.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
   DOM.azioneAllegaImmagine.title = supportoImmaginiSessione(sessione) === false
     ? `${sessione.nomeModello || sessione.modello || "Il modello corrente"} e solo testo: scegli un modello indicato come “immagini”.`
     : "Allega un'immagine o incolla uno screenshot";
-  DOM.azioneRichiamaSkill.disabled = !utilizzabile || !cronologiaVerificata;
-  DOM.azioneComandiEstensioni.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneAllegaFile.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
+  DOM.azioneAllegaFile.title = "Allega un file locale alla richiesta";
+  DOM.azioneRichiamaSkill.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
+  DOM.azioneComandiEstensioni.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
   DOM.azioneRicaricaRisorse.disabled = DOM.btnRicaricaRisorse.disabled;
   DOM.btnAlbero.disabled = !APP.bridgeOnline
     || !sessione?.attiva
@@ -4080,7 +4652,7 @@ function aggiornaInterfacciaAttiva() {
     ? "La cronologia è conservata e sarà navigabile appena Pi termina la risposta."
     : "Apri cronologia e rami";
   const fermaLaterale = document.querySelector("[data-azione='interrompi']");
-  if (fermaLaterale) fermaLaterale.disabled = !utilizzabile || !sessione?.inEsecuzione;
+  if (fermaLaterale) fermaLaterale.disabled = !mutazioniUtilizzabili || !sessione?.inEsecuzione;
 
   if (!sessione) {
     DOM.etiCartella.textContent = "nessuna cartella";
@@ -4210,15 +4782,28 @@ async function sincronizzaMessaggiFinali(sessione) {
     return;
   }
   sessione.sincronizzazioneMessaggiFinali = true;
+  let tentativiTransitori = 0;
   try {
     do {
       sessione.ripetiSincronizzazioneMessaggi = false;
       try {
         await caricaCronologiaSessione(sessione);
+        tentativiTransitori = 0;
       } catch (errore) {
-        // 423 e la normale finestra fra message_end e agent_settled. Gli altri
-        // errori non devono trasformarsi in una falsa conversazione vuota.
-        if (errore?.statusHttp !== 423) mostraErroreCronologia(sessione, errore);
+        // 409 e 423 sono finestre transitorie fra message_end, scrittura del
+        // JSONL e agent_settled. Due brevi riletture evitano falsi allarmi; un
+        // 409 persistente resta invece visibile come errore reale.
+        if (
+          [409, 423].includes(errore?.statusHttp)
+          && tentativiTransitori < 2
+          && sessione.attiva
+        ) {
+          tentativiTransitori += 1;
+          await new Promise((risolvi) => setTimeout(risolvi, 100 * tentativiTransitori));
+          sessione.ripetiSincronizzazioneMessaggi = true;
+        } else if (errore?.statusHttp !== 423) {
+          mostraErroreCronologia(sessione, errore);
+        }
       }
     } while (sessione.ripetiSincronizzazioneMessaggi && sessione.attiva);
   } finally {
@@ -4340,6 +4925,14 @@ async function aggiornaStatisticheSessione(sessione) {
     );
   } finally {
     sessione.statisticheInCaricamento = false;
+    if (
+      sessione.contestoDaRicalcolare
+      && !sessione.compattazioneInCorso
+      && !sessione.inEsecuzione
+    ) {
+      sessione.contestoDaRicalcolare = false;
+      if (sessione.id === APP.attivaId) disegnaBarraStatoSessione(sessione);
+    }
   }
   return aggiornata;
 }
@@ -4347,7 +4940,7 @@ async function aggiornaStatisticheSessione(sessione) {
 async function aggiornaDalPonte({ sostituisci = false } = {}) {
   const stato = await chiedi("/api/stato");
   if (stato.servizio !== "pi-gui-bridge") throw new Error("La porta locale e occupata da un servizio diverso.");
-  if (stato.versione !== 6) {
+  if (stato.versione !== 7) {
     throw new Error("E attiva una versione non compatibile del ponte. Chiudila e riapri l'interfaccia.");
   }
   if (APP.tokenApi && APP.tokenApi !== stato.tokenApi) {
@@ -5610,6 +6203,330 @@ function preparaCatalogoModelliDinamico(sessione, titolo, { onCancel = null } = 
   return risultato;
 }
 
+function modelloGpt56Configurabile(modello) {
+  return Boolean(
+    modello
+    && PROVIDER_GPT_56.has(String(modello.provider || "").toLowerCase())
+    && ID_GPT_56.has(String(modello.id || "").toLowerCase()),
+  );
+}
+
+function contestoGptSessioneOccupata(sessione) {
+  return Boolean(
+    sessione?.inEsecuzione
+    || sessione?.compattazioneInCorso
+    || sessione?.renderCronologiaInCorso
+    || sessione?.handoffInCorso
+    || sessione?.chiusuraInCorso,
+  );
+}
+
+function programmaRiprovaContestoGpt(sessione) {
+  if (
+    !sessione?.contestoGptDaRicaricare
+    || sessione.timerRiprovaContestoGpt
+    || APP.sessioni.get(sessione.id) !== sessione
+    || contestoGptSessioneOccupata(sessione)
+  ) return;
+  const tentativo = Number(sessione.tentativiRiprovaContestoGpt || 0);
+  if (tentativo >= 3) return;
+  const ritardi = [1_000, 3_000, 10_000];
+  sessione.tentativiRiprovaContestoGpt = tentativo + 1;
+  sessione.timerRiprovaContestoGpt = setTimeout(() => {
+    sessione.timerRiprovaContestoGpt = null;
+    void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {});
+  }, ritardi[tentativo]);
+}
+
+async function aggiornaCatalogoContestoGptSessione(sessione) {
+  if (!sessione) return { aggiornata: false, pendente: false };
+  if (sessione.ricaricaContestoGptInCorso) return sessione.ricaricaContestoGptInCorso;
+  sessione.contestoGptDaRicaricare = true;
+  if (contestoGptSessioneOccupata(sessione)) return { aggiornata: false, pendente: true };
+
+  const operazione = (async () => {
+    const verificaSessioneInattiva = () => {
+      if (
+        APP.sessioni.get(sessione.id) !== sessione
+        || !sessione.attiva
+        || contestoGptSessioneOccupata(sessione)
+      ) {
+        throw new Error("La conversazione ha iniziato un'elaborazione: il catalogo resta da aggiornare");
+      }
+    };
+    verificaSessioneInattiva();
+    const esito = await chiedi("/api/ricarica-contesto-gpt", {
+      corpo: { sessionId: sessione.id },
+    });
+    verificaSessioneInattiva();
+    sessione.contestoGptDaRicaricare = esito.catalogoModelliDaRicaricare === true;
+    sessione.revisioneCatalogoModelliAttesa = esito.revisioneCatalogoModelliAttesa || null;
+    sessione.contextWindowCatalogoModelliAttesa = esito.contextWindowCatalogoModelliAttesa || null;
+    sessione.rebindModelloInCorso = Boolean(esito.rebindModelloInCorso);
+    if (sessione.contestoGptDaRicaricare) {
+      throw new Error("Pi non ha ancora confermato il catalogo e il modello effettivi");
+    }
+    clearTimeout(sessione.timerRiprovaContestoGpt);
+    sessione.timerRiprovaContestoGpt = null;
+    sessione.tentativiRiprovaContestoGpt = 0;
+    void aggiornaStatisticheSessione(sessione);
+    if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+    return { aggiornata: true, pendente: false };
+  })();
+  sessione.ricaricaContestoGptInCorso = operazione;
+  try {
+    return await operazione;
+  } finally {
+    if (sessione.ricaricaContestoGptInCorso === operazione) {
+      sessione.ricaricaContestoGptInCorso = null;
+    }
+    programmaRiprovaContestoGpt(sessione);
+  }
+}
+
+async function aggiornaCataloghiContestoGptAperti() {
+  const aperte = [...APP.sessioni.values()].filter((sessione) => sessione.attiva);
+  for (const sessione of aperte) sessione.contestoGptDaRicaricare = true;
+  const esiti = await Promise.allSettled(
+    aperte.map((sessione) => aggiornaCatalogoContestoGptSessione(sessione)),
+  );
+  return esiti.reduce((totali, esito) => {
+    if (esito.status === "rejected") totali.errori += 1;
+    else if (esito.value?.pendente) totali.pendenti += 1;
+    else if (esito.value?.aggiornata) totali.aggiornate += 1;
+    return totali;
+  }, { aggiornate: 0, pendenti: 0, errori: 0 });
+}
+
+function creaGestioneContestoEstesoGpt(sessione, preparazione, { nascosto = false } = {}) {
+  const pannello = crea("section", "contesto-esteso-gpt");
+  pannello.setAttribute("aria-label", "Contesto GPT-5.6");
+  pannello.hidden = true;
+  let stato = null;
+  let caricamento = false;
+  let modificaInCorso = false;
+  let confermaRichiesta = null;
+  let errore = null;
+
+  const sessioneOccupata = () => Boolean(
+    sessione.inEsecuzione
+    || sessione.compattazioneInCorso
+    || sessione.renderCronologiaInCorso,
+  );
+  const configurazioneEsterna = () => Boolean(
+    stato
+    && (
+      ["mixed", "custom"].includes(stato.mode)
+      || stato.conflict
+      || stato.mutable === false
+    ),
+  );
+  const normalizzaStato = (dati) => {
+    const enabled = dati?.enabled === true;
+    const mode = ["short", "extended", "mixed", "custom"].includes(dati?.mode)
+      ? dati.mode
+      : (enabled ? "extended" : "short");
+    return {
+      enabled,
+      mode,
+      managed: dati?.managed === true,
+      conflict: dati?.conflict === true,
+      mutable: dati?.mutable !== false,
+      contextWindow: Number.isFinite(Number(dati?.contextWindow))
+        ? Number(dati.contextWindow)
+        : null,
+    };
+  };
+
+  const disponibile = () => !nascosto && (
+    modelloGpt56Configurabile({ provider: sessione.provider, id: sessione.modello })
+    || sessione.modelli.some(modelloGpt56Configurabile)
+  );
+
+  const disegna = () => {
+    pannello.hidden = !disponibile();
+    if (pannello.hidden) return;
+    pannello.replaceChildren();
+    const intestazione = crea("div", "contesto-esteso-gpt-intestazione");
+    intestazione.appendChild(crea("strong", null, "Contesto GPT-5.6"));
+    if (stato) {
+      const etichettaStato = stato.mode === "extended"
+        ? "1,05M configurato"
+        : stato.mode === "short"
+          ? "272k configurato"
+          : "configurazione personalizzata";
+      intestazione.appendChild(crea(
+        "span",
+        "etichetta " + (stato.mode === "extended" ? "locale" : "cloud"),
+        etichettaStato,
+      ));
+    }
+    pannello.appendChild(intestazione);
+
+    if (caricamento && !stato) {
+      const attesa = crea("div", "stato-caricamento-modelli");
+      attesa.append(crea("span", "spinner", ""), crea("p", "nota", "Verifico la configurazione del contesto…"));
+      pannello.appendChild(attesa);
+      return;
+    }
+    if (!stato) {
+      pannello.appendChild(crea("p", "nota", errore || "Configurazione del contesto non disponibile."));
+      const riprova = crea("button", "bottone", "Riprova");
+      riprova.type = "button";
+      riprova.onclick = () => void carica();
+      pannello.appendChild(riprova);
+      return;
+    }
+
+    const finestraEffettiva = modelloGpt56Configurabile({ provider: sessione.provider, id: sessione.modello })
+      ? finestraModelloSessione(sessione)
+      : null;
+    const dettaglioSessione = sessione.contestoGptDaRicaricare
+      ? " L'aggiornamento effettivo di questa scheda e ancora in attesa; la GUI riprovera automaticamente prima della prossima richiesta."
+      : finestraEffettiva
+        ? ` La finestra effettiva di questa scheda e ${numero(finestraEffettiva)} token.`
+        : "";
+    const descrizioneStato = stato.mode === "extended"
+      ? `La capacita estesa ufficiale e configurata a ${numero(CONTESTO_GPT_56_ESTESO)} token.${dettaglioSessione}`
+      : stato.mode === "short"
+        ? `PI e configurato intenzionalmente sulla fascia breve da ${numero(CONTESTO_GPT_56_BREVE)} token; per questo compatta prima del limite ufficiale del modello.${dettaglioSessione}`
+        : "models.json contiene finestre diverse o personalizzate. La GUI le mostra senza sovrascriverle: gestiscile manualmente oppure uniformale prima di usare questo interruttore.";
+    pannello.appendChild(crea("p", "nota", descrizioneStato));
+    pannello.appendChild(crea(
+      "p",
+      "nota nota-costo-contesto",
+      "Nelle chiamate API, oltre 272.000 token l'intera richiesta ha tariffazione long-context: 2× input e 1,5× output. Con OAuth questa GUI non presenta tale stima come una fattura, perche non conosce il conteggio economico del tuo piano.",
+    ));
+    if (errore) pannello.appendChild(crea("p", "avviso-sicurezza", errore));
+
+    if (configurazioneEsterna()) {
+      pannello.appendChild(crea(
+        "small",
+        "nota",
+        "Configurazione esterna protetta: nessun valore personalizzato verra modificato dalla GUI.",
+      ));
+      return;
+    }
+
+    const obiettivo = !stato.enabled;
+    if (confermaRichiesta === obiettivo) {
+      pannello.appendChild(crea(
+        "p",
+        "avviso-sicurezza",
+        obiettivo
+          ? "Conferma l'attivazione per GPT-5.6 Sol, Terra e Luna, sia API sia OAuth. Il cambio vale per le nuove richieste e non interrompe questa conversazione."
+          : "Conferma il ripristino della configurazione precedente. Se torna al limite breve e la cronologia lo supera, PI dovra riassumerla prima di rispondere.",
+      ));
+      const azioni = crea("div", "azioni-contesto-esteso");
+      const annulla = crea("button", "bottone", "Annulla");
+      annulla.type = "button";
+      annulla.onclick = () => {
+        confermaRichiesta = null;
+        disegna();
+      };
+      const confermaBtn = crea(
+        "button",
+        "bottone primario",
+        obiettivo ? "Conferma 1,05M" : "Conferma ripristino",
+      );
+      confermaBtn.type = "button";
+      confermaBtn.onclick = () => void applica(obiettivo);
+      azioni.append(annulla, confermaBtn);
+      pannello.appendChild(azioni);
+      return;
+    }
+
+    const cambia = crea(
+      "button",
+      "bottone",
+      stato.enabled ? "Ripristina configurazione precedente" : "Usa 1.050.000 token",
+    );
+    cambia.type = "button";
+    cambia.disabled = modificaInCorso || sessioneOccupata();
+    cambia.setAttribute("aria-busy", String(modificaInCorso));
+    cambia.title = sessioneOccupata()
+      ? "Disponibile quando l'elaborazione corrente e conclusa"
+      : "Richiede una conferma esplicita";
+    cambia.onclick = () => {
+      confermaRichiesta = obiettivo;
+      disegna();
+    };
+    pannello.appendChild(cambia);
+    if (sessioneOccupata()) {
+      pannello.appendChild(crea("small", "nota", "L'opzione si sblocca alla fine dell'elaborazione corrente."));
+    }
+  };
+
+  const carica = async () => {
+    if (!disponibile() || caricamento) return;
+    caricamento = true;
+    errore = null;
+    disegna();
+    try {
+      const dati = await chiedi("/api/contesto-esteso-gpt", { corpo: {} });
+      stato = normalizzaStato(dati);
+    } catch (causa) {
+      errore = testoErrore(causa);
+    } finally {
+      caricamento = false;
+      disegna();
+    }
+  };
+
+  const applica = async (enabled) => {
+    if (modificaInCorso || sessioneOccupata() || configurazioneEsterna()) return;
+    modificaInCorso = true;
+    confermaRichiesta = null;
+    errore = null;
+    let salvata = false;
+    disegna();
+    try {
+      await preparazione.aggiornamento.catch(() => {});
+      if (APP.sessioni.get(sessione.id) !== sessione || sessioneOccupata()) {
+        toast("La conversazione ha iniziato un'elaborazione: il contesto non e stato cambiato.", "avviso");
+        return;
+      }
+      const dati = await chiedi("/api/contesto-esteso-gpt", {
+        corpo: { enabled, sessionId: sessione.id },
+      });
+      salvata = true;
+      stato = normalizzaStato(dati);
+      if (dati.refreshRequired) {
+        const esiti = await aggiornaCataloghiContestoGptAperti();
+        if (esiti.errori) {
+          const schede = esiti.errori === 1 ? "scheda" : "schede";
+          errore = `Aggiornamento effettivo non completato per ${esiti.errori} ${schede}; la GUI riprovera automaticamente prima della prossima richiesta.`;
+        }
+        if (esiti.pendenti) {
+          toast(esiti.pendenti === 1
+            ? "La scheda in lavoro adottera la nuova finestra appena termina."
+            : `${esiti.pendenti} schede in lavoro adotteranno la nuova finestra appena terminano.`, "avviso");
+        }
+      }
+      preparazione.onAggiorna?.();
+      toast(enabled
+        ? "Contesto GPT-5.6 esteso a 1.050.000 token."
+        : "Configurazione GPT-5.6 precedente ripristinata.");
+    } catch (causa) {
+      errore = salvata
+        ? `Impostazione salvata, ma il catalogo non si e aggiornato: ${testoErrore(causa)}. Usa Ricarica estensioni prima del prossimo invio.`
+        : testoErrore(causa);
+      toast(errore, "errore");
+    } finally {
+      modificaInCorso = false;
+      disegna();
+    }
+  };
+
+  return {
+    elemento: pannello,
+    aggiorna() {
+      disegna();
+      if (disponibile() && !stato && !caricamento) void carica();
+    },
+  };
+}
+
 async function apriSceltaModello(
   filtroIniziale = "",
   operazione = null,
@@ -5622,6 +6539,10 @@ async function apriSceltaModello(
   });
   if (!preparazione) return;
   const { corpo } = preparazione;
+  const gestioneContestoGpt = creaGestioneContestoEstesoGpt(sessione, preparazione, {
+    nascosto: Boolean(operazione),
+  });
+  corpo.appendChild(gestioneContestoGpt.elemento);
   const involucroRicerca = crea("div", "ricerca-modelli");
   const ricerca = crea("input", "campo");
   ricerca.placeholder = "Cerca per nome o fornitore";
@@ -5731,8 +6652,12 @@ async function apriSceltaModello(
     risultati.appendChild(lista);
   };
   ricerca.oninput = disegna;
-  preparazione.onAggiorna = disegna;
+  preparazione.onAggiorna = () => {
+    disegna();
+    gestioneContestoGpt.aggiorna();
+  };
   disegna();
+  gestioneContestoGpt.aggiorna();
   requestAnimationFrame(() => ricerca.focus());
 }
 
@@ -5930,6 +6855,7 @@ async function ricaricaRisorsePi() {
     sessione.inEsecuzione
     || sessione.invioInCorso
     || sessione.compattazioneInCorso
+    || sessione.renderCronologiaInCorso
     || sessione.sincronizzazione
     || sessione.handoffInCorso
     || sessione.chiusuraInCorso
@@ -6025,6 +6951,10 @@ function spostaFocusMenuAzioniComposer(movimento) {
 
 async function eseguiAzioneMenuComposer(azione) {
   chiudiMenuAzioniComposer();
+  if (azione === "allega-file") {
+    DOM.scegliFile.click();
+    return;
+  }
   if (azione === "allega-immagine") {
     if (avvisaModelloSenzaImmagini(sessioneAttiva())) return;
     DOM.scegliImmagini.click();
@@ -6226,7 +7156,7 @@ function completaSelezionePalette() {
 }
 
 // ---------------------------------------------------------------------------
-// Immagini e invio
+// File, immagini e invio
 // ---------------------------------------------------------------------------
 
 function leggiImmagine(file) {
@@ -6236,6 +7166,7 @@ function leggiImmagine(file) {
       const url = String(lettore.result);
       risolvi({
         id: globalThis.crypto.randomUUID(),
+        tipo: "immagine",
         nome: file.name,
         mimeType: file.type,
         data: url.slice(url.indexOf(",") + 1),
@@ -6249,19 +7180,25 @@ function leggiImmagine(file) {
 }
 
 async function aggiungiImmagini(file, sessione = sessioneAttiva()) {
-  if (!sessione || sessione.handoffInCorso || sessione.chiusuraInCorso) return 0;
-  const chiaveAttesa = sessione.chiaveBozza;
-  await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
   if (
-    sessioneAttiva() !== sessione
-    || sessione.chiaveBozza !== chiaveAttesa
+    !sessione
     || sessione.handoffInCorso
     || sessione.chiusuraInCorso
+    || sessione.renderCronologiaInCorso
   ) return 0;
+  const chiaveAttesa = sessione.chiaveBozza;
+  const sessioneAncoraValida = () => APP.sessioni.get(sessione.id) === sessione
+    && sessione.chiaveBozza === chiaveAttesa
+    && !sessione.handoffInCorso
+    && !sessione.chiusuraInCorso
+    && !sessione.renderCronologiaInCorso;
+  await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
+  if (!sessioneAncoraValida()) return 0;
   const accettati = [...file].filter((voce) => tipoImmagineSupportato(voce.type));
   const dimensioneNuova = accettati.reduce((somma, voce) => somma + voce.size, 0);
-  const totale = sessione.allegati.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
-  if (sessione.allegati.length + accettati.length > 4) {
+  const immaginiEsistenti = sessione.allegati.filter(allegatoImmagine);
+  const totale = immaginiEsistenti.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
+  if (immaginiEsistenti.length + accettati.length > 4) {
     toast("Puoi allegare al massimo quattro immagini per richiesta.", "avviso");
     return 0;
   }
@@ -6282,20 +7219,14 @@ async function aggiungiImmagini(file, sessione = sessioneAttiva()) {
   }
   try {
     const immagini = await Promise.all(accettati.map(leggiImmagine));
-    if (
-      APP.sessioni.get(sessione.id) !== sessione
-      || sessione.chiaveBozza !== chiaveAttesa
-    ) {
+    if (!sessioneAncoraValida()) {
       toast("Nel frattempo e cambiata la conversazione: le immagini non sono state aggiunte.", "avviso");
       return 0;
     }
-    if (sessione.handoffInCorso || sessione.chiusuraInCorso) {
-      toast("La sessione si sta chiudendo: le immagini non sono state aggiunte.", "avviso");
-      return 0;
-    }
-    const totaleAggiornato = sessione.allegati.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
+    const immaginiAggiornate = sessione.allegati.filter(allegatoImmagine);
+    const totaleAggiornato = immaginiAggiornate.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
     if (
-      sessione.allegati.length + immagini.length > 4
+      immaginiAggiornate.length + immagini.length > 4
       || totaleAggiornato > LIMITE_IMMAGINI_RICHIESTA
     ) {
       toast("Nel frattempo sono state aggiunte altre immagini: il limite e stato raggiunto.", "avviso");
@@ -6315,8 +7246,7 @@ async function aggiungiImmagini(file, sessione = sessioneAttiva()) {
   }
 }
 
-function accodaAggiuntaImmagini(file) {
-  const sessione = sessioneAttiva();
+function accodaAggiuntaImmagini(file, sessione = sessioneAttiva()) {
   const candidati = Array.from(file || []);
   if (!sessione || !candidati.length) return Promise.resolve(0);
   if (avvisaModelloSenzaImmagini(sessione)) return Promise.resolve(0);
@@ -6337,27 +7267,172 @@ function accodaAggiuntaImmagini(file) {
   return coda;
 }
 
+function leggiFileBase64(file) {
+  return new Promise((risolvi, rifiuta) => {
+    const lettore = new FileReader();
+    lettore.onload = () => {
+      const url = String(lettore.result || "");
+      const separatore = url.indexOf(",");
+      if (separatore < 0) {
+        rifiuta(new Error("Il file non ha un contenuto leggibile: " + file.name));
+        return;
+      }
+      risolvi(url.slice(separatore + 1));
+    };
+    lettore.onerror = () => rifiuta(new Error("Non riesco a leggere " + file.name));
+    lettore.readAsDataURL(file);
+  });
+}
+
+async function aggiungiFile(file, sessione = sessioneAttiva()) {
+  if (
+    !sessione
+    || sessione.handoffInCorso
+    || sessione.chiusuraInCorso
+    || sessione.renderCronologiaInCorso
+  ) return 0;
+  const chiaveAttesa = sessione.chiaveBozza;
+  const sessioneAncoraValida = () => APP.sessioni.get(sessione.id) === sessione
+    && sessione.chiaveBozza === chiaveAttesa
+    && !sessione.handoffInCorso
+    && !sessione.chiusuraInCorso
+    && !sessione.renderCronologiaInCorso;
+  await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
+  if (!sessioneAncoraValida()) return 0;
+  const candidati = Array.from(file || []).filter((voce) => !tipoImmagineSupportato(voce.type));
+  const troppoGrandi = candidati.filter((voce) => Number(voce.size) > LIMITE_FILE_ALLEGATO);
+  if (troppoGrandi.length) {
+    toast(
+      `${troppoGrandi.length === 1 ? troppoGrandi[0].name : `${troppoGrandi.length} file`} supera il limite di 10 MB per file.`,
+      "avviso",
+    );
+  }
+  const validi = candidati.filter((voce) => Number(voce.size) <= LIMITE_FILE_ALLEGATO);
+  const disponibili = Math.max(0, MASSIMO_FILE - sessione.allegati.filter(allegatoFile).length);
+  if (!disponibili && validi.length) {
+    toast(`Puoi allegare al massimo ${MASSIMO_FILE} file per richiesta.`, "avviso");
+    return 0;
+  }
+  if (validi.length > disponibili) {
+    toast(`Aggiungo i primi ${disponibili} file: il limite e ${MASSIMO_FILE} per richiesta.`, "avviso");
+  }
+  const aggiunti = [];
+  for (const candidato of validi.slice(0, disponibili)) {
+    if (!sessioneAncoraValida()) break;
+    let caricato = null;
+    try {
+      const data = await leggiFileBase64(candidato);
+      const risposta = await chiedi("/api/allega-file", {
+        corpo: {
+          sessionId: sessione.id,
+          nome: candidato.name,
+          mimeType: candidato.type || "application/octet-stream",
+          dimensione: candidato.size,
+          data,
+        },
+      });
+      caricato = risposta?.allegato || null;
+      if (
+        !allegatoFile(caricato)
+        || riferimentiFileServer([caricato]).length !== 1
+        || caricato.ownerSessionId !== sessione.id
+      ) {
+        throw new Error("Il ponte non ha restituito un allegato valido");
+      }
+      if (!sessioneAncoraValida()) {
+        await eliminaFilePendentiBestEffort(sessione, [caricato]);
+        break;
+      }
+      aggiunti.push(caricato);
+      caricato = null;
+    } catch (errore) {
+      if (caricato) await eliminaFilePendentiBestEffort(sessione, [caricato]);
+      toast(`${candidato.name}: ${testoErrore(errore)}`, "errore");
+    }
+  }
+  if (!aggiunti.length || !sessioneAncoraValida()) {
+    if (aggiunti.length) await eliminaFilePendentiBestEffort(sessione, aggiunti);
+    return 0;
+  }
+  ramificaLineageBozza(sessione);
+  sessione.allegati.push(...aggiunti);
+  void conservaAllegatiBozza(sessione);
+  if (sessione.id === APP.attivaId) {
+    disegnaAllegati();
+    aggiornaInterfacciaAttiva();
+  }
+  return aggiunti.length;
+}
+
+function accodaAggiuntaFile(file, sessione = sessioneAttiva()) {
+  const candidati = Array.from(file || []);
+  if (!sessione || !candidati.length) return Promise.resolve(0);
+  sessione.importazioniFileInCorso = Number(sessione.importazioniFileInCorso || 0) + 1;
+  aggiornaInterfacciaAttiva();
+  const precedente = sessione.codaImportazioneFile || Promise.resolve();
+  const operazione = precedente
+    .catch(() => 0)
+    .then(() => aggiungiFile(candidati, sessione));
+  const coda = operazione.finally(() => {
+    sessione.importazioniFileInCorso = Math.max(
+      0,
+      Number(sessione.importazioniFileInCorso || 0) - 1,
+    );
+    if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+  });
+  sessione.codaImportazioneFile = coda;
+  return coda;
+}
+
+async function accodaAggiuntaAllegati(file) {
+  const sessione = sessioneAttiva();
+  const candidati = Array.from(file || []);
+  if (!sessione || !candidati.length) return 0;
+  const immagini = candidati.filter((voce) => tipoImmagineSupportato(voce.type));
+  const generici = candidati.filter((voce) => !tipoImmagineSupportato(voce.type));
+  let aggiunti = 0;
+  if (generici.length) aggiunti += await accodaAggiuntaFile(generici, sessione);
+  if (immagini.length) aggiunti += await accodaAggiuntaImmagini(immagini, sessione);
+  return aggiunti;
+}
+
 function disegnaAllegati() {
   const sessione = sessioneAttiva();
   const allegati = sessione?.allegati || [];
   DOM.allegati.replaceChildren();
   DOM.allegati.hidden = !allegati.length;
   allegati.forEach((allegato, indice) => {
-    const box = crea("div", "allegato");
-    const img = document.createElement("img");
-    img.src = allegato.url;
-    img.alt = allegato.nome;
+    const file = allegatoFile(allegato);
+    const box = crea("div", "allegato" + (file ? " allegato-file" : ""));
+    box.title = file ? allegato.percorso : allegato.nome;
+    if (file) {
+      box.appendChild(crea("span", "allegato-file-icona", "▱"));
+      const testo = crea("span", "allegato-file-testo");
+      testo.append(
+        crea("strong", null, allegato.nome),
+        crea("small", null, dimensioneFile(allegato.dimensione)),
+      );
+      box.appendChild(testo);
+    } else {
+      const img = document.createElement("img");
+      img.src = allegato.url;
+      img.alt = allegato.nome;
+      box.appendChild(img);
+    }
     const rimuovi = crea("button", null, "×");
     rimuovi.type = "button";
     rimuovi.setAttribute("aria-label", "Rimuovi " + allegato.nome);
+    rimuovi.disabled = Boolean(sessione?.renderCronologiaInCorso);
     rimuovi.onclick = () => {
+      if (sessione?.renderCronologiaInCorso) return;
       ramificaLineageBozza(sessione);
       sessione.allegati.splice(indice, 1);
+      if (file) void eliminaFilePendentiBestEffort(sessione, [allegato]);
       void conservaAllegatiBozza(sessione);
       disegnaAllegati();
       aggiornaInterfacciaAttiva();
     };
-    box.append(img, rimuovi);
+    box.appendChild(rimuovi);
     DOM.allegati.appendChild(box);
   });
 }
@@ -7394,6 +8469,14 @@ async function gestisciComandoComposer(sessione, fotografia, testo) {
 
 async function invia() {
   const sessione = sessioneAttiva();
+  if (sessione?.compattazioneInCorso) {
+    toast("Pi sta liberando spazio. La bozza e salvata: potrai inviarla appena il riassunto e concluso.", "avviso");
+    return;
+  }
+  if (sessione?.renderCronologiaInCorso) {
+    toast("Sto ricostruendo la cronologia salvata. Scrivi pure: la bozza resta salvata e potrai inviarla al termine.", "avviso");
+    return;
+  }
   if (
     !sessione
     || sessione.handoffInCorso
@@ -7408,12 +8491,38 @@ async function invia() {
   try {
     const chiaveAttesa = sessione.chiaveBozza;
     await (sessione.codaImportazioneImmagini || Promise.resolve()).catch(() => {});
+    await (sessione.codaImportazioneFile || Promise.resolve()).catch(() => {});
     await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
+    if (sessione.compattazioneInCorso) {
+      toast("Pi ha iniziato a liberare spazio. La bozza resta salvata e non e stata inviata.", "avviso");
+      return;
+    }
+    if (sessione.renderCronologiaInCorso) {
+      toast("La cronologia e ancora in ricostruzione. La bozza resta salvata e non e stata inviata.", "avviso");
+      return;
+    }
+    if (sessione.contestoGptDaRicaricare) {
+      if (contestoGptSessioneOccupata(sessione)) {
+        toast("La nuova finestra GPT e in attesa: la bozza resta salvata finche questa elaborazione termina.", "avviso");
+        return;
+      }
+      try {
+        await aggiornaCatalogoContestoGptSessione(sessione);
+      } catch (causa) {
+        toast(`Prima di inviare devo applicare la nuova finestra GPT: ${testoErrore(causa)}`, "errore");
+        return;
+      }
+      if (sessione.contestoGptDaRicaricare) {
+        toast("La nuova finestra GPT non e ancora applicata. La bozza resta salvata; riprovo automaticamente.", "avviso");
+        return;
+      }
+    }
     if (
       sessioneAttiva() !== sessione
       || sessione.chiaveBozza !== chiaveAttesa
       || sessione.handoffInCorso
       || sessione.chiusuraInCorso
+      || sessione.renderCronologiaInCorso
     ) return;
   if (sessione.erroreCronologia) {
     toast("Prima devo riuscire a verificare la cronologia. Usa Riprova, Libera spazio o Pi completo.", "errore");
@@ -7430,7 +8539,8 @@ async function invia() {
     toast("Il testo supera 2 MB. Allegalo come file o dividilo in piu richieste.", "errore");
     return;
   }
-  if (sessione.allegati.length && avvisaModelloSenzaImmagini(sessione)) return;
+  const immaginiAllegate = sessione.allegati.filter(allegatoImmagine);
+  if (immaginiAllegate.length && avvisaModelloSenzaImmagini(sessione)) return;
   // Comandi built-in e shell non diventano messaggi: devono essere
   // intercettati prima di cronologia ottimistica e registro degli invii.
   if (await gestisciComandoComposer(sessione, bozzaInviata, testo)) return;
@@ -7442,17 +8552,37 @@ async function invia() {
     : null;
   sessione.turnoAspettaTesto = comandoNoto?.source !== "extension";
   const allegatiInviati = [...sessione.allegati];
-  const immagini = allegatiInviati.map(({ data, mimeType }) => ({ type: "image", data, mimeType }));
+  const fileAllegati = allegatiInviati.filter(allegatoFile);
+  const riferimentiFilePrompt = riferimentiFileServer(fileAllegati);
+  if (
+    riferimentiFilePrompt.length !== fileAllegati.length
+    || fileAllegati.some((allegato) => allegato.ownerSessionId !== sessione.id)
+  ) {
+    toast(
+      "Uno dei file allegati non ha una prova di proprieta valida. Rimuovilo e allegalo di nuovo.",
+      "errore",
+    );
+    return;
+  }
+  const immaginiAllegateInvio = allegatiInviati.filter(allegatoImmagine);
+  const immagini = immaginiAllegateInvio.map(({ data, mimeType }) => ({ type: "image", data, mimeType }));
   const copiaAllegati = allegatiInviati.map((voce) => ({ ...voce }));
   if (!sessione.lineageId) sessione.lineageId = globalThis.crypto.randomUUID();
   const lineageInvio = sessione.lineageId;
-  const testoInvio = testo || "Guarda le immagini allegate.";
+  const testoInvio = testo || (
+    fileAllegati.length && immagini.length
+      ? "Usa i file e le immagini allegate per completare la richiesta."
+      : fileAllegati.length
+        ? "Usa i file allegati per completare la richiesta."
+        : "Guarda le immagini allegate."
+  );
+  const testoRpc = creaMessaggioConFile(testoInvio, fileAllegati);
   const duplicato = PALETTE_CORE.trovaInvioPendenteDuplicato(
     sessione.inviiPendenti,
     {
       lineageId: lineageInvio,
       testo: testoInvio,
-      firmeAllegati: allegatiInviati.map(firmaImmagine),
+      firmeAllegati: firmeAllegati(allegatiInviati),
     },
   );
   if (duplicato) {
@@ -7465,7 +8595,10 @@ async function invia() {
     return;
   }
   sessione.seguiFondo = true;
-  const messaggio = aggiungiMessaggio(sessione, "tu · in invio", testo, "utente", { immagini: copiaAllegati });
+  const messaggio = aggiungiMessaggio(sessione, "tu · in invio", testoInvio, "utente", {
+    immagini: copiaAllegati.filter(allegatoImmagine),
+    file: copiaAllegati.filter(allegatoFile),
+  });
   DOM.input.disabled = true;
   DOM.btnInvia.disabled = true;
   avvisa("");
@@ -7476,22 +8609,28 @@ async function invia() {
     const comando = {
       type: "prompt",
       id: idInvio,
-      message: testoInvio,
+      message: testoRpc,
       images: immagini.length ? immagini : undefined,
+      piGuiFileRefs: riferimentiFilePrompt.length ? riferimentiFilePrompt : undefined,
     };
     if (eraInEsecuzione) comando.streamingBehavior = modoScelto;
     const invioPendente = {
       id: idInvio,
-      testo: comando.message,
+      testo: testoInvio,
+      ...(testoRpc !== testoInvio ? { testoRpc } : {}),
       creatoIl: Date.now(),
       lineageId: lineageInvio,
       origine: comandoNoto?.source || null,
       allegati: allegatiInviati.map((allegato) => ({
         id: allegato.id,
+        token: allegato.token,
+        ownerSessionId: allegato.ownerSessionId,
+        tipo: allegato.tipo,
         nome: allegato.nome,
         mimeType: allegato.mimeType,
         dimensione: allegato.dimensione,
-        firma: firmaImmagine(allegato),
+        percorso: allegato.percorso,
+        firma: firmaAllegato(allegato),
       })),
       allegatiDati: allegatiInviati.map((allegato) => ({ ...allegato })),
     };
@@ -7506,7 +8645,7 @@ async function invia() {
       if (!conservati) {
         sessione.invioNonPersistito = true;
         toast(
-          "Non riesco a conservare le immagini dell'invio: non chiudere la finestra finche la richiesta non compare nella cronologia.",
+          "Non riesco a conservare gli allegati dell'invio: non chiudere la finestra finche la richiesta non compare nella cronologia.",
           "errore",
         );
       }
@@ -7518,6 +8657,14 @@ async function invia() {
       sessione.modoCoda = "followUp";
       if (sessione.id === APP.attivaId) DOM.modoCoda.value = "followUp";
     }
+    if (sessione.compattazioneInCorso) {
+      const bloccoCompattazione = new Error(
+        "Pi ha iniziato a liberare spazio. La bozza resta salvata e non e stata inviata.",
+      );
+      bloccoCompattazione.compattazioneInCorso = true;
+      throw bloccoCompattazione;
+    }
+    if (sessione.renderCronologiaInCorso) throw erroreRenderCronologiaInCorso();
     await rpc(comando, { sessionId: sessione.id, timeout: 30000 });
     messaggio.autore.textContent = eraInEsecuzione
       ? modoScelto === "steer"
@@ -7560,7 +8707,11 @@ async function invia() {
       adattaAltezza();
     }
   } catch (errore) {
-    if (errore?.esitoIgnoto) {
+    if (errore?.compattazioneInCorso || errore?.renderCronologiaInCorso) {
+      dimenticaInvioPendente(sessione, idInvio);
+      messaggio.msg.remove();
+      toast(testoErrore(errore), "avviso");
+    } else if (errore?.esitoIgnoto) {
       sessione.inviiNascosti.delete(idInvio);
       if (sessione.id === APP.attivaId) disegnaInviiDaVerificare(sessione);
       if (!immaginiConteggiate) {
@@ -7712,7 +8863,12 @@ async function eseguiAzione(azione) {
       corpo.appendChild(copia);
     }
   } catch (errore) {
-    toast(spiegaErrorePi(testoErrore(errore), sessione), "errore");
+    const compattazione = azione === "comprimi"
+      ? VISTA_CORE.presentaErroreCompattazione(testoErrore(errore))
+      : null;
+    if (!compattazione?.nonNecessaria) {
+      toast(spiegaErrorePi(testoErrore(errore), sessione), "errore");
+    }
   }
 }
 
@@ -7970,7 +9126,7 @@ async function passaConversazioneAlTerminale(
   await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
   if (APP.sessioni.get(sessione.id) !== sessione) return;
   if (sessione.erroreAllegatiBozza) {
-    toast("Prima recupera o scarta esplicitamente le immagini mancanti della bozza.", "errore");
+    toast("Prima recupera o scarta esplicitamente gli allegati mancanti della bozza.", "errore");
     return;
   }
   if (sessione.id === APP.attivaId && sessione.bozza !== DOM.input.value) {
@@ -7983,7 +9139,7 @@ async function passaConversazioneAlTerminale(
   if (sessione.bozzaSporca) salvaBozza(sessione);
   if (sessione.bozza.length || sessione.allegati.length) {
     toast(
-      "Prima copia, invia o cancella la bozza e rimuovi le immagini: il terminale puo ricevere soltanto la cronologia gia salvata.",
+      "Prima copia, invia o cancella la bozza e rimuovi gli allegati: il terminale puo ricevere soltanto la cronologia gia salvata.",
       "errore",
     );
     if (sessione.id === APP.attivaId) DOM.input.focus();
@@ -8378,7 +9534,9 @@ async function mostraAlberoSessione(
     }
     if (!lista.children.length) lista.appendChild(crea("p", "vuoto", "Conversazione vuota."));
     corpo.appendChild(lista);
-    corpo.appendChild(crea("p", "nota", `${dati.totale || 0} voci · punto attuale: ${dati.leafId || "nessuno"}.`));
+    const tecniciNascosti = Math.max(0, Number(dati.tecniciNascosti) || 0);
+    const notaTecnici = tecniciNascosti ? ` · ${tecniciNascosti} voci tecniche nascoste` : "";
+    corpo.appendChild(crea("p", "nota", `${dati.totale || 0} voci visibili${notaTecnici} · punto attuale: ${dati.leafId || "nessuno"}.`));
   } catch (errore) {
     operazione?.fallisce(errore);
     toast(testoErrore(errore), "errore");
@@ -9015,10 +10173,51 @@ DOM.menuAzioniComposer.addEventListener("keydown", (evento) => {
     (evento.shiftKey ? DOM.btnAllega : DOM.input).focus();
   }
 });
+DOM.scegliFile.onchange = async () => {
+  const aggiunti = await accodaAggiuntaAllegati(DOM.scegliFile.files || []);
+  DOM.scegliFile.value = "";
+  if (aggiunti === 1) toast("File allegato alla richiesta.", "ok");
+  else if (aggiunti > 1) toast(`${aggiunti} file allegati alla richiesta.`, "ok");
+};
 DOM.scegliImmagini.onchange = async () => {
   await accodaAggiuntaImmagini(DOM.scegliImmagini.files || []);
   DOM.scegliImmagini.value = "";
 };
+let profonditaTrascinamentoFile = 0;
+function contieneFileTrascinati(evento) {
+  return Array.from(evento.dataTransfer?.types || []).includes("Files");
+}
+document.addEventListener("dragenter", (evento) => {
+  if (!contieneFileTrascinati(evento)) return;
+  evento.preventDefault();
+  profonditaTrascinamentoFile += 1;
+  if (!DOM.btnAllega.disabled) DOM.composerShell.classList.add("trascinamento-file");
+});
+document.addEventListener("dragover", (evento) => {
+  if (!contieneFileTrascinati(evento)) return;
+  evento.preventDefault();
+  if (evento.dataTransfer) evento.dataTransfer.dropEffect = "copy";
+});
+document.addEventListener("dragleave", (evento) => {
+  if (!contieneFileTrascinati(evento)) return;
+  profonditaTrascinamentoFile = Math.max(0, profonditaTrascinamentoFile - 1);
+  if (!profonditaTrascinamentoFile) DOM.composerShell.classList.remove("trascinamento-file");
+});
+document.addEventListener("drop", async (evento) => {
+  if (!contieneFileTrascinati(evento)) return;
+  evento.preventDefault();
+  profonditaTrascinamentoFile = 0;
+  DOM.composerShell.classList.remove("trascinamento-file");
+  if (DOM.btnAllega.disabled) {
+    toast("Al momento non puoi allegare file a questa conversazione.", "avviso");
+    return;
+  }
+  chiudiMenuAzioniComposer();
+  chiudiPaletteComandi({ sopprimi: true });
+  const aggiunti = await accodaAggiuntaAllegati(evento.dataTransfer?.files || []);
+  if (aggiunti === 1) toast("File trascinato nella richiesta.", "ok");
+  else if (aggiunti > 1) toast(`${aggiunti} file trascinati nella richiesta.`, "ok");
+});
 DOM.input.addEventListener("paste", async (evento) => {
   const immagini = immaginiDaClipboard(evento.clipboardData);
   if (!immagini.length) return;
@@ -9137,13 +10336,14 @@ window.addEventListener("beforeunload", (evento) => {
     sessione.bozzaSporca = true;
     salvaBozza(sessione);
   }
-  // Le immagini usano IndexedDB, ma la scrittura puo essere ancora in corso o
+  // Gli allegati usano IndexedDB, ma la scrittura puo essere ancora in corso o
   // fallire per quota/privacy: il refresh resta esplicitamente protetto.
   if (
     APP.attese.size
     || [...APP.sessioni.values()].some(
       (voce) => voce.allegati.length
         || voce.importazioniImmaginiInCorso
+        || voce.importazioniFileInCorso
         || voce.inviiPendenti.length
         || voce.bozzaNonPersistita
         || voce.invioNonPersistito,
@@ -9178,6 +10378,11 @@ window.addEventListener("storage", (evento) => {
     if (sessione.inviiPendenti.length !== prima) void eliminaAllegatiInvio(id);
   }
   disegnaInviiDaVerificare();
+});
+
+setInterval(rinnovaFileBozzeAperte, INTERVALLO_RINNOVO_FILE_BOZZA_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") rinnovaFileBozzeAperte();
 });
 
 async function avvio() {

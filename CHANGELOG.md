@@ -1,5 +1,83 @@
 # Changelog
 
+## 2.5.3 — 2026-08-25
+
+- dopo una compattazione la chat conserva, integralmente e nello stesso ordine,
+  il testo di tutti i prompt originali dell'utente appartenenti al ramo attivo;
+  le immagini storiche restano nel JSONL ma vengono mostrate come segnaposto,
+  senza ricaricare ogni volta i relativi base64; il riepilogo
+  rimane un elemento aggiuntivo chiuso e non ripristina risposte o output
+  tecnici gia sintetizzati; le cronologie molto lunghe vengono ricostruite a
+  blocchi, mantenendo il campo testo utilizzabile senza perdere ordine o prompt;
+- il pulsante **+** permette di allegare file generici oltre alle immagini;
+  file e immagini possono anche essere trascinati nel composer, persistono con
+  la bozza e sono mostrati come allegati senza esporre il marcatore tecnico
+  inviato a Pi; i file generici usano un token locale non forgiabile e passano
+  atomicamente da pending a permanenti quando il prompt entra nel canale RPC;
+  la rimozione dalla bozza cancella soltanto i pending e un cleanup prudente
+  elimina esclusivamente pending orfani senza contatto da almeno 30 giorni;
+  ogni sessione puo conservare al massimo 40 pending per complessivi 200 MiB,
+  contando o raccogliendo anche gli orfani scaduti lasciati da finestre chiuse;
+  al riavvio del bridge una bozza adotta i propri file con token ruotati e una
+  seconda finestra ne riceve copie pending distinte, cosi la rimozione in una
+  pagina non interrompe il lavoro dell'altra; la pulizia parte anche all'avvio
+  e prosegue periodicamente senza richiedere un nuovo upload, mentre le bozze
+  ancora aperte rinnovano il proprio lease; un marker preparato che non ha
+  completato la rinomina finale viene ritentato in modo conservativo e mai
+  cancellato;
+  se una chiusura riesce ma un file temporaneo e momentaneamente bloccato, la
+  sessione si chiude comunque, mostra un avviso e lascia il retry al cleanup;
+  la bozza confermata viene rimossa anche in presenza di copie storiche nella
+  sezione Invii da verificare, che restano conservate separatamente;
+- il contatore del contesto segue provider e modello effettivamente selezionati:
+  una risposta statistica tardiva del modello precedente non puo piu lasciare
+  una finestra da 272k dopo il cambio;
+- nel selettore dei modelli GPT-5.6 e disponibile una scelta esplicita fra il
+  profilo Pi da 272.000 token e la finestra ufficiale da 1.050.000 token, con
+  conferma e spiegazione distinta della tariffazione API long-context e
+  dell'accesso OAuth;
+- il gruppo **Attivita tecniche** attivo mostra un punto pulsante e una sottile
+  luce in movimento; i gruppi conclusi restano statici e le preferenze di
+  riduzione del movimento vengono rispettate;
+- lo stato “ricalcolo dopo il riassunto” si spegne appena riprendono risposta o
+  strumenti e non resta bloccato se la lettura accessoria delle statistiche
+  fallisce;
+- durante la compattazione il composer resta scrivibile e salva la bozza;
+  soltanto l'invio e le azioni incompatibili attendono la fine del riassunto;
+  la stessa barriera e applicata dal bridge anche nella race precedente a
+  `agent_start`, inclusi nuova sessione, cambio modello e profilo di contesto
+  GPT; una prenotazione manuale resta fail-closed anche se PI tarda a emettere
+  l'evento di avvio e viene liberata soltanto da un esito autorevole o dallo
+  stop della sessione;
+- l'aggiornamento globale del contesto GPT usa un commit CAS non distruttivo di
+  `models.json`, conserva modifiche esterne concorrenti e propaga un latch
+  verificabile anche alle nuove schede e dopo il riavvio del bridge; in OAuth
+  viene verificato esattamente il provider corrente senza rendere obbligatori
+  provider non configurati.
+
+## 2.5.2 — 2026-08-25
+
+- **Cronologia e rami** mostra soltanto passaggi leggibili dall'utente:
+  messaggi, immagini, compattazioni e sintesi dei rami; pensieri, risultati dei
+  tool e cambi tecnici restano nel JSONL ma non invadono l'interfaccia;
+- i nodi visibili vengono ricuciti al primo antenato visibile, così la struttura
+  dei rami e il punto corrente restano corretti anche quando tra due messaggi
+  esistono molti eventi tecnici;
+- una conversazione troppo breve per la compattazione produce un solo avviso
+  neutro, senza banner rosso, testo inglese o notifiche duplicate;
+- il filtro dei marker iniziali `ottimizzazione: OK` e `orchestrazione: OK`
+  riconosce anche righe interamente racchiuse da backtick o grassetto Markdown,
+  senza cancellare riferimenti analoghi nel corpo della risposta;
+- la normale conferma di un invio live non viene piu presentata come recupero
+  di una richiesta precedente; l'avviso resta disponibile dopo reload o esito
+  di trasporto incerto, quando serve davvero;
+- i brevi conflitti di lettura tra fine risposta e salvataggio del JSONL vengono
+  riletti automaticamente, senza mostrare un falso errore di cronologia;
+- le anteprime assistente in **Cronologia e rami** applicano lo stesso filtro
+  della chat ai marker iniziali di ottimizzazione e orchestrazione;
+- aggiunti test regressivi per riservatezza del ragionamento, ricucitura dei
+  rami, leaf visibile e presentazione degli esiti di compattazione.
+
 ## 2.5.1 — 2026-08-25
 
 - i riepiloghi di compattazione e di ramo non vengono più riversati come

@@ -5,13 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, frontend, stile, linkCore, clipboardCore, viewCore] = await Promise.all([
+const [html, frontend, stile, linkCore, clipboardCore, viewCore, attachmentCore] = await Promise.all([
   readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
   readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
   readFile(join(RADICE, "app", "public", "link-core.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "clipboard-core.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "view-core.js"), "utf8"),
+  readFile(join(RADICE, "app", "public", "attachment-core.js"), "utf8"),
 ]);
 
 function attributi(testo) {
@@ -99,10 +100,12 @@ test("il redesign conserva tutti gli ID statici richiesti dal frontend", () => {
     "btn-invia",
     "btn-allega",
     "menu-azioni-composer",
+    "azione-allega-file",
     "azione-allega-immagine",
     "azione-richiama-skill",
     "azione-comandi-estensioni",
     "azione-ricarica-risorse",
+    "scegli-file",
     "scegli-immagini",
     "allegati",
     "invii-verifica",
@@ -235,8 +238,11 @@ test("la barra TUI conserva per sessione cwd, contesto, modello e statistiche", 
     "la barra deve mostrare l'indicatore auto come il footer TUI");
   assert.match(corpoFunzione("testoContestoSessione"), /contesto\?\.tokens\s*==\s*null\s*\?\s*NaN/,
     "dopo una compaction tokens=null non deve essere trasformato in un falso zero");
-  assert.match(corpoFunzione("finestraModelloSessione"), /sessione\?\.modelli\?\.find/,
-    "prima delle statistiche va mostrata soltanto la finestra autorevole del modello");
+  const finestra = corpoFunzione("finestraModelloSessione");
+  assert.match(finestra, /VISTA_CORE\.finestraContestoModelloCorrente/,
+    "la finestra deve essere risolta dal core che lega i dati all'identita del modello corrente");
+  assert.match(finestra, /modelloStatistiche:\s*sessione\?\.modelloStatistiche/,
+    "le statistiche possono contribuire soltanto insieme al modello che le ha prodotte");
   assert.match(stile, /\.stato-sessione-tui\s*\{/);
   assert.match(stile, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/);
   const uso = corpoFunzione("testoUsoSessione");
@@ -256,6 +262,10 @@ test("le statistiche si aggiornano fail-soft dopo sync e agent_settled, non dura
   const risposta = corpoFunzione("aggiornaDaRisposta");
   assert.match(risposta, /evento\.command\s*===\s*["']get_session_stats["']/);
   assert.match(risposta, /sessione\.statisticheSessione\s*=\s*dati/);
+  assert.match(risposta, /revisioneRichiesta\s*===\s*Number\(sessione\.revisioneModello/,
+    "una risposta statistica tardiva non deve contaminare il modello appena selezionato");
+  assert.match(risposta, /VISTA_CORE\.chiaveModello\(modelloRichiesta\)/,
+    "provider e ID richiesti devono coincidere con quelli ancora correnti");
 
   const sync = corpoFunzione("sincronizzaSessione");
   const fineSync = sync.indexOf("sessione.sincronizzazione = false");
@@ -274,6 +284,18 @@ test("le statistiche si aggiornano fail-soft dopo sync e agent_settled, non dura
     "la lettura delle statistiche non deve rallentare il primo delta");
 });
 
+test("la sincronizzazione finale assorbe soltanto i conflitti transitori della cronologia", () => {
+  const finale = corpoFunzione("sincronizzaMessaggiFinali");
+  assert.match(finale, /\[409,\s*423\]\.includes\(errore\?\.statusHttp\)/,
+    "message_end e agent_settled possono incontrare sia un 409 sia un 423 transitorio");
+  assert.match(finale, /tentativiTransitori\s*<\s*2/,
+    "i retry devono essere limitati per non nascondere un conflitto persistente");
+  assert.match(finale, /setTimeout\(risolvi,\s*100\s*\*\s*tentativiTransitori\)/,
+    "la rilettura deve lasciare al JSONL il tempo di stabilizzarsi");
+  assert.match(finale, /else if \(errore\?\.statusHttp !== 423\)[\s\S]*mostraErroreCronologia/,
+    "un 409 persistente deve continuare a essere mostrato come errore reale");
+});
+
 test("il primo delta e visibile subito e il ragionamento resta compatto", () => {
   const delta = corpoFunzione("gestisciDelta");
   assert.match(delta, /const primoDelta = !sessione\.bloccoTesto/);
@@ -285,6 +307,32 @@ test("il primo delta e visibile subito e il ragionamento resta compatto", () => 
     "il ragionamento deve restare compatto finche l'utente non lo apre");
   assert.doesNotMatch(corpoFunzione("chiudiRagionamento"), /box\.open\s*=\s*false/,
     "la fine del ragionamento non deve annullare una scelta esplicita dell'utente");
+});
+
+test("solo l'attivita tecnica in corso mostra un avanzamento grafico discreto", () => {
+  const creaGruppo = corpoFunzione("ottieniGruppoAttivita");
+  assert.match(creaGruppo, /stato\.setAttribute\(["']role["'],\s*["']status["']\)/);
+  assert.match(creaGruppo, /stato\.setAttribute\(["']aria-live["'],\s*["']polite["']\)/);
+  assert.match(creaGruppo, /stato\.setAttribute\(["']aria-atomic["'],\s*["']true["']\)/);
+  assert.doesNotMatch(creaGruppo, /conteggio\.setAttribute\(["']aria-live["']/,
+    "il conteggio ad alta frequenza non deve produrre annunci continui");
+  const aggiorna = corpoFunzione("aggiornaGruppoAttivita");
+  assert.match(aggiorna, /const attivitaInCorso\s*=\s*inCorso\s*\|\|\s*!gruppo\.finalizzato/);
+  assert.match(aggiorna, /classList\.toggle\(["']in-corso["'],\s*attivitaInCorso\)/,
+    "un tentativo fallito non deve spegnere l'animazione mentre il gruppo continua");
+  assert.match(aggiorna, /classList\.toggle\(["']con-avvisi["'],\s*stato\.livello === ["']avviso["']\)/,
+    "avanzamento e avviso devono poter coesistere");
+  assert.match(stile, /\.gruppo-attivita\.in-corso \.stato::after\s*\{/,
+    "lo stato attivo deve avere un indicatore pulsante");
+  assert.match(stile, /\.gruppo-attivita\.in-corso > summary::after\s*\{/,
+    "il gruppo attivo deve avere una luce di avanzamento");
+  assert.match(stile, /@keyframes respiro-attivita/);
+  assert.match(stile, /@keyframes avanzamento-attivita/);
+  assert.doesNotMatch(stile, /\.gruppo-attivita:not\(\.in-corso\)[^{]*animation/,
+    "i gruppi completati devono restare statici");
+  const ridotto = stile.slice(stile.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
+  assert.match(ridotto, /\.gruppo-attivita\.in-corso \.stato::after[\s\S]*?animation:\s*none/);
+  assert.match(ridotto, /\.gruppo-attivita\.in-corso > summary::after[\s\S]*?animation:\s*none/);
 });
 
 test("il trasferimento al terminale distingue la chat nuova e guida il blocco multi-finestra", () => {
@@ -369,13 +417,14 @@ test("il pulsante + apre un menu rapido accessibile senza fingere di installare 
   assert.equal(apertura?.attributi.get("aria-haspopup"), "menu");
   assert.equal(apertura?.attributi.get("aria-expanded"), "false");
   assert.equal(apertura?.attributi.get("aria-controls"), "menu-azioni-composer");
-  assert.match(apertura?.attributi.get("aria-label") || "", /azioni rapide/i);
+  assert.match(apertura?.attributi.get("aria-label") || "", /allega file|azioni/i);
 
   const menu = elementoConId("menu-azioni-composer");
   assert.equal(menu?.attributi.get("role"), "menu");
   assert.equal(menu?.attributi.has("hidden"), true);
   const corpoMenu = corpoElementoSemplice("menu-azioni-composer");
   for (const [id, testo] of [
+    ["azione-allega-file", /allega file/i],
     ["azione-allega-immagine", /allega immagine/i],
     ["azione-richiama-skill", /richiama skill o procedura/i],
     ["azione-comandi-estensioni", /comandi estensioni/i],
@@ -430,6 +479,113 @@ test("il pulsante + apre un menu rapido accessibile senza fingere di installare 
   for (const classe of ["menu-azioni-composer", "menu-azione-composer", "disponibilita-comando"]) {
     assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`), `manca lo stile .${classe}`);
   }
+});
+
+test("file generici e immagini possono essere scelti o trascinati senza mostrare il marcatore tecnico", () => {
+  assert.ok(html.indexOf("/attachment-core.js") < html.indexOf("/app.js"),
+    "il codec degli allegati deve essere disponibile prima del frontend");
+  assert.match(attachmentCore, /<pi_gui_files_v1>/);
+  assert.match(attachmentCore, /creaMessaggioConFile/);
+  assert.match(attachmentCore, /separaMessaggioConFile/);
+
+  const picker = elementoConId("scegli-file");
+  assert.equal(picker?.tag, "input");
+  assert.equal(picker?.attributi.get("type"), "file");
+  assert.equal(picker?.attributi.has("multiple"), true);
+  assert.equal(picker?.attributi.has("hidden"), true);
+  assert.match(corpoFunzione("eseguiAzioneMenuComposer"), /DOM\.scegliFile\.click\(\)/);
+
+  const aggiungi = corpoFunzione("aggiungiFile");
+  assert.match(aggiungi, /LIMITE_FILE_ALLEGATO/);
+  assert.match(aggiungi, /leggiFileBase64/);
+  assert.match(aggiungi, /chiedi\(["']\/api\/allega-file["']/);
+  assert.match(aggiungi, /risposta\?\.allegato/);
+  assert.match(aggiungi, /riferimentiFileServer\(\[caricato\]\)/,
+    "ogni upload deve ricevere anche il token opaco di proprieta");
+  assert.match(aggiungi, /caricato\.ownerSessionId !== sessione\.id/,
+    "ogni upload deve dichiarare anche la sessione server proprietaria");
+  assert.match(aggiungi, /eliminaFilePendentiBestEffort/,
+    "un upload abbandonato durante una race deve essere cancellato best-effort");
+  assert.match(aggiungi, /APP\.sessioni\.get\(sessione\.id\) === sessione/,
+    "cambiare scheda durante l'upload non deve scartare il file della scheda di origine");
+  assert.doesNotMatch(aggiungi, /sessioneAttiva\(\) !== sessione/,
+    "la validita dell'upload dipende dall'esistenza della scheda, non dal fatto che sia visibile");
+  const invio = corpoFunzione("invia");
+  assert.match(invio, /creaMessaggioConFile\(testoInvio,\s*fileAllegati\)/,
+    "Pi deve ricevere i percorsi locali in un envelope strutturato");
+  assert.match(invio, /message:\s*testoRpc/);
+  assert.match(invio, /piGuiFileRefs:\s*riferimentiFilePrompt\.length/,
+    "il ponte deve preparare e finalizzare gli stessi file del prompt");
+  assert.match(invio, /riferimentiFilePrompt\.length !== fileAllegati\.length/,
+    "un file senza token non deve essere inviato come percorso non protetto");
+  assert.match(frontend, /chiedi\(["']\/api\/gestisci-file-allegati["']/);
+  const adozione = corpoFunzione("adottaFilePendentiBozza");
+  assert.match(adozione, /chiedi\(["']\/api\/adotta-file-allegati["']/);
+  assert.match(adozione, /ownerSessionId:\s*allegato\.ownerSessionId/);
+  assert.match(adozione, /adottato\.ownerSessionId !== sessione\.id/);
+  assert.match(adozione, /adottato\.token === origine\.allegato\.token/,
+    "l'adozione deve esigere la rotazione del token");
+  const ripristino = corpoFunzione("ripristinaFotografiaAllegatiBozza");
+  assert.match(ripristino, /await adottaFilePendentiBozza/,
+    "il restore deve adottare i file prima di renderli nuovamente inviabili");
+  assert.match(ripristino, /forzaCopia:\s*copiaPerAltroDocumento/,
+    "una seconda finestra deve ricevere pending server distinti");
+  assert.ok(
+    ripristino.indexOf("await adottaFilePendentiBozza")
+      < ripristino.indexOf("sessione.allegati = raccolti.map"),
+    "l'adozione deve precedere la pubblicazione degli allegati nella sessione",
+  );
+  assert.match(corpoFunzione("disegnaAllegati"), /eliminaFilePendentiBestEffort/,
+    "rimuovere un file dalla bozza deve chiedere la cancellazione server-side");
+  const chiusura = corpoFunzione("chiudiSessione");
+  assert.match(chiusura, /const filePendenti = riferimentiFileServer\(sessione\.allegati\)/);
+  assert.match(chiusura, /filePendenti\.length \? \{ filePendenti \}/,
+    "la chiusura deve consegnare i token pending al server prima di eliminare la bozza locale");
+  assert.match(chiusura, /allegat\$\{sessione\.allegati\.length === 1 \? ["']o["'] : ["']i["']\}/,
+    "la conferma di chiusura deve parlare di allegati, non soltanto di immagini");
+  assert.match(chiusura, /esitoChiusura\?\.pendingNonEliminati/,
+    "un cleanup parziale dopo lo stop deve chiudere comunque la scheda e mostrare un avviso");
+  assert.match(chiusura, /dimenticaBozza\(sessione,\s*\{ preservaInviiPendenti: true \}\)/,
+    "la chiusura deve scartare la bozza corrente senza eliminare le copie degli invii da verificare");
+  const dimentica = corpoFunzione("dimenticaBozza");
+  assert.match(dimentica, /sessione\.inviiPendenti\.length && !preservaInviiPendenti/);
+  assert.match(dimentica, /if \(!preservaInviiPendenti\) \{[\s\S]*sessione\.inviiPendenti = \[\]/,
+    "i record storici degli invii devono essere indipendenti dal bundle della bozza confermata");
+  assert.match(corpoFunzione("aggiungiMessaggio"), /separaMessaggioConFile/,
+    "la cronologia deve mostrare il prompt umano e i file, non l'envelope interno");
+
+  assert.match(frontend, /document\.addEventListener\(["']dragenter["']/);
+  assert.match(frontend, /document\.addEventListener\(["']dragover["']/);
+  assert.match(frontend, /document\.addEventListener\(["']drop["']/);
+  assert.match(frontend, /accodaAggiuntaAllegati\(evento\.dataTransfer\?\.files/);
+  assert.match(stile, /\.composer-shell\.trascinamento-file/);
+  assert.match(frontend, /setInterval\(rinnovaFileBozzeAperte,\s*INTERVALLO_RINNOVO_FILE_BOZZA_MS\)/,
+    "una bozza ancora aperta deve rinnovare periodicamente i propri pending");
+  assert.match(frontend, /visibilityState === ["']visible["'][\s\S]{0,100}rinnovaFileBozzeAperte/,
+    "il ritorno alla finestra deve rinnovare i pending prima del TTL");
+});
+
+test("un drop misto resta legato alla scheda di origine anche durante gli await", () => {
+  const misto = corpoFunzione("accodaAggiuntaAllegati");
+  assert.match(misto, /const sessione = sessioneAttiva\(\)/);
+  assert.match(misto, /await accodaAggiuntaFile\(generici,\s*sessione\)/);
+  assert.match(misto, /await accodaAggiuntaImmagini\(immagini,\s*sessione\)/);
+
+  const immagini = corpoFunzione("aggiungiImmagini");
+  assert.match(immagini, /APP\.sessioni\.get\(sessione\.id\) === sessione/);
+  assert.match(immagini, /sessione\.chiaveBozza === chiaveAttesa/);
+  assert.doesNotMatch(immagini, /sessioneAttiva\(\) !== sessione/,
+    "la lettura FileReader non deve spostare l'immagine sulla scheda diventata visibile");
+  assert.ok(
+    immagini.indexOf("sessioneAncoraValida()")
+      < immagini.indexOf("await Promise.all(accettati.map(leggiImmagine))"),
+    "la scheda di origine va verificata sia prima sia dopo FileReader",
+  );
+  assert.ok(
+    immagini.lastIndexOf("sessioneAncoraValida()")
+      > immagini.indexOf("await Promise.all(accettati.map(leggiImmagine))"),
+    "la scheda di origine va ricontrollata dopo FileReader",
+  );
 });
 
 test("Ctrl+V incolla screenshot come allegati senza intercettare il normale testo", () => {
@@ -509,9 +665,9 @@ test("la GUI non lascia che Pi trasformi silenziosamente gli allegati in image o
   assert.ok(coda.indexOf("avvisaModelloSenzaImmagini") < coda.indexOf("importazioniImmaginiInCorso"),
     "anche paste e ritorno dal picker devono essere fermati prima di FileReader");
   const invio = corpoFunzione("invia");
-  assert.ok(invio.indexOf("sessione.allegati.length && avvisaModelloSenzaImmagini")
+  assert.ok(invio.indexOf("immaginiAllegate.length && avvisaModelloSenzaImmagini")
     < invio.indexOf("const allegatiInviati"),
-  "il cambio modello a caldo deve lasciare l'allegato in bozza e bloccare l'invio");
+  "il cambio modello a caldo deve lasciare le immagini in bozza senza bloccare i file generici");
 });
 
 test("Ricarica estensioni espone nella barra Strumenti il reload nativo e non perde la conversazione", () => {
@@ -659,6 +815,16 @@ test("built-in, estensioni verificate e shell vengono intercettati prima di cron
   const riconcilia = corpoFunzione("riconciliaInviiPendenti");
   assert.match(riconcilia, /invioRichiedeVerificaManuale/,
     "un built-in non deve essere scambiato per un normale messaggio user");
+  assert.ok(
+    riconcilia.indexOf("!sessione.inviiNascosti.has(invio.id)")
+      < riconcilia.indexOf("dimenticaInvioPendente(sessione, invio.id)"),
+    "la visibilita della safety-copy va letta prima che la riconciliazione la dimentichi",
+  );
+  assert.match(
+    riconcilia,
+    /if \(notificaRiconciliazione && sessione\.id === APP\.attivaId\)/,
+    "la conferma di un normale invio live nascosto non deve produrre un toast di recupero",
+  );
   const safety = corpoFunzione("dimenticaCopiaSicurezzaVerificata");
   assert.match(safety, /lineageRecordBozza\(recordSicurezza\) === invio\.lineageId/,
     "l'ack non deve cancellare una nuova bozza identica con lineage diversa");
@@ -802,6 +968,66 @@ test("settings, modelli, tree e resume mantengono la parita operativa di Pi", ()
   assert.match(resume, /operationId/);
 });
 
+test("GPT-5.6 espone il contesto ufficiale esteso come scelta consapevole, non automatica", () => {
+  const riconosci = corpoFunzione("modelloGpt56Configurabile");
+  assert.match(riconosci, /PROVIDER_GPT_56/);
+  assert.match(riconosci, /ID_GPT_56/);
+  const gestione = corpoFunzione("creaGestioneContestoEstesoGpt");
+  assert.match(gestione, /chiedi\(["']\/api\/contesto-esteso-gpt["'],\s*\{\s*corpo:\s*\{\s*\}\s*\}\)/,
+    "aprire il picker deve soltanto leggere la configurazione");
+  assert.match(gestione, /corpo:\s*\{\s*enabled,\s*sessionId:\s*sessione\.id\s*\}/,
+    "la scrittura deve avvenire solo dopo l'azione esplicita dell'utente");
+  assert.match(gestione, /confermaRichiesta\s*=\s*obiettivo/);
+  assert.match(gestione, /Conferma 1,05M/);
+  assert.match(gestione, /2× input e 1,5× output/,
+    "il costo long-context API deve essere spiegato prima della conferma");
+  assert.match(gestione, /Con OAuth questa GUI non presenta tale stima come una fattura/);
+  assert.match(gestione, /sessione\.inEsecuzione/,
+    "la configurazione non deve cambiare durante un'elaborazione");
+  assert.match(gestione, /sessione\.compattazioneInCorso/,
+    "la configurazione non deve cambiare durante una compattazione");
+  assert.match(gestione, /corpo:\s*\{\s*enabled,\s*sessionId:\s*sessione\.id\s*\}/,
+    "il bridge deve ricontrollare atomicamente che la conversazione sia inattiva");
+  assert.match(gestione, /\["mixed",\s*"custom"\]/,
+    "una configurazione esterna o mista deve essere riconosciuta senza sovrascriverla");
+  assert.match(gestione, /stato\.conflict/,
+    "anche il drift esterno dopo un'attivazione GUI deve bloccare nuove sovrascritture");
+  assert.match(gestione, /Configurazione esterna protetta/);
+  const ricarica = corpoFunzione("aggiornaCatalogoContestoGptSessione");
+  assert.match(ricarica, /chiedi\(["']\/api\/ricarica-contesto-gpt["']/,
+    "refresh, catalogo, rebind e verifica devono essere orchestrati dal server");
+  assert.match(ricarica, /esito\.catalogoModelliDaRicaricare\s*===\s*true/,
+    "la UI deve conservare il latch autorevole restituito dal server");
+  assert.doesNotMatch(ricarica, /sessione\.contestoGptDaRicaricare\s*=\s*false/,
+    "una semplice get_state lato client non deve poter azzerare il latch");
+  assert.match(ricarica, /contestoGptDaRicaricare\s*=\s*true/);
+  const tutte = corpoFunzione("aggiornaCataloghiContestoGptAperti");
+  assert.match(tutte, /\[\.\.\.APP\.sessioni\.values\(\)\]/,
+    "models.json e globale: tutte le schede aperte devono essere considerate");
+  assert.match(tutte, /Promise\.allSettled/,
+    "una scheda occupata non deve bloccare l'aggiornamento delle altre");
+  assert.match(gestione,
+    /if \(dati\.refreshRequired\)\s*\{\s*const esiti = await aggiornaCataloghiContestoGptAperti\(\)/,
+    "dopo il salvataggio globale tutte le schede vanno marcate pending, anche se quella corrente inizia a lavorare");
+  assert.match(frontend, /agent_settled[\s\S]*?contestoGptDaRicaricare[\s\S]*?aggiornaCatalogoContestoGptSessione/,
+    "una scheda in lavoro deve applicare la configurazione quando torna inattiva");
+  const riprova = corpoFunzione("programmaRiprovaContestoGpt");
+  assert.match(riprova, /\[1_000,\s*3_000,\s*10_000\]/,
+    "un errore transitorio su una scheda gia idle deve avere retry limitati e progressivi");
+  assert.match(ricarica, /programmaRiprovaContestoGpt\(sessione\)/,
+    "un refresh fallito non deve restare pending indefinitamente senza un nuovo agent_settled");
+  assert.match(gestione, /1,05M configurato/,
+    "lo stato globale non deve fingere che ogni sessione abbia gia adottato la finestra");
+  assert.match(stile, /\.contesto-esteso-gpt\s*\{/);
+  assert.match(stile, /\.azioni-contesto-esteso\s*\{/);
+  const snapshot = corpoFunzione("applicaSnapshot");
+  const unioneSnapshot = corpoFunzione("unisciSessione");
+  assert.match(unioneSnapshot, /catalogoModelliDaRicaricare/,
+    "dopo F5 il latch deve essere ripreso dal riassunto server-side");
+  assert.match(snapshot, /aggiornaCatalogoContestoGptSessione/,
+    "una nuova finestra deve riprendere automaticamente la verifica rimasta dirty");
+});
+
 test("l'albero della conversazione e raggiungibile direttamente dalla barra laterale", () => {
   const albero = elementoConId("btn-albero");
   assert.equal(albero?.tag, "button");
@@ -830,6 +1056,9 @@ test("l'albero della conversazione e raggiungibile direttamente dalla barra late
   const occupato = corpoFunzione("apriAlberoOppureSpiega");
   assert.match(occupato, /alberoTemporaneamenteOccupato/);
   assert.match(occupato, /Cronologia e rami sono conservati/);
+  const modale = corpoFunzione("mostraAlberoSessione");
+  assert.match(modale, /voci visibili/);
+  assert.match(modale, /tecniciNascosti/);
 });
 
 test("i riepiloghi di compattazione restano chiusi e vengono renderizzati solo su richiesta", () => {
@@ -844,6 +1073,204 @@ test("i riepiloghi di compattazione restano chiusi e vengono renderizzati solo s
   assert.match(riepilogo, /box\.addEventListener\("toggle"/);
   assert.ok(riepilogo.indexOf("if (!box.open || renderizzato) return") < riepilogo.indexOf("renderMarkdown"));
   assert.match(stile, /\.riepilogo-contesto-corpo\s*\{[\s\S]*?max-height:/);
+});
+
+test("le cronologie grandi vengono renderizzate in batch senza perdere prompt o ordine", () => {
+  assert.match(frontend, /const SOGLIA_RENDER_CRONOLOGIA_PROGRESSIVO\s*=\s*\d+/);
+  assert.match(frontend, /const MESSAGGI_PER_BATCH_CRONOLOGIA\s*=\s*\d+/);
+  const render = corpoFunzione("renderCronologia");
+  assert.match(render, /const listaMessaggi\s*=\s*Array\.from\(messaggi\s*\|\|\s*\[\]\)/,
+    "il render deve fotografare l'intera sequenza senza filtrarla o troncarla");
+  assert.match(render,
+    /!forzaSincrono[\s\S]*?listaMessaggi\.length\s*>=\s*SOGLIA_RENDER_CRONOLOGIA_PROGRESSIVO[\s\S]*?!sessione\.inEsecuzione[\s\S]*?!sessione\.compattazioneInCorso/,
+    "solo una cronologia grande e ferma puo essere dilazionata");
+  assert.match(render, /sessione\.generazioneRenderCronologia\s*=\s*generazione/);
+  assert.match(render, /sessione\.annullaRenderCronologia\?\.\(\)/,
+    "una nuova fotografia deve annullare il render precedente");
+  assert.match(render, /sessione\.generazioneRenderCronologia\s*===\s*generazione/,
+    "ogni batch deve appartenere ancora alla generazione corrente");
+  assert.match(render,
+    /while \(indice < fineBatch\)[\s\S]*?renderizzaMessaggio\(listaMessaggi\[indice\]\)[\s\S]*?indice \+= 1/,
+    "i messaggi devono essere consumati uno alla volta nello stesso ordine del JSONL");
+  assert.doesNotMatch(render, /listaMessaggi\.(?:sort|reverse|splice)\(/,
+    "il percorso progressivo non deve riordinare o eliminare prompt");
+  assert.match(render,
+    /messaggio\.role === "user"[\s\S]*?testoDaContenuto\(messaggio\.content\)/,
+    "il prompt originale completo deve continuare a essere la fonte del messaggio utente");
+  assert.match(render,
+    /if \(indice < listaMessaggi\.length\)[\s\S]*?requestAnimationFrame\(renderizzaBatch\)[\s\S]*?return;[\s\S]*?finalizza\(\)/,
+    "riconciliazione e finalizzazione devono avvenire soltanto dopo l'ultimo batch");
+  assert.match(render,
+    /const finalizza[\s\S]*?finalizzaGruppoAttivita[\s\S]*?riconciliaInviiPendenti\(sessione, listaMessaggi\)/);
+
+  const caricamento = corpoFunzione("caricaCronologiaSessione");
+  assert.match(caricamento,
+    /sessione\.messaggiSincronizzati\s*=\s*false;[\s\S]*?await renderCronologia\(sessione, messaggi,[\s\S]*?sessione\.messaggiSincronizzati\s*=\s*!parziale/,
+    "la cronologia non puo risultare sincronizzata mentre il DOM e ancora parziale");
+  const risposta = corpoFunzione("aggiornaDaRisposta");
+  assert.match(risposta,
+    /evento\.command === "get_messages"[\s\S]*?messaggiSincronizzati\s*=\s*false[\s\S]*?renderCronologia[\s\S]*?\.then\([\s\S]*?messaggiSincronizzati\s*=\s*true/,
+    "anche il percorso RPC deve attendere il completamento reale del render");
+});
+
+test("durante il render progressivo la bozza resta scrivibile e tutte le mutazioni sono bloccate", () => {
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  assert.match(interfaccia,
+    /!sessione\.sincronizzazione\s*\|\|\s*sessione\.renderCronologiaInCorso/,
+    "la sola ricostruzione progressiva non deve disabilitare la textarea");
+  assert.match(interfaccia,
+    /const mutazioniUtilizzabili\s*=\s*utilizzabile\s*&&\s*!sessione\?\.renderCronologiaInCorso/);
+  assert.match(interfaccia, /DOM\.input\.disabled\s*=\s*!composerScrivibile/);
+  assert.match(interfaccia, /Ricostruisco la cronologia salvata:[^"']*bozza resta salvata/);
+  assert.match(interfaccia,
+    /DOM\.conversazione\.setAttribute\([\s\S]*?"aria-busy"[\s\S]*?sessione\?\.renderCronologiaInCorso/);
+  for (const controllo of ["btnAllega", "btnInvia", "btnModello", "btnRagionamento", "btnControlli"]) {
+    assert.match(interfaccia, new RegExp(`DOM\\.${controllo}\\.disabled\\s*=\\s*!mutazioniUtilizzabili`),
+      `${controllo} deve restare bloccato finche la cronologia e parziale`);
+  }
+
+  const rpc = corpoFunzione("rpc");
+  assert.match(rpc,
+    /sessione\.renderCronologiaInCorso[\s\S]*?!String\(comando\?\.type[\s\S]*?startsWith\("get_"\)[\s\S]*?erroreRenderCronologiaInCorso/,
+    "anche una modale gia aperta non deve aggirare il blocco delle mutazioni");
+  const invio = corpoFunzione("invia");
+  assert.match(invio, /if \(sessione\?\.renderCronologiaInCorso\)[\s\S]*?bozza resta salvata/);
+  assert.match(invio,
+    /await \(sessione\.codaAllegatiBozza[\s\S]*?if \(sessione\.renderCronologiaInCorso\)/,
+    "il controllo deve essere ripetuto dopo le code asincrone degli allegati");
+  assert.match(corpoFunzione("aggiungiFile"), /sessione\.renderCronologiaInCorso/);
+  assert.match(corpoFunzione("aggiungiImmagini"), /sessione\.renderCronologiaInCorso/);
+
+  const eventi = corpoFunzione("gestisciEvento");
+  assert.match(eventi,
+    /sessione\.renderCronologiaInCorso[\s\S]*?EVENTI_RIPRESA_DOPO_COMPATTAZIONE[\s\S]*?completaRenderCronologiaSincrono\?\.\(\)/,
+    "se la sessione diventa live, la fotografia deve essere completata prima dei delta");
+});
+
+test("gli eventi live arrivati durante il download seguono una sola fotografia completa", () => {
+  assert.match(frontend, /caricamentoCronologiaInCorso:\s*null/);
+
+  const caricamento = corpoFunzione("caricaCronologiaSessione");
+  const creaBarriera = caricamento.indexOf("sessione.caricamentoCronologiaInCorso = caricamentoCronologia");
+  const avviaDownload = caricamento.indexOf('fetch("/api/cronologia"');
+  const staccaCoda = caricamento.indexOf("staccaEventiCronologiaAccodati");
+  const avviaRender = caricamento.indexOf("await renderCronologia");
+  const sincronizzata = caricamento.indexOf("sessione.messaggiSincronizzati = !parziale");
+  const riproduciCoda = caricamento.lastIndexOf("riproduciEventiCronologiaAccodati");
+  assert.ok(creaBarriera >= 0 && creaBarriera < avviaDownload,
+    "la barriera deve esistere prima che inizi il download NDJSON");
+  assert.ok(staccaCoda > avviaDownload && staccaCoda < avviaRender,
+    "gli eventi devono essere separati dalla barriera prima di ricostruire il DOM");
+  assert.match(caricamento, /forzaSincrono:\s*eventiAccodati\.length\s*>\s*0/,
+    "una coda live richiede una fotografia sincrona prima del replay");
+  assert.ok(sincronizzata > avviaRender && sincronizzata < riproduciCoda,
+    "i delta accodati devono essere riammessi solo dopo la sincronizzazione completa");
+
+  const eventi = corpoFunzione("gestisciEvento");
+  const accoda = eventi.indexOf("caricamentoCronologia.eventi.push(evento)");
+  const gestisceLive = eventi.indexOf("const statoDiventatoLive");
+  assert.ok(accoda >= 0 && accoda < gestisceLive,
+    "un evento live non deve mutare la sessione mentre il download e ancora in corso");
+  assert.match(eventi,
+    /caricamentoCronologia\.richiesta\s*===\s*sessione\.richiestaCronologia[\s\S]*?evento\.type\s*!==\s*"response"[\s\S]*?startsWith\("gui_"\)[\s\S]*?eventi\.push\(evento\);\s*return;/,
+    "solo la barriera corrente deve accodare gli eventi di timeline, senza bloccare RPC e lifecycle GUI");
+});
+
+test("il primo message_update che promuove un render progressivo non viene scartato", () => {
+  const eventi = corpoFunzione("gestisciEvento");
+  const promozione = eventi.indexOf("const renderCompletato = sessione.completaRenderCronologiaSincrono?.()");
+  const abilitaDelta = eventi.indexOf("if (renderCompletato) sessione.messaggiSincronizzati = true", promozione);
+  const primoDelta = eventi.indexOf('evento.type === "message_update"');
+  assert.ok(promozione >= 0 && promozione < abilitaDelta && abilitaDelta < primoDelta,
+    "la promozione deve rendere la fotografia sincronizzata nello stesso stack del primo delta");
+});
+
+test("la compattazione troppo breve produce un solo feedback neutro", () => {
+  const evento = corpoFunzione("gestisciEvento");
+  const inizio = evento.indexOf('evento.type === "compaction_end"');
+  const fine = evento.indexOf('evento.type === "auto_retry_start"', inizio);
+  const ramo = evento.slice(inizio, fine);
+  assert.match(ramo, /presentaErroreCompattazione\(evento\.errorMessage\)/);
+  assert.match(ramo, /compattazione\.nonNecessaria[\s\S]*?\{ nota: compattazione\.testo \}/,
+    "Nothing to compact deve aggiornare il banner come nota, non come errore");
+
+  const risposta = corpoFunzione("aggiornaDaRisposta");
+  assert.match(
+    risposta,
+    /!\(avevaAttesa\s*&&\s*compattazione\?\.nonNecessaria\)/,
+    "l'ack non deve creare un toast quando il chiamante attende questo esito noto",
+  );
+
+  const azione = corpoFunzione("eseguiAzione");
+  assert.match(azione, /azione === "comprimi"[\s\S]*?presentaErroreCompattazione/);
+  assert.match(azione, /if \(!compattazione\?\.nonNecessaria\)\s*\{[\s\S]*?toast\(/,
+    "il catch non deve aggiungere un secondo toast per una chat troppo breve");
+});
+
+test("l'etichetta di ricalcolo si spegne appena PI riprende davvero il lavoro", () => {
+  const ripresa = corpoFunzione("confermaRipresaDopoCompattazione");
+  assert.match(ripresa, /sessione\?\.contestoDaRicalcolare/);
+  assert.match(ripresa, /EVENTI_RIPRESA_DOPO_COMPATTAZIONE\.has\(tipoEvento\)/);
+  assert.match(ripresa, /sessione\.contestoDaRicalcolare\s*=\s*false/);
+  assert.match(ripresa, /disegnaBarraStatoSessione\(sessione\)/,
+    "anche gli eventi delta, che hanno un fast path, devono aggiornare subito l'etichetta");
+  for (const evento of [
+    "message_update",
+    "tool_execution_start",
+    "bash_execution_update",
+    "agent_settled",
+  ]) {
+    assert.match(frontend, new RegExp(`["']${evento}["']`), `manca l'evidenza di ripresa ${evento}`);
+  }
+  assert.match(corpoFunzione("gestisciEvento"),
+    /confermaRipresaDopoCompattazione\(sessione,\s*evento\.type\)/);
+  const statistiche = corpoFunzione("aggiornaStatisticheSessione");
+  assert.match(statistiche,
+    /sessione\.contestoDaRicalcolare[\s\S]*?!sessione\.inEsecuzione[\s\S]*?=\s*false/,
+    "anche un ricalcolo accessorio fallito a sessione ferma non deve lasciare il testo per sempre");
+});
+
+test("durante la compattazione la bozza resta scrivibile ma non viene inviata", () => {
+  assert.match(corpoFunzione("creaSessione"),
+    /compattazioneInCorso:\s*Boolean\(meta\.compattazioneInCorso\)/,
+    "un reload deve ereditare la barriera autorevole del server");
+  assert.match(corpoFunzione("unisciSessione"),
+    /["']compattazioneInCorso["']/,
+    "anche gli snapshot successivi devono aggiornare la barriera autorevole");
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  const definizioneScrittura = interfaccia.slice(
+    interfaccia.indexOf("const composerScrivibile"),
+    interfaccia.indexOf("const utilizzabile"),
+  );
+  assert.doesNotMatch(definizioneScrittura, /compattazioneInCorso/,
+    "il riassunto non deve disabilitare la textarea");
+  assert.match(interfaccia,
+    /const utilizzabile\s*=\s*composerScrivibile\s*&&\s*!sessione\?\.compattazioneInCorso/,
+    "invio, allegati e cambi di configurazione restano bloccati durante il riassunto");
+  assert.match(interfaccia, /DOM\.input\.disabled\s*=\s*!composerScrivibile/);
+  assert.match(interfaccia, /Scrivi pure:[^"']*bozza resta salvata/);
+  const invio = corpoFunzione("invia");
+  assert.match(invio, /if \(sessione\?\.compattazioneInCorso\)/,
+    "Invio da tastiera deve rispettare lo stesso blocco del pulsante disabilitato");
+  assert.match(invio, /La bozza e salvata/);
+  assert.match(invio,
+    /await \(sessione\.codaAllegatiBozza[\s\S]*?if \(sessione\.compattazioneInCorso\)/,
+    "una compattazione iniziata durante gli await deve bloccare comunque il prompt RPC");
+  assert.match(invio,
+    /if \(sessione\.compattazioneInCorso\)[\s\S]*?bloccoCompattazione[\s\S]*?throw bloccoCompattazione;[\s\S]*?await rpc\(comando/,
+    "l'ultima guardia deve trovarsi immediatamente nel tratto che precede il prompt RPC");
+  assert.match(invio, /errore\?\.compattazioneInCorso[\s\S]*?messaggio\.msg\.remove\(\)/,
+    "la race deve rimuovere l'anteprima ottimistica senza cancellare la bozza");
+  const azioniLaterali = corpoFunzione("abilitaAzioni");
+  assert.match(azioniLaterali,
+    /azione === ["']nuova["']\s*&&\s*!sessione\?\.compattazioneInCorso/,
+    "Nuova conversazione nella sidebar deve disabilitarsi durante la compattazione");
+  assert.doesNotMatch(azioniLaterali,
+    /\[[^\]]*["']nuova["'][^\]]*\]\.includes/,
+    "Nuova conversazione non deve piu essere una deroga incondizionata");
+  assert.match(invio,
+    /if \(sessione\.contestoGptDaRicaricare\)[\s\S]*?await aggiornaCatalogoContestoGptSessione\(sessione\)[\s\S]*?if \(sessione\.contestoGptDaRicaricare\)/,
+    "il primo prompt non deve partire con il vecchio limite se il refresh automatico e fallito");
 });
 
 test("lo stato locale non devia Pi e steer resta una scelta esplicita one-shot", () => {
