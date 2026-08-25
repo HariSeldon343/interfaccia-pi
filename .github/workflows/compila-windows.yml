@@ -56,7 +56,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           npm run check
-          npm test
+          # Il runner ospitato puo rallentare oltre il timeout il cold start di
+          # Windows PowerShell quando i file di test partono tutti in parallelo.
+          # Prima di una release privilegiamo una verifica deterministica e
+          # completa: cambia solo la concorrenza, non l'insieme dei test.
+          node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
           npm run test:smoke
           cargo test --locked --manifest-path src-tauri/Cargo.toml
 
