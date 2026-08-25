@@ -178,7 +178,7 @@
             <button id="azione-allega-immagine" class="menu-azione-composer" type="button"
                     role="menuitem" data-azione-composer="allega-immagine" tabindex="-1">
               <span class="menu-azione-icona" aria-hidden="true">▧</span>
-              <span><strong>Allega immagine</strong><small>PNG, JPEG, WebP o GIF</small></span>
+              <span><strong>Allega immagine</strong><small>dal file oppure incolla uno screenshot con Ctrl+V</small></span>
             </button>
             <button id="azione-richiama-skill" class="menu-azione-composer" type="button"
                     role="menuitem" data-azione-composer="skill" tabindex="-1">
@@ -224,7 +224,7 @@
         </div>
 
         <div class="sotto-scrittura">
-          <span id="suggerimento">Invio per inviare · Maiusc+Invio per andare a capo</span>
+          <span id="suggerimento">Invio per inviare · Maiusc+Invio per andare a capo · Ctrl+V per incollare uno screenshot</span>
           <div class="invio-occupato" id="invio-occupato" hidden>
             <label for="modo-coda">Se pi sta lavorando:</label>
             <select id="modo-coda">
@@ -264,6 +264,7 @@
   <script src="/palette-core.js"></script>
   <script src="/auth-flow-core.js"></script>
   <script src="/link-core.js"></script>
+  <script src="/clipboard-core.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

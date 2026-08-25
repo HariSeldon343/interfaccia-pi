@@ -1,16 +1,18 @@
 # Distribuzione e aggiornamenti
 
-## Stato della versione 2.4.0
+## Stato della versione 2.4.1
 
-Il progetto e pronto per un repository GitHub, ma non pubblica automaticamente
-nulla. I workflow inclusi sono deliberatamente separati:
+Il repository pubblico autorevole e
+`https://github.com/HariSeldon343/interfaccia-pi`. I workflow inclusi sono
+deliberatamente separati:
 
 - `verifica-windows.yml` controlla sintassi, test JavaScript, smoke test del
   runtime incorporato e test Rust;
 - `compila-windows.yml` parte soltanto manualmente e produce gli installer NSIS
   (`.exe`) e MSI con i rispettivi hash SHA-256;
-- nessun workflow crea una Release GitHub e nessun aggiornamento viene installato
-  automaticamente nella 2.4.0.
+- le release verificate vengono promosse manualmente su GitHub con EXE, MSI e
+  `SHA256SUMS.txt`; nessun aggiornamento viene installato automaticamente nella
+  2.4.1.
 
 Il repository non deve contenere `vendor/pi-runtime`: sono circa 204 MiB e oltre
 15.000 file. La CI lo ricostruisce da fonti e digest bloccati nello script
@@ -24,12 +26,11 @@ Per creare il pacchetto sorgente completo:
 pwsh -File scripts/crea-pacchetto-sorgente.ps1
 ```
 
-## Primo repository
+## Repository e promozione release
 
-Conviene iniziare con un repository **privato**, eseguire almeno una build
-completa su GitHub Actions e verificare gli installer su una macchina pulita.
-Solo dopo la verifica delle licenze del runtime e della documentazione si decide
-se renderlo pubblico.
+Il repository e pubblico dal 24/08/2026, dopo scansione del sorgente e della
+cronologia, build completa su GitHub Actions e verifica degli installer. La
+promozione resta intenzionalmente manuale.
 
 La sequenza consigliata e:
 
@@ -87,10 +88,9 @@ Dopo aver scelto nome e proprietario definitivi del repository:
    commit agli utenti.
 
 Un updater che legge direttamente `latest.json` da GitHub richiede asset
-scaricabili senza autenticazione. Se il repository restera privato, occorrera
-pubblicare gli asset in un canale pubblico separato oppure usare un servizio di
-aggiornamento autenticato.
+scaricabili senza autenticazione. Il repository pubblico soddisfa questo
+prerequisito, ma non sostituisce firma, lifecycle e rollback descritti sopra.
 
-La 2.4.0 resta volutamente a aggiornamento manuale: attivare l'updater prima di
+La 2.4.1 resta volutamente a aggiornamento manuale: attivare l'updater prima di
 avere repository definitivo, chiavi durevoli e strategia di firma creerebbe un
 canale fragile e difficile da migrare.

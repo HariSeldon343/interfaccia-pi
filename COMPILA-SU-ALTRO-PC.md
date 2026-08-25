@@ -1,7 +1,7 @@
-# Interfaccia pi 2.4.0 — sorgente completo
+# Interfaccia pi 2.4.1 — sorgente completo
 
 Questa cartella contiene il pacchetto sorgente completo necessario per modificare
-l'interfaccia, il bridge e l'installer desktop di Interfaccia pi 2.4.0.
+l'interfaccia, il bridge e l'installer desktop di Interfaccia pi 2.4.1.
 
 ## Prima di iniziare
 
@@ -9,7 +9,7 @@ Non compilare direttamente dentro kDrive. Copia o estrai il progetto in un
 percorso locale corto, per esempio:
 
 ```text
-C:\src\pi-gui-2.4.0
+C:\src\pi-gui-2.4.1
 ```
 
 In questo modo si evitano conflitti di sincronizzazione e limiti di lunghezza dei
@@ -35,21 +35,21 @@ controllato prima della compilazione offline.
 Apri PowerShell nella cartella estratta ed esegui:
 
 ```powershell
-cd C:\src\pi-gui-2.4.0
+cd C:\src\pi-gui-2.4.1
 npm ci
 npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.4.0'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.4.1'
 npm run build:desktop:offline
 ```
 
 Gli installer prodotti si trovano qui:
 
 ```text
-src-tauri\target-final-2.4.0\release\bundle\nsis\Interfaccia pi_2.4.0_x64-setup.exe
-src-tauri\target-final-2.4.0\release\bundle\msi\Interfaccia pi_2.4.0_x64_en-US.msi
+src-tauri\target-final-2.4.1\release\bundle\nsis\Interfaccia pi_2.4.1_x64-setup.exe
+src-tauri\target-final-2.4.1\release\bundle\msi\Interfaccia pi_2.4.1_x64_en-US.msi
 ```
 
 ## Modificare l'installer

@@ -5,11 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, frontend, stile, linkCore] = await Promise.all([
+const [html, frontend, stile, linkCore, clipboardCore] = await Promise.all([
   readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
   readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
   readFile(join(RADICE, "app", "public", "link-core.js"), "utf8"),
+  readFile(join(RADICE, "app", "public", "clipboard-core.js"), "utf8"),
 ]);
 
 function attributi(testo) {
@@ -417,6 +418,81 @@ test("il pulsante + apre un menu rapido accessibile senza fingere di installare 
   for (const classe of ["menu-azioni-composer", "menu-azione-composer", "disponibilita-comando"]) {
     assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`), `manca lo stile .${classe}`);
   }
+});
+
+test("Ctrl+V incolla screenshot come allegati senza intercettare il normale testo", () => {
+  assert.match(html, /Ctrl\+V per incollare uno screenshot/i,
+    "il composer deve rendere la funzione scopribile");
+  assert.match(frontend, /SUGGERIMENTO_PREDEFINITO\s*=\s*["'][^"']*Ctrl\+V/,
+    "il suggerimento deve restare visibile dopo aver chiuso la palette comandi");
+
+  assert.ok(html.indexOf("/clipboard-core.js") < html.indexOf("/app.js"),
+    "il core della clipboard deve essere caricato prima del frontend");
+  assert.match(clipboardCore, /clipboardData\.items/,
+    "la sorgente primaria deve essere DataTransferItemList");
+  assert.match(clipboardCore, /getAsFile/);
+  assert.match(clipboardCore, /clipboardData\.files/,
+    "serve il fallback DataTransfer.files di WebView2");
+  assert.match(clipboardCore, /TIPI_IMMAGINE_SUPPORTATI/,
+    "il paste non deve ampliare i MIME gia ammessi dal selettore");
+
+  const inizio = frontend.indexOf('DOM.input.addEventListener("paste"');
+  const fine = frontend.indexOf('DOM.input.addEventListener("input"', inizio);
+  assert.ok(inizio >= 0 && fine > inizio, "manca il gestore paste del composer");
+  const gestore = frontend.slice(inizio, fine);
+  assert.ok(gestore.indexOf("if (!immagini.length) return") < gestore.indexOf("preventDefault"),
+    "incollare solo testo deve mantenere il comportamento nativo del textarea");
+  assert.match(gestore, /DOM\.azioneAllegaImmagine\.disabled/,
+    "Ctrl+V deve rispettare gli stessi blocchi del pulsante allega");
+  assert.match(gestore, /await accodaAggiuntaImmagini\(immagini\)/,
+    "file picker e clipboard devono condividere limiti, persistenza e anteprima");
+  assert.match(gestore, /testoAssociato/,
+    "la policy image-first delle clipboard miste deve essere comunicata all'utente");
+  assert.doesNotMatch(gestore, /navigator\.clipboard\.read/,
+    "il paste esplicito non deve richiedere permessi permanenti alla clipboard");
+
+  const coda = corpoFunzione("accodaAggiuntaImmagini");
+  assert.ok(coda.indexOf("importazioniImmaginiInCorso") < coda.indexOf(".then("),
+    "il latch deve essere visibile prima dell'avvio asincrono di FileReader");
+  assert.match(coda, /codaImportazioneImmagini/);
+  const invio = corpoFunzione("invia");
+  assert.ok(invio.indexOf("codaImportazioneImmagini") < invio.indexOf("codaAllegatiBozza"),
+    "Invio deve attendere prima la lettura e poi la persistenza dello screenshot");
+  assert.ok(invio.indexOf("codaImportazioneImmagini") < invio.indexOf("allegatiInviati"),
+    "la fotografia degli allegati non puo precedere il completamento del paste");
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  assert.match(interfaccia, /!sessione\.importazioniImmaginiInCorso/,
+    "il composer deve restare bloccato durante la breve acquisizione asincrona");
+});
+
+test("la GUI non lascia che Pi trasformi silenziosamente gli allegati in image omitted", () => {
+  const corrente = corpoFunzione("modelloCorrenteSessione");
+  assert.match(corrente, /stato\.provider\s*===\s*sessione\.provider/,
+    "un get_state precedente non deve decidere la capacita dopo un cambio modello a caldo");
+  assert.match(corrente, /stato\.id\s*===\s*sessione\.modello/);
+  const supporto = corpoFunzione("supportoImmaginiSessione");
+  assert.match(supporto, /supportoImmaginiModello\(modelloCorrenteSessione\(sessione\)\)/,
+    "la capacita deve essere tratta dai metadati autorevoli del modello");
+  assert.match(clipboardCore, /supportoImmaginiModello/);
+  assert.match(clipboardCore, /input\.includes\(["']image["']\)/);
+
+  const avviso = corpoFunzione("avvisaModelloSenzaImmagini");
+  assert.match(avviso, /supportoImmaginiSessione\(sessione\)\s*!==\s*false/,
+    "un catalogo non ancora caricato non deve produrre un falso blocco");
+  assert.match(avviso, /image omitted/,
+    "il messaggio deve spiegare esattamente cio che farebbe Pi");
+  assert.match(avviso, /Scegli modello/);
+
+  const menu = corpoFunzione("eseguiAzioneMenuComposer");
+  assert.ok(menu.indexOf("avvisaModelloSenzaImmagini") < menu.indexOf("scegliImmagini.click"),
+    "il selettore file non deve aprirsi per un modello noto come solo testo");
+  const coda = corpoFunzione("accodaAggiuntaImmagini");
+  assert.ok(coda.indexOf("avvisaModelloSenzaImmagini") < coda.indexOf("importazioniImmaginiInCorso"),
+    "anche paste e ritorno dal picker devono essere fermati prima di FileReader");
+  const invio = corpoFunzione("invia");
+  assert.ok(invio.indexOf("sessione.allegati.length && avvisaModelloSenzaImmagini")
+    < invio.indexOf("const allegatiInviati"),
+  "il cambio modello a caldo deve lasciare l'allegato in bozza e bloccare l'invio");
 });
 
 test("Ricarica estensioni espone nella barra Strumenti il reload nativo e non perde la conversazione", () => {

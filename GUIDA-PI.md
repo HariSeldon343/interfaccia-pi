@@ -61,7 +61,8 @@ Invio, oppure fare click: il comando viene inserito nell'editor e puoi ancora
 leggerlo o completarne gli argomenti prima di inviarlo.
 
 Il pulsante **＋** accanto alla casella apre le stesse funzioni senza dover
-ricordare la sintassi: puoi allegare un'immagine supportata, cercare una skill o
+ricordare la sintassi: puoi allegare un'immagine supportata, oppure incollare
+direttamente uno screenshot nel composer con `Ctrl+V`, cercare una skill o
 una procedura nel catalogo reale della conversazione, vedere i comandi forniti
 dalle estensioni e ricaricare le risorse dopo un'installazione o una modifica di
 configurazione. Quest'ultima voce esegue il `/reload` nativo: non installa e non
@@ -89,7 +90,13 @@ bloccati e la chat non apre file eseguibili, installer, script, scorciatoie o
 altri formati attivi. Pi non crea collegamenti sul Desktop se non glielo chiedi
 esplicitamente.
 
-Gli allegati diretti della GUI sono immagini PNG, JPEG, WebP o GIF. Il protocollo
+Gli allegati diretti della GUI sono immagini PNG, JPEG, WebP o GIF. Puoi
+sceglierli dal pulsante **＋** o incollare uno screenshot con `Ctrl+V`: compare
+subito la stessa anteprima rimovibile prima dell'invio. Il modello selezionato
+deve essere indicato come **immagini** nella finestra **Scegli modello**. Con un
+modello solo testo, per esempio GLM-5.3 nell'attuale catalogo di Pi, la GUI ferma
+l'invio e te lo spiega invece di lasciare che Pi sostituisca l'allegato con
+`image omitted`. Il protocollo
 RPC di `pi` non espone un allegato file generico; per un documento o un sorgente
 usa un percorso assoluto nella richiesta oppure il riferimento `@file` di Pi
 completo nel terminale.

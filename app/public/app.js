@@ -21,6 +21,13 @@ const {
   destinazioneLinkGui,
   prossimaDestinazioneAutomatica,
 } = LINK_CORE;
+const CLIPBOARD_CORE = globalThis.PiGuiClipboardCore;
+if (!CLIPBOARD_CORE) throw new Error("Il modulo della clipboard non e stato caricato");
+const {
+  immaginiDaClipboard,
+  supportoImmaginiModello,
+  tipoImmagineSupportato,
+} = CLIPBOARD_CORE;
 
 const DOM = {
   schede: $("#schede"),
@@ -634,7 +641,7 @@ const COMANDI_CAMBIO_SESSIONE = new Set([
   "navigate_tree",
 ]);
 const timerSalvaBozza = new Map();
-const SUGGERIMENTO_PREDEFINITO = "Invio per inviare · Maiusc+Invio per andare a capo";
+const SUGGERIMENTO_PREDEFINITO = "Invio per inviare · Maiusc+Invio per andare a capo · Ctrl+V per incollare uno screenshot";
 let contatoreOpzioniPalette = 0;
 let composizioneInputInCorso = false;
 
@@ -2452,6 +2459,8 @@ function creaSessione(meta) {
     ),
     allegati: [],
     codaAllegatiBozza: Promise.resolve(),
+    codaImportazioneImmagini: Promise.resolve(),
+    importazioniImmaginiInCorso: 0,
     allegatiNonPersistiti: false,
     erroreAllegatiBozza: null,
     ripristinoAllegatiInCorso: false,
@@ -3892,6 +3901,7 @@ function aggiornaInterfacciaAttiva() {
       && !sessione.invioInCorso
       && !sessione.compattazioneInCorso
       && !sessione.ripristinoAllegatiInCorso
+      && !sessione.importazioniImmaginiInCorso
       && !sessione.erroreAllegatiBozza,
   );
   if (!utilizzabile) {
@@ -3922,6 +3932,9 @@ function aggiornaInterfacciaAttiva() {
     ? "Ricaricamento…"
     : "Ricarica estensioni";
   DOM.azioneAllegaImmagine.disabled = !utilizzabile || !cronologiaVerificata;
+  DOM.azioneAllegaImmagine.title = supportoImmaginiSessione(sessione) === false
+    ? `${sessione.nomeModello || sessione.modello || "Il modello corrente"} e solo testo: scegli un modello indicato come “immagini”.`
+    : "Allega un'immagine o incolla uno screenshot";
   DOM.azioneRichiamaSkill.disabled = !utilizzabile || !cronologiaVerificata;
   DOM.azioneComandiEstensioni.disabled = !utilizzabile || !cronologiaVerificata;
   DOM.azioneRicaricaRisorse.disabled = DOM.btnRicaricaRisorse.disabled;
@@ -5285,6 +5298,33 @@ function nomeModello(modello) {
   return modello.name || modello.id;
 }
 
+function modelloCorrenteSessione(sessione) {
+  if (!sessione) return null;
+  const catalogo = sessione.modelli?.find((voce) =>
+    voce?.provider === sessione.provider && voce?.id === sessione.modello);
+  if (catalogo) return catalogo;
+  const stato = sessione.statoRpc?.model || null;
+  if (!stato) return null;
+  if (!sessione.provider && !sessione.modello) return stato;
+  return stato.provider === sessione.provider && stato.id === sessione.modello
+    ? stato
+    : null;
+}
+
+function supportoImmaginiSessione(sessione) {
+  return supportoImmaginiModello(modelloCorrenteSessione(sessione));
+}
+
+function avvisaModelloSenzaImmagini(sessione) {
+  if (supportoImmaginiSessione(sessione) !== false) return false;
+  const modello = modelloCorrenteSessione(sessione);
+  toast(
+    `${nomeModello(modello)} e un modello solo testo: Pi sostituirebbe lo screenshot con “image omitted”. Apri “Scegli modello” e selezionane uno indicato come “immagini”.`,
+    "avviso",
+  );
+  return true;
+}
+
 function dettaglioModello(modello, statoProvider = null) {
   const parti = [nomeProviderVisuale(modello.provider)];
   if (statoProvider?.controllato) {
@@ -5791,6 +5831,7 @@ function spostaFocusMenuAzioniComposer(movimento) {
 async function eseguiAzioneMenuComposer(azione) {
   chiudiMenuAzioniComposer();
   if (azione === "allega-immagine") {
+    if (avvisaModelloSenzaImmagini(sessioneAttiva())) return;
     DOM.scegliImmagini.click();
     return;
   }
@@ -6012,9 +6053,8 @@ function leggiImmagine(file) {
   });
 }
 
-async function aggiungiImmagini(file) {
-  const sessione = sessioneAttiva();
-  if (!sessione || sessione.handoffInCorso || sessione.chiusuraInCorso) return;
+async function aggiungiImmagini(file, sessione = sessioneAttiva()) {
+  if (!sessione || sessione.handoffInCorso || sessione.chiusuraInCorso) return 0;
   const chiaveAttesa = sessione.chiaveBozza;
   await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
   if (
@@ -6022,17 +6062,17 @@ async function aggiungiImmagini(file) {
     || sessione.chiaveBozza !== chiaveAttesa
     || sessione.handoffInCorso
     || sessione.chiusuraInCorso
-  ) return;
-  const accettati = [...file].filter((voce) => /^image\/(png|jpeg|webp|gif)$/.test(voce.type));
+  ) return 0;
+  const accettati = [...file].filter((voce) => tipoImmagineSupportato(voce.type));
   const dimensioneNuova = accettati.reduce((somma, voce) => somma + voce.size, 0);
   const totale = sessione.allegati.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
   if (sessione.allegati.length + accettati.length > 4) {
     toast("Puoi allegare al massimo quattro immagini per richiesta.", "avviso");
-    return;
+    return 0;
   }
   if (totale > LIMITE_IMMAGINI_RICHIESTA) {
     toast("Le immagini superano 4 MB complessivi. Riducile prima di inviarle.", "avviso");
-    return;
+    return 0;
   }
   const base64Prevista = Math.ceil(totale * 4 / 3);
   if (
@@ -6043,7 +6083,7 @@ async function aggiungiImmagini(file) {
       "La cronologia contiene gia molte immagini. Usa “Libera spazio”, poi allega la nuova immagine.",
       "avviso",
     );
-    return;
+    return 0;
   }
   try {
     const immagini = await Promise.all(accettati.map(leggiImmagine));
@@ -6052,11 +6092,11 @@ async function aggiungiImmagini(file) {
       || sessione.chiaveBozza !== chiaveAttesa
     ) {
       toast("Nel frattempo e cambiata la conversazione: le immagini non sono state aggiunte.", "avviso");
-      return;
+      return 0;
     }
     if (sessione.handoffInCorso || sessione.chiusuraInCorso) {
       toast("La sessione si sta chiudendo: le immagini non sono state aggiunte.", "avviso");
-      return;
+      return 0;
     }
     const totaleAggiornato = sessione.allegati.reduce((somma, voce) => somma + voce.dimensione, 0) + dimensioneNuova;
     if (
@@ -6064,7 +6104,7 @@ async function aggiungiImmagini(file) {
       || totaleAggiornato > LIMITE_IMMAGINI_RICHIESTA
     ) {
       toast("Nel frattempo sono state aggiunte altre immagini: il limite e stato raggiunto.", "avviso");
-      return;
+      return 0;
     }
     ramificaLineageBozza(sessione);
     sessione.allegati.push(...immagini);
@@ -6073,9 +6113,33 @@ async function aggiungiImmagini(file) {
       disegnaAllegati();
       aggiornaInterfacciaAttiva();
     }
+    return immagini.length;
   } catch (errore) {
     toast(testoErrore(errore), "errore");
+    return 0;
   }
+}
+
+function accodaAggiuntaImmagini(file) {
+  const sessione = sessioneAttiva();
+  const candidati = Array.from(file || []);
+  if (!sessione || !candidati.length) return Promise.resolve(0);
+  if (avvisaModelloSenzaImmagini(sessione)) return Promise.resolve(0);
+  sessione.importazioniImmaginiInCorso = Number(sessione.importazioniImmaginiInCorso || 0) + 1;
+  aggiornaInterfacciaAttiva();
+  const precedente = sessione.codaImportazioneImmagini || Promise.resolve();
+  const operazione = precedente
+    .catch(() => 0)
+    .then(() => aggiungiImmagini(candidati, sessione));
+  const coda = operazione.finally(() => {
+    sessione.importazioniImmaginiInCorso = Math.max(
+      0,
+      Number(sessione.importazioniImmaginiInCorso || 0) - 1,
+    );
+    if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+  });
+  sessione.codaImportazioneImmagini = coda;
+  return coda;
 }
 
 function disegnaAllegati() {
@@ -7148,6 +7212,7 @@ async function invia() {
   aggiornaInterfacciaAttiva();
   try {
     const chiaveAttesa = sessione.chiaveBozza;
+    await (sessione.codaImportazioneImmagini || Promise.resolve()).catch(() => {});
     await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
     if (
       sessioneAttiva() !== sessione
@@ -7170,6 +7235,7 @@ async function invia() {
     toast("Il testo supera 2 MB. Allegalo come file o dividilo in piu richieste.", "errore");
     return;
   }
+  if (sessione.allegati.length && avvisaModelloSenzaImmagini(sessione)) return;
   // Comandi built-in e shell non diventano messaggi: devono essere
   // intercettati prima di cronologia ottimistica e registro degli invii.
   if (await gestisciComandoComposer(sessione, bozzaInviata, testo)) return;
@@ -8743,9 +8809,29 @@ DOM.menuAzioniComposer.addEventListener("keydown", (evento) => {
   }
 });
 DOM.scegliImmagini.onchange = async () => {
-  await aggiungiImmagini(DOM.scegliImmagini.files || []);
+  await accodaAggiuntaImmagini(DOM.scegliImmagini.files || []);
   DOM.scegliImmagini.value = "";
 };
+DOM.input.addEventListener("paste", async (evento) => {
+  const immagini = immaginiDaClipboard(evento.clipboardData);
+  if (!immagini.length) return;
+  const testoAssociato = String(evento.clipboardData?.getData?.("text/plain") || "").trim();
+  evento.preventDefault();
+  if (DOM.azioneAllegaImmagine.disabled) {
+    toast("Al momento non puoi aggiungere immagini a questa conversazione.", "avviso");
+    return;
+  }
+  chiudiMenuAzioniComposer();
+  chiudiPaletteComandi({ sopprimi: true });
+  const aggiunte = await accodaAggiuntaImmagini(immagini);
+  if (aggiunte === 1) toast(
+    testoAssociato
+      ? "Screenshot incollato; il testo associato della clipboard non e stato inserito. Puoi rimuovere l'immagine o inviarla."
+      : "Screenshot incollato. Puoi rimuoverlo o inviarlo con la richiesta.",
+    "ok",
+  );
+  else if (aggiunte > 1) toast(`${aggiunte} immagini incollate.`, "ok");
+});
 DOM.input.addEventListener("input", () => {
   const sessione = sessioneAttiva();
   if (sessione) {
@@ -8829,6 +8915,7 @@ window.addEventListener("beforeunload", (evento) => {
     APP.attese.size
     || [...APP.sessioni.values()].some(
       (voce) => voce.allegati.length
+        || voce.importazioniImmaginiInCorso
         || voce.inviiPendenti.length
         || voce.bozzaNonPersistita
         || voce.invioNonPersistito,

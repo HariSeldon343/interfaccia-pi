@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.4.0, aggiornata il 24/08/2026.
+Versione 2.4.1, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -33,8 +33,8 @@ a sei cartelle contemporaneamente.
 - aprire **Cronologia e rami** dalla barra Strumenti e tornare a un passaggio
   precedente senza cancellare il lavoro successivo, che resta in un altro ramo;
 - cercare e riaprire conversazioni salvate realmente da `pi`;
-- inviare testo e immagini, correggere il lavoro in corso oppure accodare una
-  richiesta successiva;
+- inviare testo e immagini, anche incollando direttamente uno screenshot con
+  `Ctrl+V`, correggere il lavoro in corso oppure accodare una richiesta successiva;
 - vedere risposta e stato in streaming; ragionamenti e strumenti tecnici restano
   raccolti in blocchi compatti, espandibili soltanto quando servono;
 - interrompere sempre il lavoro dalla barra superiore;
@@ -99,7 +99,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.4.0\release\bundle\nsis\Interfaccia pi_2.4.0_x64-setup.exe`
+`src-tauri\target-final-2.4.1\release\bundle\nsis\Interfaccia pi_2.4.1_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -210,7 +210,7 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.4.0'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.4.1'
 npm run build:desktop:offline
 ```
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.4.1 — 2026-08-25
+
+- uno screenshot copiato negli appunti puo essere incollato direttamente nel
+  composer con `Ctrl+V`, senza passare dal selettore file;
+- l'immagine incollata usa la stessa anteprima rimovibile, persistenza della
+  bozza e gli stessi limiti degli allegati scelti dal pulsante **+**;
+- il normale incolla di testo resta nativo e la GUI non richiede permessi di
+  lettura permanente della clipboard;
+- se il modello corrente e solo testo, la GUI impedisce l'invio dell'immagine e
+  spiega che Pi la trasformerebbe in `image omitted`; l'allegato gia presente
+  resta nella bozza durante un cambio modello a caldo;
+- test comportamentali dedicati coprono clipboard Windows/WebView2, MIME
+  supportati, fallback file, clipboard mista, piu screenshot e compatibilita
+  visiva del modello.
+
 ## 2.4.0 — 2026-08-24
 
 - conversazioni utilizzabili anche senza selezionare una cartella;
