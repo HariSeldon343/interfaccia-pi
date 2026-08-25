@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.5.4 — 2026-08-25
+
+- il primo avvio dopo l'installazione attende separatamente il caricamento a
+  freddo del runtime PI, senza applicargli il timeout breve usato per le
+  sincronizzazioni ordinarie;
+- se il primo collegamento non si completa, la sessione incompleta viene
+  scartata e il bridge riprova in modo idempotente: casella di testo e selettore
+  del modello tornano disponibili senza dover chiudere e riaprire l'app;
+- una sessione viene resa utilizzabile soltanto dopo aver ricevuto stato,
+  catalogo dei comandi e identita del file di conversazione; le sessioni ancora
+  a meta avvio non possono quindi lasciare la GUI in un falso stato pronto;
+- la sincronizzazione iniziale viene eseguita una sola volta, rilascia sempre
+  il proprio blocco anche in caso di errore e non attende il caricamento
+  accessorio delle capacita; aggiunti test regressivi del retry automatico e
+  un collaudo browser isolato equivalente al primo avvio installato.
+
 ## 2.5.3 — 2026-08-25
 
 - dopo una compattazione la chat conserva, integralmente e nello stesso ordine,

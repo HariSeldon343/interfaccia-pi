@@ -3323,6 +3323,7 @@ export class SessionePi {
     this.identificaFile = identificaFile;
     this.emettiGlobale = emetti;
     this.proc = null;
+    this.avvioCompletato = false;
     this.cartella = null;
     this.directoryLavoro = null;
     this.senzaCartella = false;
@@ -3642,6 +3643,7 @@ export class SessionePi {
     }
 
     await this.ferma({ notifica: false });
+    this.avvioCompletato = false;
     this.cartella = cartella;
     this.directoryLavoro = directoryLavoro;
     this.senzaCartella = senzaCartella === true;
@@ -4724,6 +4726,7 @@ export class SessionePi {
   riassunto() {
     return {
       id: this.id,
+      avvioCompletato: this.avvioCompletato,
       attiva: Boolean(this.proc)
         && !this.inChiusura
         && !this.chiusuraFallita
@@ -5144,6 +5147,7 @@ export function creaPonte({
   onAutoStop = null,
   limiteCodaSse = LIMITE_CODA_SSE,
   timeoutStatoIniziale = 8000,
+  timeoutAvvioSessione = 30_000,
   elencaDiscendenti = elencaDiscendentiWindows,
   terminaDiscendenti = terminaDiscendentiWindows,
   caricaCronologia = caricaCronologiaDaPi,
@@ -6411,14 +6415,15 @@ export function creaPonte({
   }
 
   async function completaAvvioSessione(sessione, { consentiInesistente = false } = {}) {
-    await sessione.inviaEAttendi({ type: "get_state" }, timeoutStatoIniziale);
+    await sessione.inviaEAttendi({ type: "get_state" }, timeoutAvvioSessione);
     try {
-      await sessione.inviaEAttendi({ type: "get_commands" }, timeoutStatoIniziale);
+      await sessione.inviaEAttendi({ type: "get_commands" }, timeoutAvvioSessione);
     } catch (erroreCatalogo) {
       throw erroreHttp(erroreCatalogo.message, 409);
     }
     sessione.verificaCatalogoComandi();
     await sessione.confermaIdentitaFileSessione({ consentiInesistente });
+    sessione.avvioCompletato = true;
     sessione.notificaAvviata();
   }
 

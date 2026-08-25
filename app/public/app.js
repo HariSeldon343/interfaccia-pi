@@ -32,6 +32,8 @@ const VISTA_CORE = globalThis.PiGuiViewCore;
 if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
 const ATTACHMENT_CORE = globalThis.PiGuiAttachmentCore;
 if (!ATTACHMENT_CORE) throw new Error("Il modulo degli allegati non e stato caricato");
+const STARTUP_CORE = globalThis.PiGuiStartupCore;
+if (!STARTUP_CORE) throw new Error("Il modulo di avvio non e stato caricato");
 const {
   MASSIMO_FILE,
   allegatoFile,
@@ -2040,6 +2042,7 @@ async function chiedi(via, { corpo, signal } = {}) {
     risposta = await fetch(via, opzioni);
   } catch (errore) {
     ponteNonRaggiungibile();
+    programmaRiconnessione();
     if (corpo) {
       throw erroreConEsitoIgnoto(
         "Il collegamento si e interrotto: non posso verificare se pi abbia gia ricevuto la richiesta.",
@@ -2054,6 +2057,7 @@ async function chiedi(via, { corpo, signal } = {}) {
   } catch {
     if (corpo) {
       ponteNonRaggiungibile();
+      programmaRiconnessione();
       throw erroreConEsitoIgnoto(
         "Il ponte ha interrotto la conferma: non posso verificare se pi abbia gia ricevuto la richiesta.",
       );
@@ -2702,6 +2706,7 @@ function creaSessione(meta) {
     annullaRenderCronologia: null,
     completaRenderCronologiaSincrono: null,
     attiva: meta.attiva !== false,
+    avvioCompletato: meta.avvioCompletato !== false,
     riservata: Boolean(meta.riservata),
     inEsecuzione: Boolean(meta.inEsecuzione),
     avvioTurnoIl: meta.inEsecuzione ? Date.now() : null,
@@ -2709,6 +2714,7 @@ function creaSessione(meta) {
     avvisoCompattazione: null,
     contestoDaRicalcolare: false,
     sincronizzazione: true,
+    richiestaSincronizzazione: 0,
     messaggiSincronizzati: false,
     gruppiTurno: [],
     haMessaggi: false,
@@ -2811,6 +2817,7 @@ function unisciSessione(meta) {
     "inEsecuzione",
     "compattazioneInCorso",
     "attiva",
+    "avvioCompletato",
     "riservata",
     "catalogoModelliDaRicaricare",
     "revisioneCatalogoModelliAttesa",
@@ -4355,11 +4362,13 @@ function gestisciEvento(evento) {
   }
   if (evento.type === "gui_sessione_avviata") {
     sessione.attiva = true;
+    sessione.avvioCompletato = true;
     sessione.cartella = evento.cartella;
     sessione.nomeCartella = evento.nomeCartella;
     sessione.senzaCartella = Boolean(evento.senzaCartella);
     if (Object.hasOwn(evento, "fileSessione")) aggiornaIdentitaBozza(sessione, evento.fileSessione);
   } else if (evento.type === "gui_sessione_chiusa") {
+    const avvioNonCompletato = sessione.avvioCompletato === false;
     preparaRimozioneSessione(sessione, "La sessione e stata chiusa prima di completare il comando.");
     // L'evento e globale: un'altra finestra puo avere una bozza diversa. Solo
     // il documento che ha confermato una chiusura esplicita la elimina nel
@@ -4369,6 +4378,13 @@ function gestisciEvento(evento) {
       const ripiego = idSessioneDiRipiego();
       if (ripiego) attivaSessione(ripiego);
       else mostraNessunaSessione();
+    }
+    if (
+      avvioNonCompletato
+      && !STARTUP_CORE.sessioniUtilizzabili(APP.sessioni.values()).length
+    ) {
+      ponteNonRaggiungibile();
+      programmaRiconnessione();
     }
   } else if (evento.type === "gui_processo_finito") {
     rifiutaAtteseSessione(sessione.id, "Pi si e chiuso prima di completare il comando.");
@@ -4586,7 +4602,7 @@ function aggiornaInterfacciaAttiva() {
   const composerScrivibile = Boolean(
     APP.bridgeOnline
       && sessione?.attiva
-      && (!sessione.sincronizzazione || sessione.renderCronologiaInCorso)
+      && sessione.avvioCompletato !== false
       && !sessione.handoffInCorso
       && !sessione.chiusuraInCorso
       && !sessione.invioInCorso
@@ -4596,7 +4612,9 @@ function aggiornaInterfacciaAttiva() {
       && !sessione.erroreAllegatiBozza,
   );
   const utilizzabile = composerScrivibile && !sessione?.compattazioneInCorso;
-  const mutazioniUtilizzabili = utilizzabile && !sessione?.renderCronologiaInCorso;
+  const mutazioniUtilizzabili = utilizzabile
+    && !sessione?.sincronizzazione
+    && !sessione?.renderCronologiaInCorso;
   if (!composerScrivibile) chiudiPaletteComandi();
   if (!mutazioniUtilizzabili) chiudiMenuAzioniComposer();
   DOM.input.disabled = !composerScrivibile;
@@ -4605,7 +4623,9 @@ function aggiornaInterfacciaAttiva() {
       ? "Ricostruisco la cronologia salvata: scrivi pure, la bozza resta salvata; invio e modifiche si riattivano al termine"
       : sessione?.compattazioneInCorso && composerScrivibile
         ? "Scrivi pure: la bozza resta salvata e potrai inviarla appena il riassunto e concluso"
-        : SUGGERIMENTO_PREDEFINITO;
+        : sessione?.sincronizzazione && composerScrivibile
+          ? "Preparo modelli e cronologia: scrivi pure, invio e modifiche si riattivano tra poco"
+          : SUGGERIMENTO_PREDEFINITO;
   }
   const cronologiaVerificata = !sessione?.erroreCronologia;
   DOM.btnAllega.disabled = !mutazioniUtilizzabili;
@@ -4853,52 +4873,75 @@ async function caricaCapacita(sessione, { refresh = false } = {}) {
 
 async function sincronizzaSessione(sessione, { silenzioso = true } = {}) {
   if (!sessione?.attiva) {
-    sessione.sincronizzazione = false;
-    return;
+    if (sessione) sessione.sincronizzazione = false;
+    return false;
   }
+  const richiesta = Number(sessione.richiestaSincronizzazione || 0) + 1;
+  sessione.richiestaSincronizzazione = richiesta;
   sessione.sincronizzazione = true;
   sessione.messaggiSincronizzati = false;
   if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
-  // Prima apprendiamo isStreaming e l'identita corrente; la cronologia su
-  // disco e autorevole soltanto a turno concluso e non va mescolata con il
-  // JSONL precedente durante switch/fork.
-  const esitiStato = await Promise.allSettled([
-    rpc({ type: "get_state" }, { sessionId: sessione.id, timeout: 25000 }),
-  ]);
-  const comandi = [
-    { type: "get_available_models" },
-    { type: "get_available_thinking_levels" },
-    { type: "get_commands" },
-  ];
-  const operazioni = comandi.map(
-    (comando) => rpc(comando, { sessionId: sessione.id, timeout: 25000 }),
-  );
-  const leggiCronologiaCompleta = !sessione.inEsecuzione;
-  operazioni.unshift(
-    caricaCronologiaSessione(sessione, {
-      consentiParziale: !leggiCronologiaCompleta,
-    }),
-  );
-  const esiti = [...esitiStato, ...await Promise.allSettled(operazioni)];
-  await caricaCapacita(sessione);
-  sessione.sincronizzazione = false;
-  const esitoCronologia = esiti[esitiStato.length];
-  if (esitoCronologia?.status === "rejected") {
-    if (
-      sessione.inEsecuzione
-      && [409, 423].includes(esitoCronologia.reason?.statusHttp)
-    ) {
-      mostraCronologiaInAttesa(sessione);
-    } else if (esitoCronologia.reason?.statusHttp !== 423) {
-      mostraErroreCronologia(sessione, esitoCronologia.reason);
+  try {
+    // Prima apprendiamo isStreaming e l'identita corrente; la cronologia su
+    // disco e autorevole soltanto a turno concluso e non va mescolata con il
+    // JSONL precedente durante switch/fork.
+    const esitiStato = await Promise.allSettled([
+      rpc({ type: "get_state" }, { sessionId: sessione.id, timeout: 25000 }),
+    ]);
+    const comandi = [
+      { type: "get_available_models" },
+      { type: "get_available_thinking_levels" },
+      { type: "get_commands" },
+    ];
+    const operazioni = comandi.map(
+      (comando) => rpc(comando, { sessionId: sessione.id, timeout: 25000 }),
+    );
+    const leggiCronologiaCompleta = !sessione.inEsecuzione;
+    operazioni.unshift(
+      caricaCronologiaSessione(sessione, {
+        consentiParziale: !leggiCronologiaCompleta,
+      }),
+    );
+    const esiti = [...esitiStato, ...await Promise.allSettled(operazioni)];
+    // Il catalogo unificato e accessorio e ha un proprio indicatore di
+    // caricamento: un fetch lento non deve tenere bloccati composer e modello.
+    void caricaCapacita(sessione);
+    const esitoCronologia = esiti[esitiStato.length];
+    if (esitoCronologia?.status === "rejected") {
+      if (
+        sessione.inEsecuzione
+        && [409, 423].includes(esitoCronologia.reason?.statusHttp)
+      ) {
+        mostraCronologiaInAttesa(sessione);
+      } else if (esitoCronologia.reason?.statusHttp !== 423) {
+        mostraErroreCronologia(sessione, esitoCronologia.reason);
+      }
     }
+    const statoVerificato = esitiStato[0]?.status === "fulfilled";
+    const modelliVerificati = esiti[esitiStato.length + 1]?.status === "fulfilled";
+    const nucleoVerificato = statoVerificato
+      && modelliVerificati
+      && APP.sessioni.get(sessione.id) === sessione
+      && sessione.attiva
+      && sessione.avvioCompletato !== false;
+    if (!silenzioso && !nucleoVerificato) {
+      toast("Non riesco a sincronizzare la sessione.", "errore");
+    }
+    return nucleoVerificato;
+  } catch (errore) {
+    if (!silenzioso) toast(`Sincronizzazione non completata: ${testoErrore(errore)}`, "errore");
+    return false;
+  } finally {
+    if (
+      APP.sessioni.get(sessione.id) === sessione
+      && sessione.richiestaSincronizzazione === richiesta
+    ) {
+      sessione.sincronizzazione = false;
+      disegnaSchede();
+      if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+    }
+    void aggiornaStatisticheSessione(sessione);
   }
-  if (!silenzioso && esiti.every((esito) => esito.status === "rejected")) {
-    toast("Non riesco a sincronizzare la sessione.", "errore");
-  }
-  disegnaSchede();
-  if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
-  void aggiornaStatisticheSessione(sessione);
 }
 
 async function aggiornaStatisticheSessione(sessione) {
@@ -4967,6 +5010,36 @@ function ponteNonRaggiungibile() {
   aggiornaInterfacciaAttiva();
 }
 
+async function assicuraSessioneIniziale({ sincronizza = false } = {}) {
+  const esito = await STARTUP_CORE.assicuraSessioneIniziale({
+    elencaSessioni: () => APP.sessioni.values(),
+    aggiornaSnapshot: () => aggiornaDalPonte({ sostituisci: true }),
+    avviaSessione: () => avviaSessione(null, {
+      senzaCartella: true,
+      // Il bootstrap deve essere idempotente: se la risposta della prima POST
+      // e andata persa, il ponte riusa la sessione senza cartella gia attiva.
+      forzaNuova: false,
+      sincronizza,
+      propagaErrore: true,
+    }),
+  });
+  if (!sessioneAttiva()?.attiva) attivaSessione(esito.sessione.id);
+  return esito;
+}
+
+async function sincronizzaSessioniUtilizzabili() {
+  const sessioni = STARTUP_CORE.sessioniUtilizzabili(APP.sessioni.values());
+  const esiti = await Promise.all(
+    sessioni.map((sessione) => sincronizzaSessione(sessione)),
+  );
+  const riuscite = sessioni.filter((sessione, indice) => esiti[indice] === true);
+  if (!riuscite.length) {
+    throw new Error("Nessuna conversazione ha completato la sincronizzazione iniziale");
+  }
+  if (!riuscite.includes(sessioneAttiva())) attivaSessione(riuscite.at(-1).id);
+  return riuscite;
+}
+
 async function risincronizzaDopoRiconnessione() {
   if (APP.riconnessioneInCorso) return false;
   APP.riconnessioneInCorso = true;
@@ -4977,9 +5050,12 @@ async function risincronizzaDopoRiconnessione() {
     const connesso = await collegaEventi({ programmaSuErrore: false });
     if (!connesso) throw new Error("Il flusso eventi non e ancora disponibile");
     APP.bridgeOnline = true;
-    const sessioni = [...APP.sessioni.values()];
-    await Promise.all(sessioni.map((sessione) => sincronizzaSessione(sessione)));
-    if (!APP.attivaId && sessioni.length) attivaSessione(idSessioneDiRipiego());
+    await assicuraSessioneIniziale({ sincronizza: false });
+    await sincronizzaSessioniUtilizzabili();
+    await aggiornaDalPonte({ sostituisci: true });
+    const sessioni = STARTUP_CORE.sessioniUtilizzabili(APP.sessioni.values());
+    if (!sessioni.length) throw new Error("La conversazione iniziale non e pi attiva");
+    if (!sessioni.includes(sessioneAttiva())) attivaSessione(sessioni.at(-1).id);
     aggiornaInterfacciaAttiva();
     APP.tentativoRiconnessione = 0;
     return true;
@@ -5713,11 +5789,15 @@ async function avviaSessione(
     forzaNuova = false,
     approvaProgetto = false,
     senzaCartella = false,
+    sincronizza = true,
+    propagaErrore = false,
   } = {},
 ) {
   if (APP.avvioSessioneInCorso) {
-    toast("Sto gia aprendo una conversazione. Attendi il completamento.", "avviso");
-    return;
+    const errore = new Error("Sto gia aprendo una conversazione. Attendi il completamento.");
+    if (propagaErrore) throw errore;
+    toast(errore.message, "avviso");
+    return null;
   }
   APP.avvioSessioneInCorso = true;
   const modaleOrigine = APP.modale;
@@ -5771,7 +5851,7 @@ async function avviaSessione(
     const sessione = APP.sessioni.get(esito.id);
     if (!sessione) throw new Error("La nuova sessione non compare nel ponte");
     attivaSessione(sessione.id);
-    await sincronizzaSessione(sessione, { silenzioso: false });
+    if (sincronizza) await sincronizzaSessione(sessione, { silenzioso: false });
     if (providerNonDisponibile) {
       toast(`${providerNonDisponibile} non e in esecuzione: la nuova conversazione usa il modello predefinito.`, "avviso");
     } else if (esito.esistente && sessionPath) {
@@ -5789,8 +5869,11 @@ async function avviaSessione(
     } else {
       toast(esito.esistente ? "Questa cartella era gia aperta: sono passato alla sua scheda." : "Cartella aperta in una nuova scheda.");
     }
+    return sessione;
   } catch (errore) {
+    if (propagaErrore) throw errore;
     toast(testoErrore(errore), "errore");
+    return null;
   } finally {
     APP.avvioSessioneInCorso = false;
     avvisa("");
@@ -10408,10 +10491,8 @@ async function avvio() {
     if (sessioneIniziale) attivaSessione(sessioneIniziale);
     const connesso = await collegaEventi();
     if (!connesso) throw new Error("Il flusso eventi del ponte non si apre");
-    if (!APP.sessioni.size) {
-      await avviaSessione(null, { senzaCartella: true, forzaNuova: true });
-    }
-    await Promise.all([...APP.sessioni.values()].map((sessione) => sincronizzaSessione(sessione)));
+    await assicuraSessioneIniziale({ sincronizza: false });
+    await sincronizzaSessioniUtilizzabili();
     APP.bridgeOnline = true;
     if (APP.attivaId) attivaSessione(APP.attivaId);
     else mostraNessunaSessione();

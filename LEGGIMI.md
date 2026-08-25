@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.5.3, aggiornata il 25/08/2026.
+Versione 2.5.4, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -14,6 +14,11 @@ elenco a scomparsa e spiegate in linguaggio naturale.
 2. Naviga fra unità, preferite e cartelle recenti, oppure incolla un percorso.
 3. Controlla il modello indicato in alto; premi il suo nome per cambiarlo.
 4. Scrivi la richiesta e premi **Invia**.
+
+Al primo avvio dopo l'installazione il runtime incorporato puo richiedere
+qualche secondo in piu. La finestra resta in collegamento finche lo stato non e
+verificato; se il primo tentativo fallisce, riprova automaticamente senza
+obbligare a chiudere e riaprire l'app.
 
 La cartella viene aperta in una nuova scheda. Aprirne un'altra non chiude né
 cancella la conversazione precedente: ogni scheda ha un processo `pi`, un
@@ -146,7 +151,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.5.3\release\bundle\nsis\Interfaccia pi_2.5.3_x64-setup.exe`
+`src-tauri\target-final-2.5.4\release\bundle\nsis\Interfaccia pi_2.5.4_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -282,7 +287,7 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.3'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.4'
 npm run build:desktop:offline
 ```
 

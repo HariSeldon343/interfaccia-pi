@@ -163,6 +163,54 @@ test("una nuova scheda puo riusare la stessa cartella senza riusare la conversaz
   assert.match(frontend, /\$\("#btn-nuova-chat"\)\.onclick\s*=\s*avviaNuovaSchedaNelContestoCorrente/);
 });
 
+test("il primo avvio si autoripara senza duplicare la sessione o bloccare il composer", () => {
+  assert.match(html, /<script src="\/startup-core\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+
+  const assicura = corpoFunzione("assicuraSessioneIniziale");
+  assert.match(assicura, /STARTUP_CORE\.assicuraSessioneIniziale/);
+  assert.match(assicura, /forzaNuova:\s*false/,
+    "il retry del bootstrap deve riusare l'eventuale sessione creata dalla POST ambigua");
+  assert.match(assicura, /propagaErrore:\s*true/,
+    "un fallimento automatico deve arrivare al ciclo di riconnessione");
+
+  const bootstrap = corpoFunzione("avvio");
+  const reconnect = corpoFunzione("risincronizzaDopoRiconnessione");
+  assert.match(bootstrap, /assicuraSessioneIniziale\(\{\s*sincronizza:\s*false\s*\}\)/);
+  assert.match(reconnect, /assicuraSessioneIniziale\(\{\s*sincronizza:\s*false\s*\}\)/);
+  assert.match(bootstrap, /sincronizzaSessioniUtilizzabili\(\)/,
+    "la nuova sessione deve essere sincronizzata una volta sola e verificata");
+  assert.match(reconnect, /sincronizzaSessioniUtilizzabili\(\)/);
+  assert.match(reconnect, /aggiornaDalPonte\(\{\s*sostituisci:\s*true\s*\}\)[\s\S]*sessioniUtilizzabili/,
+    "il reconnect deve ricontrollare lo snapshot dopo la sincronizzazione");
+
+  const sincronizzaTutte = corpoFunzione("sincronizzaSessioniUtilizzabili");
+  assert.match(sincronizzaTutte, /esiti\[indice\]\s*===\s*true/);
+  assert.match(sincronizzaTutte, /if \(!riuscite\.length\)[\s\S]*throw new Error/,
+    "un catalogo modelli non verificato non puo dichiarare guarito il bootstrap");
+
+  const trasporto = corpoFunzione("chiedi");
+  assert.ok((trasporto.match(/programmaRiconnessione\(\)/g) || []).length >= 2,
+    "gli errori di trasporto e di conferma devono sempre avviare l'autoriparazione");
+
+  const sincronizza = corpoFunzione("sincronizzaSessione");
+  assert.match(sincronizza, /richiestaSincronizzazione/);
+  assert.match(sincronizza, /finally\s*\{/);
+  assert.match(sincronizza, /void caricaCapacita\(sessione\)/,
+    "il catalogo accessorio non deve prolungare il blocco principale");
+
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  const gateComposer = interfaccia.slice(
+    interfaccia.indexOf("const composerScrivibile"),
+    interfaccia.indexOf("const utilizzabile"),
+  );
+  assert.doesNotMatch(gateComposer, /sincronizzazione/,
+    "durante la sincronizzazione deve essere possibile preparare la bozza");
+  assert.match(gateComposer, /avvioCompletato\s*!==\s*false/,
+    "una sessione half-started non deve accettare testo che il rollback renderebbe irraggiungibile");
+  assert.match(interfaccia, /mutazioniUtilizzabili[\s\S]*!sessione\?\.sincronizzazione/,
+    "invio e cambio modello restano protetti finche la sincronizzazione non termina");
+});
+
 test("la struttura Codex-like mantiene i contratti accessibili della conversazione", () => {
   const conversazione = elementoConId("conversazione");
   assert.equal(conversazione?.attributi.get("role"), "log");
@@ -1115,11 +1163,14 @@ test("le cronologie grandi vengono renderizzate in batch senza perdere prompt o 
 
 test("durante il render progressivo la bozza resta scrivibile e tutte le mutazioni sono bloccate", () => {
   const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
-  assert.match(interfaccia,
-    /!sessione\.sincronizzazione\s*\|\|\s*sessione\.renderCronologiaInCorso/,
+  const gateComposer = interfaccia.slice(
+    interfaccia.indexOf("const composerScrivibile"),
+    interfaccia.indexOf("const utilizzabile"),
+  );
+  assert.doesNotMatch(gateComposer, /sincronizzazione|renderCronologiaInCorso/,
     "la sola ricostruzione progressiva non deve disabilitare la textarea");
   assert.match(interfaccia,
-    /const mutazioniUtilizzabili\s*=\s*utilizzabile\s*&&\s*!sessione\?\.renderCronologiaInCorso/);
+    /const mutazioniUtilizzabili\s*=\s*utilizzabile[\s\S]*?&&\s*!sessione\?\.sincronizzazione[\s\S]*?&&\s*!sessione\?\.renderCronologiaInCorso/);
   assert.match(interfaccia, /DOM\.input\.disabled\s*=\s*!composerScrivibile/);
   assert.match(interfaccia, /Ricostruisco la cronologia salvata:[^"']*bozza resta salvata/);
   assert.match(interfaccia,

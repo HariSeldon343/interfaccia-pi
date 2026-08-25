@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Interfaccia pi",
-  "version": "2.5.3",
+  "version": "2.5.4",
   "identifier": "it.amodeo.interfaccia-pi",
   "build": {
     "frontendDist": "../app/public"
@@ -54,6 +54,7 @@
       "../app/public/clipboard-core.js": "app/public/clipboard-core.js",
       "../app/public/attachment-core.js": "app/public/attachment-core.js",
       "../app/public/view-core.js": "app/public/view-core.js",
+      "../app/public/startup-core.js": "app/public/startup-core.js",
       "../app/public/app.js": "app/public/app.js",
       "../vendor/pi-runtime/node": "runtime/node",
       "../vendor/pi-runtime/pi": "runtime/pi",

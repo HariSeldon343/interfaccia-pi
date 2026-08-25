@@ -18,6 +18,17 @@ if (!persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
 let contatoreSessioni = 0;
 let leafIdAttivo = process.cwd().includes("leaf-cronologia") ? "n-new" : null;
 
+function consumaFallimentoPrimoStato() {
+  const marcatore = process.env.PI_GUI_FAKE_FAIL_FIRST_STATE_FILE;
+  if (!marcatore) return false;
+  try {
+    closeSync(openSync(marcatore, "wx"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function scrivi(valore) {
   process.stdout.write(JSON.stringify(valore) + "\n");
 }
@@ -34,6 +45,7 @@ function risposta(comando, data = {}) {
 
 function gestisci(comando) {
   if (comando.type === "get_state") {
+    if (consumaFallimentoPrimoStato()) return;
     if (process.cwd().includes("stato-muto")) return;
     const stato = {
       model: { provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 },
