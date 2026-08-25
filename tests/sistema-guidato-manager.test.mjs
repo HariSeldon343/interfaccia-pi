@@ -195,6 +195,90 @@ test("il bundle Sistema Guidato e fail-closed su compatibilita e digest", async 
   );
 });
 
+test("il bundle Sistema Guidato rifiuta sourcemap e sourcesContent anche con digest validi", async (t) => {
+  const baseMap = await mkdtemp(join(tmpdir(), "pi-gui-sg-map-"));
+  const baseSource = await mkdtemp(join(tmpdir(), "pi-gui-sg-source-"));
+  const baseMarker = await mkdtemp(join(tmpdir(), "pi-gui-sg-sources-content-"));
+  t.after(() => Promise.all([
+    rm(baseMap, { recursive: true, force: true }),
+    rm(baseSource, { recursive: true, force: true }),
+    rm(baseMarker, { recursive: true, force: true }),
+  ]));
+
+  const bundleMap = await creaBundleFalso(baseMap);
+  const mapPath = join(bundleMap, "runtime", "dashboard", "assets", "app.js.map");
+  const mapBytes = Buffer.from("{}\n");
+  await mkdir(join(mapPath, ".."), { recursive: true });
+  await writeFile(mapPath, mapBytes);
+  const manifestMapPath = join(bundleMap, "integration-manifest.json");
+  const manifestMap = JSON.parse(await readFile(manifestMapPath, "utf8"));
+  manifestMap.files.push({
+    path: "runtime/dashboard/assets/app.js.map",
+    bytes: mapBytes.byteLength,
+    sha256: sha256(mapBytes),
+  });
+  await writeFile(manifestMapPath, `${JSON.stringify(manifestMap, null, 2)}\n`);
+  await assert.rejects(
+    verificaBundleSistemaGuidato(bundleMap),
+    (errore) => errore?.code === "SG_BUNDLE_INVALID" && /Sourcemap non ammesso/u.test(errore.message),
+  );
+
+  const bundleSource = await creaBundleFalso(baseSource);
+  const sourcePath = join(bundleSource, "runtime", "dashboard", "App.tsx");
+  const sourceBytes = Buffer.from("export const App = () => null;\n");
+  await writeFile(sourcePath, sourceBytes);
+  const manifestSourcePath = join(bundleSource, "integration-manifest.json");
+  const manifestSource = JSON.parse(await readFile(manifestSourcePath, "utf8"));
+  manifestSource.files.push({
+    path: "runtime/dashboard/App.tsx",
+    bytes: sourceBytes.byteLength,
+    sha256: sha256(sourceBytes),
+  });
+  await writeFile(manifestSourcePath, `${JSON.stringify(manifestSource, null, 2)}\n`);
+  await assert.rejects(
+    verificaBundleSistemaGuidato(bundleSource),
+    (errore) => errore?.code === "SG_BUNDLE_INVALID" && /File sorgente non ammesso/u.test(errore.message),
+  );
+
+  const bundleMarker = await creaBundleFalso(baseMarker);
+  const dashboardPath = join(bundleMarker, "runtime", "dashboard", "index.html");
+  const dashboardBytes = Buffer.from("<script>const leak = 'sourcesContent';</script>");
+  await writeFile(dashboardPath, dashboardBytes);
+  const manifestMarkerPath = join(bundleMarker, "integration-manifest.json");
+  const manifestMarker = JSON.parse(await readFile(manifestMarkerPath, "utf8"));
+  const dashboardEntry = manifestMarker.files.find((entry) => entry.path === "runtime/dashboard/index.html");
+  dashboardEntry.bytes = dashboardBytes.byteLength;
+  dashboardEntry.sha256 = sha256(dashboardBytes);
+  await writeFile(manifestMarkerPath, `${JSON.stringify(manifestMarker, null, 2)}\n`);
+  await assert.rejects(
+    verificaBundleSistemaGuidato(bundleMarker),
+    (errore) => errore?.code === "SG_BUNDLE_INVALID" && /sourcesContent non ammesso/u.test(errore.message),
+  );
+});
+
+test("il bundle Sistema Guidato rifiuta file fisici extra e nomi sensibili non inventariati", async (t) => {
+  const baseExtra = await mkdtemp(join(tmpdir(), "pi-gui-sg-extra-file-"));
+  const baseSensitive = await mkdtemp(join(tmpdir(), "pi-gui-sg-sensitive-file-"));
+  t.after(() => Promise.all([
+    rm(baseExtra, { recursive: true, force: true }),
+    rm(baseSensitive, { recursive: true, force: true }),
+  ]));
+
+  const bundleExtra = await creaBundleFalso(baseExtra);
+  await writeFile(join(bundleExtra, "runtime", "unexpected.bin"), "extra");
+  await assert.rejects(
+    verificaBundleSistemaGuidato(bundleExtra),
+    (errore) => errore?.code === "SG_BUNDLE_INVALID" && /Inventario fisico bundle divergente/u.test(errore.message),
+  );
+
+  const bundleSensitive = await creaBundleFalso(baseSensitive);
+  await writeFile(join(bundleSensitive, ".env.production"), "TOKEN=non-deve-entrare");
+  await assert.rejects(
+    verificaBundleSistemaGuidato(bundleSensitive),
+    (errore) => errore?.code === "SG_BUNDLE_INVALID" && /Nome file non ammesso/u.test(errore.message),
+  );
+});
+
 test("il bootstrap rifiuta cookie backend privi degli attributi di confinamento", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "pi-gui-sg-cookie-"));
   const bundleRoot = await creaBundleFalso(base);

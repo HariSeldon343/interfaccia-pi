@@ -1,11 +1,62 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = dirname(dirname(fileURLToPath(import.meta.url)));
+
+function sha256(contents) {
+  return createHash("sha256").update(contents).digest("hex");
+}
+
+async function artefattoRuntimeConDivulgazione({ map = false, marker = "", source = false } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "pi-gui-sg-source-disclosure-"));
+  const runtime = join(root, "runtime");
+  const files = new Map([
+    ["runtime/server/server.mjs", "export const server = true;"],
+    ["runtime/dashboard/index.html", "<main>Sistema Guidato</main>"],
+    ["runtime/dashboard/assets/app.js", marker ? `const leak = ${JSON.stringify(marker)};` : "console.log('release');"],
+  ]);
+  if (map) files.set("runtime/dashboard/assets/app.js.map", "{}");
+  if (source) files.set("runtime/dashboard/App.tsx", "export const App = () => null;");
+  for (const [relativePath, contents] of files) {
+    const destination = join(root, ...relativePath.split("/"));
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, contents, "utf8");
+  }
+  const releaseManifest = {
+    schemaVersion: 1,
+    package: "@sistema-guidato/pi-sistema-guidato",
+    version: "0.1.1",
+    runtime: {
+      server: "runtime/server/server.mjs",
+      dashboard: "runtime/dashboard/index.html",
+      templates: "runtime/templates",
+    },
+    files: [...files].map(([path, contents]) => ({
+      path,
+      bytes: Buffer.byteLength(contents),
+      sha256: sha256(contents),
+    })),
+  };
+  const compatibility = {
+    manifestKind: "pi-package-compatibility",
+    schemaVersion: 1,
+    packageVersion: "0.1.1",
+    projectSchemaReaders: [1, 2],
+    projectSchemaWriters: [2],
+    pi: { productionBaseline: "0.84.2", productionPatchId: "PI_GUI_RPC_ADAPTER_V1" },
+    capabilities: { interfacciaPiPanel: true },
+  };
+  await writeFile(join(root, "release-manifest.json"), `${JSON.stringify(releaseManifest)}\n`, "utf8");
+  await writeFile(join(root, "pi-package-compatibility.json"), `${JSON.stringify(compatibility)}\n`, "utf8");
+  assert.equal(runtime.startsWith(root), true);
+  return root;
+}
 
 test("il vendoring rifiuta il fallback implicito a una cartella privata locale", () => {
   const esito = spawnSync(
@@ -16,6 +67,28 @@ test("il vendoring rifiuta il fallback implicito a una cartella privata locale",
   assert.notEqual(esito.status, 0);
   assert.match(esito.stderr, /Indicare una sola sorgente/u);
   assert.doesNotMatch(esito.stderr, /C:\\src\\sistema-guidato/iu);
+});
+
+test("il vendoring rifiuta fail-closed sourcemap e sorgenti incorporati", async () => {
+  for (const scenario of [
+    { map: true, expected: /Sourcemap non ammesso/u },
+    { source: true, expected: /File sorgente non ammesso/u },
+    { marker: "sourcesContent", expected: /sourcesContent non ammesso/u },
+    { marker: "sourceMappingURL", expected: /sourceMappingURL non ammesso/u },
+  ]) {
+    const root = await artefattoRuntimeConDivulgazione(scenario);
+    try {
+      const esito = spawnSync(
+        process.execPath,
+        [join(RADICE, "scripts", "vendor-sistema-guidato.mjs"), `--artifact-root=${root}`],
+        { cwd: RADICE, encoding: "utf8" },
+      );
+      assert.notEqual(esito.status, 0);
+      assert.match(`${esito.stderr}\n${esito.stdout}`, scenario.expected);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 
 test("il preparatore supporta soltanto sorgente esplicita o release privata bloccata", async () => {

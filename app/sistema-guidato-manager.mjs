@@ -5,10 +5,10 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { request as richiestaHttp } from "node:http";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const VERSIONE_HOST = "2.6.0";
 const MOUNT_PATH = "/sistema";
@@ -17,6 +17,10 @@ const MAX_FILE_BUNDLE = 20_000;
 const MAX_BYTE_BUNDLE = 512 * 1024 * 1024;
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/u;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
+const RELEASE_TEXT_EXTENSIONS = new Set([".css", ".htm", ".html", ".js", ".json", ".mjs", ".ts", ".txt"]);
+const FORBIDDEN_SOURCEMAP_MARKERS = ["sourcesContent", "sourceMappingURL"];
+const FORBIDDEN_SOURCE_EXTENSIONS = new Set([".cts", ".jsx", ".mts", ".svelte", ".ts", ".tsx", ".vue"]);
+const FORBIDDEN_SECRET_EXTENSIONS = new Set([".key", ".p12", ".pem", ".pfx"]);
 const COOKIE_SESSIONE_PATTERN = /^sg_local_session=([a-f0-9]{64})$/u;
 const HEADER_RICHIESTA_CONSENTITI = new Set([
   "accept",
@@ -101,6 +105,51 @@ function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+function nomeBundleSensibile(percorso) {
+  return percorso.split("/").some((parte) => (
+    /^\.env(?:\.|$)/iu.test(parte)
+    || /^(?:\.netrc|\.npmrc|\.pypirc)$/iu.test(parte)
+    || /^(?:credentials?|secrets?)(?:\.|$)/iu.test(parte)
+    || /^(?:id_ed25519|id_rsa)(?:\.pub)?$/iu.test(parte)
+    || FORBIDDEN_SECRET_EXTENSIONS.has(extname(parte).toLowerCase())
+  ));
+}
+
+async function inventarioFisicoBundle(radice) {
+  const infoRadice = await lstat(radice).catch(() => null);
+  if (!infoRadice?.isDirectory() || infoRadice.isSymbolicLink()) {
+    throw erroreGestore("Radice bundle Sistema Guidato non regolare", "SG_BUNDLE_INVALID");
+  }
+  const file = [];
+  const directory = [radice];
+  while (directory.length) {
+    const corrente = directory.pop();
+    for (const voce of await readdir(corrente, { withFileTypes: true })) {
+      const assoluto = join(corrente, voce.name);
+      const info = await lstat(assoluto).catch(() => null);
+      if (!info || info.isSymbolicLink()) {
+        throw erroreGestore("Il bundle Sistema Guidato contiene link o asset irregolari", "SG_BUNDLE_INVALID");
+      }
+      if (info.isDirectory()) {
+        directory.push(assoluto);
+        continue;
+      }
+      if (!info.isFile()) {
+        throw erroreGestore("Il bundle Sistema Guidato contiene asset non regolari", "SG_BUNDLE_INVALID");
+      }
+      const percorso = relative(radice, assoluto).replaceAll("\\", "/");
+      if (!percorsoManifestValido(percorso) || nomeBundleSensibile(percorso)) {
+        throw erroreGestore(`Nome file non ammesso nel bundle Sistema Guidato: ${percorso}`, "SG_BUNDLE_INVALID");
+      }
+      file.push(percorso);
+      if (file.length > MAX_FILE_BUNDLE + 1) {
+        throw erroreGestore("Bundle Sistema Guidato oltre il limite verificabile", "SG_BUNDLE_INVALID");
+      }
+    }
+  }
+  return file.sort((sinistra, destra) => sinistra.localeCompare(destra));
+}
+
 export function radiceDatiSistemaGuidato({
   localAppData = process.env.LOCALAPPDATA,
   home = homedir(),
@@ -127,8 +176,8 @@ export async function verificaBundleSistemaGuidato(
 ) {
   const radice = resolve(bundleRoot);
   const percorsoManifest = join(radice, "integration-manifest.json");
-  const infoManifest = await stat(percorsoManifest).catch(() => null);
-  if (!infoManifest?.isFile() || infoManifest.size <= 0 || infoManifest.size > LIMITE_MANIFEST) {
+  const infoManifest = await lstat(percorsoManifest).catch(() => null);
+  if (!infoManifest?.isFile() || infoManifest.isSymbolicLink() || infoManifest.size <= 0 || infoManifest.size > LIMITE_MANIFEST) {
     throw erroreGestore("Manifest d'integrazione Sistema Guidato assente o non valido", "SG_BUNDLE_INVALID");
   }
   let manifest;
@@ -171,21 +220,56 @@ export async function verificaBundleSistemaGuidato(
       throw erroreGestore("Inventario bundle Sistema Guidato non valido", "SG_BUNDLE_INVALID");
     }
     visti.add(voce.path);
+    if (extname(voce.path).toLowerCase() === ".map") {
+      throw erroreGestore(`Sourcemap non ammesso nel bundle Sistema Guidato: ${voce.path}`, "SG_BUNDLE_INVALID");
+    }
+    if (FORBIDDEN_SOURCE_EXTENSIONS.has(extname(voce.path).toLowerCase())) {
+      throw erroreGestore(`File sorgente non ammesso nel bundle Sistema Guidato: ${voce.path}`, "SG_BUNDLE_INVALID");
+    }
+    if (nomeBundleSensibile(voce.path)) {
+      throw erroreGestore(`Nome file non ammesso nel bundle Sistema Guidato: ${voce.path}`, "SG_BUNDLE_INVALID");
+    }
     byteTotali += voce.bytes;
     if (!Number.isSafeInteger(byteTotali) || byteTotali > MAX_BYTE_BUNDLE) {
       throw erroreGestore("Bundle Sistema Guidato oltre il limite verificabile", "SG_BUNDLE_INVALID");
     }
+  }
+
+  const inventarioFisico = await inventarioFisicoBundle(radice);
+  const fisici = new Set(inventarioFisico);
+  const attesiFisici = new Set([...visti, "integration-manifest.json"]);
+  const extra = inventarioFisico.filter((percorso) => !attesiFisici.has(percorso));
+  const mancanti = [...attesiFisici].filter((percorso) => !fisici.has(percorso));
+  if (extra.length || mancanti.length || inventarioFisico.length !== attesiFisici.size) {
+    throw erroreGestore(
+      `Inventario fisico bundle divergente: extra=${extra.slice(0, 5).join(",") || "nessuno"}; mancanti=${mancanti.slice(0, 5).join(",") || "nessuno"}`,
+      "SG_BUNDLE_INVALID",
+    );
+  }
+
+  for (const voce of manifest.files) {
     const percorso = resolve(radice, ...voce.path.split("/"));
     if (!percorsoConfinato(percorso, radice)) {
       throw erroreGestore("Percorso bundle Sistema Guidato non confinato", "SG_BUNDLE_INVALID");
     }
-    const info = await stat(percorso).catch(() => null);
-    if (!info?.isFile() || info.size !== voce.bytes) {
+    const info = await lstat(percorso).catch(() => null);
+    if (!info?.isFile() || info.isSymbolicLink() || info.size !== voce.bytes) {
       throw erroreGestore(`Asset Sistema Guidato mancante o alterato: ${voce.path}`, "SG_BUNDLE_TAMPERED");
     }
-    const digest = sha256(await readFile(percorso));
+    const contenuto = await readFile(percorso);
+    const digest = sha256(contenuto);
     if (digest !== voce.sha256) {
       throw erroreGestore(`Digest Sistema Guidato non valido: ${voce.path}`, "SG_BUNDLE_TAMPERED");
+    }
+    if (RELEASE_TEXT_EXTENSIONS.has(extname(voce.path).toLowerCase())) {
+      const testo = contenuto.toString("utf8");
+      const marker = FORBIDDEN_SOURCEMAP_MARKERS.find((candidate) => testo.includes(candidate));
+      if (marker) {
+        throw erroreGestore(
+          `Metadato sourcemap ${marker} non ammesso nel bundle Sistema Guidato: ${voce.path}`,
+          "SG_BUNDLE_INVALID",
+        );
+      }
     }
   }
 

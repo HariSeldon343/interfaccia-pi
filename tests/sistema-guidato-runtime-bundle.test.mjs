@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -165,6 +165,18 @@ test("il bundle non contiene file runtime estranei al manifesto", async () => {
     .filter((percorso) => percorso !== "integration-manifest.json");
   assert.equal(presenti.length, attesi.size);
   assert.deepEqual(new Set(presenti), attesi);
+});
+
+test("il bundle destinato all'installer non contiene sourcemap o sorgenti incorporati", async () => {
+  const textExtensions = new Set([".css", ".htm", ".html", ".js", ".json", ".mjs", ".ts", ".txt"]);
+  const sourceExtensions = new Set([".cts", ".jsx", ".mts", ".svelte", ".ts", ".tsx", ".vue"]);
+  for (const percorso of await cammina(RUNTIME)) {
+    assert.notEqual(extname(percorso).toLowerCase(), ".map", relative(RUNTIME, percorso));
+    assert.equal(sourceExtensions.has(extname(percorso).toLowerCase()), false, relative(RUNTIME, percorso));
+    if (!textExtensions.has(extname(percorso).toLowerCase())) continue;
+    const contenuto = await readFile(percorso, "utf8");
+    assert.doesNotMatch(contenuto, /sourcesContent|sourceMappingURL/u, relative(RUNTIME, percorso));
+  }
 });
 
 test("server, dashboard e template sono entrypoint inventariati", async () => {

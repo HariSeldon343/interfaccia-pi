@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { verificaBundleSistemaGuidato } from "../app/sistema-guidato-manager.mjs";
@@ -17,6 +17,9 @@ const DESTINAZIONE = resolve(RADICE, "vendor", "sistema-guidato");
 const VERSIONE_HOST = "2.6.0";
 const PI_BASELINE = "0.84.2";
 const PI_PATCH = "PI_GUI_RPC_ADAPTER_V1";
+const RELEASE_TEXT_EXTENSIONS = new Set([".css", ".htm", ".html", ".js", ".json", ".mjs", ".ts", ".txt"]);
+const FORBIDDEN_SOURCEMAP_MARKERS = ["sourcesContent", "sourceMappingURL"];
+const FORBIDDEN_SOURCE_EXTENSIONS = new Set([".cts", ".jsx", ".mts", ".svelte", ".ts", ".tsx", ".vue"]);
 
 function argomento(nome) {
   const prefisso = `--${nome}=`;
@@ -89,6 +92,12 @@ async function verificaRuntimeRelease(runtimeRoot, releaseManifest) {
       || voce.path.includes("\\")
     ) throw new Error("Inventario runtime sorgente non valido");
     const relativoRuntime = voce.path.slice("runtime/".length);
+    if (extname(relativoRuntime).toLowerCase() === ".map") {
+      throw new Error(`Sourcemap non ammesso nel runtime Sistema Guidato: ${voce.path}`);
+    }
+    if (FORBIDDEN_SOURCE_EXTENSIONS.has(extname(relativoRuntime).toLowerCase())) {
+      throw new Error(`File sorgente non ammesso nel runtime Sistema Guidato: ${voce.path}`);
+    }
     const percorso = resolve(runtime, ...relativoRuntime.split("/"));
     if (!dentroRadice(percorso, runtime)) throw new Error("Asset runtime fuori radice");
     const contenuto = await readFile(percorso);
@@ -102,6 +111,14 @@ async function verificaRuntimeRelease(runtimeRoot, releaseManifest) {
     .sort();
   if (presenti.length !== attesi.size || presenti.some((percorso) => !attesi.has(percorso))) {
     throw new Error("Il runtime sorgente contiene file non inventariati nel release manifest");
+  }
+  for (const relativoRuntime of presenti) {
+    if (!RELEASE_TEXT_EXTENSIONS.has(extname(relativoRuntime).toLowerCase())) continue;
+    const contenuto = await readFile(resolve(runtime, ...relativoRuntime.split("/")), "utf8");
+    const marker = FORBIDDEN_SOURCEMAP_MARKERS.find((candidate) => contenuto.includes(candidate));
+    if (marker) {
+      throw new Error(`Metadato sourcemap ${marker} non ammesso nel runtime Sistema Guidato: ${relativoRuntime}`);
+    }
   }
   return runtime;
 }
