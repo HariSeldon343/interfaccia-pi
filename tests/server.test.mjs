@@ -44,6 +44,7 @@ import {
   tipoUnitaWindowsConsentito,
   usaCacheTipiUnitaWindows,
   durataAutoStopConfigurata,
+  stessoPercorso,
   preparaInvocazioneCapacita,
   unificaCatalogoCapacita,
   validaCatalogoBuiltinPi,
@@ -105,6 +106,17 @@ test("l'avviso previsto di creazione sessione non viene presentato come errore",
     "Warning: No project session found with id 'altra'; creating a new session with that id.",
     id,
   ), false);
+});
+
+test("il confronto percorsi Windows normalizza solo namespace estesi equivalenti", () => {
+  if (process.platform !== "win32") return;
+  const file = "C:\\profilo\\allegati\\sessione\\documento.txt";
+  const fratello = "C:\\profilo\\allegati\\sessione\\altro.txt";
+  const unc = "\\\\server\\condivisione\\allegati\\documento.txt";
+  assert.equal(stessoPercorso(file, "\\\\?\\" + file), true);
+  assert.equal(stessoPercorso(file, "\\\\?\\" + fratello), false);
+  assert.equal(stessoPercorso(unc, "\\\\?\\UNC\\server\\condivisione\\allegati\\documento.txt"), true);
+  assert.equal(stessoPercorso(file, "\\\\.\\C:\\profilo\\allegati\\sessione\\documento.txt"), false);
 });
 
 async function avviaPonteTest({
@@ -3297,6 +3309,58 @@ test("i file pending si cancellano, mentre un prompt accettato li finalizza in m
     { forza: true },
   );
   assert.deepEqual(await readFile(inviato.percorso), Buffer.from("test"));
+});
+
+test("gli allegati restano validi se il profilo usa un alias del percorso canonico", async (t) => {
+  const contenitore = await mkdtemp(join(tmpdir(), "pi-gui-home-alias-"));
+  const homeReale = join(contenitore, "home-reale");
+  const homeAlias = join(contenitore, "home-alias");
+  await mkdir(homeReale);
+  await symlink(
+    homeReale,
+    homeAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const ambiente = await avviaPonteTest({ home: homeAlias, conservaHome: true });
+  t.after(async () => {
+    await ambiente.chiudi().catch(() => {});
+    await rm(contenitore, { recursive: true, force: true });
+  });
+  const cartella = join(homeReale, "progetto-alias");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const caricato = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "alias.txt",
+    mimeType: "text/plain",
+    dimensione: 5,
+    data: Buffer.from("alias").toString("base64"),
+  });
+  assert.equal(caricato.risposta.status, 200, JSON.stringify(caricato.dati));
+  const file = caricato.dati.allegato;
+  const eliminato = await ambiente.post("/api/gestisci-file-allegati", {
+    sessionId: avvio.dati.id,
+    azione: "elimina",
+    allegati: [{ id: file.id, token: file.token }],
+  });
+  assert.equal(eliminato.risposta.status, 200, JSON.stringify(eliminato.dati));
+  await assert.rejects(stat(file.percorso), { code: "ENOENT" });
+
+  const candidatoTtl = await ambiente.post("/api/allega-file", {
+    sessionId: avvio.dati.id,
+    nome: "alias-ttl.txt",
+    mimeType: "text/plain",
+    dimensione: 3,
+    data: Buffer.from("ttl").toString("base64"),
+  });
+  assert.equal(candidatoTtl.risposta.status, 200, JSON.stringify(candidatoTtl.dati));
+  const fileTtl = candidatoTtl.dati.allegato;
+  const pulizia = await ambiente.ponte.pulisciFileAllegatiPendentiOrfani(
+    Date.now() + 31 * 24 * 60 * 60 * 1000,
+    { forza: true },
+  );
+  assert.equal(pulizia.eliminati, 1);
+  await assert.rejects(stat(fileTtl.percorso), { code: "ENOENT" });
 });
 
 test("un pending sopravvive al riavvio del bridge adottandolo con owner e token nuovi", async (t) => {

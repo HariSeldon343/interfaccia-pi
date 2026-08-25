@@ -3131,11 +3131,19 @@ function risultatoRpcLimitato(evento) {
 }
 
 function chiavePercorso(percorso) {
-  const risolto = resolve(percorso);
-  return process.platform === "win32" ? risolto.toLowerCase() : risolto;
+  let risolto = resolve(percorso);
+  if (process.platform === "win32") {
+    if (/^\\\\\?\\UNC\\/i.test(risolto)) {
+      risolto = "\\\\" + risolto.slice(8);
+    } else if (/^\\\\\?\\[A-Za-z]:\\/.test(risolto)) {
+      risolto = risolto.slice(4);
+    }
+    return risolto.toLowerCase();
+  }
+  return risolto;
 }
 
-function stessoPercorso(primo, secondo) {
+export function stessoPercorso(primo, secondo) {
   return Boolean(primo && secondo && chiavePercorso(primo) === chiavePercorso(secondo));
 }
 
@@ -5220,6 +5228,13 @@ export function creaPonte({
     );
   }
 
+  function stessoFileNellaDirectoryCanonica(percorsoReale, directoryReale, percorsoRichiesto) {
+    return stessoPercorso(
+      percorsoReale,
+      join(directoryReale, basename(percorsoRichiesto)),
+    );
+  }
+
   function nomeManifestFileAllegato(id, stato) {
     return `${id}.${stato}.json`;
   }
@@ -5380,7 +5395,10 @@ export function creaPonte({
         throw erroreHttp("Il file allegato non e un file locale sicuro", 409);
       }
       const reale = await realpath(percorsoFile);
-      if (!percorsoConfinato(reale, directoryReale) || !stessoPercorso(reale, percorsoFile)) {
+      if (
+        !percorsoConfinato(reale, directoryReale)
+        || !stessoFileNellaDirectoryCanonica(reale, directoryReale, percorsoFile)
+      ) {
         throw erroreHttp("Il file allegato esce dalla cartella della sessione", 409);
       }
     } catch (errore) {
@@ -5543,7 +5561,10 @@ export function creaPonte({
             throw new Error("File pending non sicuro");
           }
           const reale = await realpath(percorsoFile);
-          if (!percorsoConfinato(reale, directoryReale) || !stessoPercorso(reale, percorsoFile)) {
+          if (
+            !percorsoConfinato(reale, directoryReale)
+            || !stessoFileNellaDirectoryCanonica(reale, directoryReale, percorsoFile)
+          ) {
             throw new Error("File pending fuori radice");
           }
         } catch (errore) {
@@ -5680,11 +5701,13 @@ export function creaPonte({
     let finalizzati = 0;
     try {
       let directory;
+      let radiceReale;
       try {
         const infoRadice = await lstat(radiceAllegati);
         if (!infoRadice.isDirectory() || infoRadice.isSymbolicLink()) {
           return { eliminati, finalizzati };
         }
+        radiceReale = await realpath(radiceAllegati);
         directory = await readdir(radiceAllegati, { withFileTypes: true });
       } catch (errore) {
         if (errore?.code === "ENOENT") return { eliminati, finalizzati };
@@ -5697,9 +5720,12 @@ export function creaPonte({
         ) continue;
         const percorsoDirectory = join(radiceAllegati, voceDirectory.name);
         let voci;
+        let directoryReale;
         try {
           const infoDirectory = await lstat(percorsoDirectory);
           if (!infoDirectory.isDirectory() || infoDirectory.isSymbolicLink()) continue;
+          directoryReale = await realpath(percorsoDirectory);
+          if (!percorsoConfinato(directoryReale, radiceReale)) continue;
           voci = await readdir(percorsoDirectory, { withFileTypes: true });
         } catch {
           continue;
@@ -5724,7 +5750,7 @@ export function creaPonte({
               const infoFile = await lstat(percorsoFile);
               if (!infoFile.isFile() || infoFile.isSymbolicLink()) continue;
               const reale = await realpath(percorsoFile);
-              if (!stessoPercorso(reale, percorsoFile)) continue;
+              if (!stessoFileNellaDirectoryCanonica(reale, directoryReale, percorsoFile)) continue;
               const destinazione = join(
                 percorsoDirectory,
                 nomeManifestFileAllegato(manifesto.id, "final"),
@@ -5762,7 +5788,7 @@ export function creaPonte({
               const infoFile = await lstat(percorsoFile);
               if (!infoFile.isFile() || infoFile.isSymbolicLink()) continue;
               const reale = await realpath(percorsoFile);
-              if (!stessoPercorso(reale, percorsoFile)) continue;
+              if (!stessoFileNellaDirectoryCanonica(reale, directoryReale, percorsoFile)) continue;
               await rm(percorsoFile);
             } catch (errore) {
               if (errore?.code !== "ENOENT") continue;
