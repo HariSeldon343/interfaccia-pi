@@ -18,7 +18,12 @@ Data fotografia: 2026-08-25. Stato: **aperto**.
 - arresto ordinato dei backend prima di chiamare l'installer;
 - contract test JavaScript, test del bridge e unit test Rust dello stato
   iniziale;
-- workflow production manuale che genera solo artefatti candidati.
+- workflow production manuale che genera solo artefatti candidati;
+- PAT del bundle e chiavi updater confinati agli step che li consumano: il
+  passaggio `npm ci`, i test JavaScript, lo smoke test e i test Rust non
+  ricevono secret;
+- suite JavaScript production serializzata per file come quella pilota, senza
+  ridurre la copertura.
 
 ## Evidenze attese dal collaudo reale
 

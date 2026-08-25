@@ -80,10 +80,62 @@ test("i workflow pubblici acquisiscono e verificano il bundle prima dei test", a
     ]) assert.match(workflow, new RegExp(configurazione, "u"), nome);
     const prepara = workflow.indexOf("scripts/prepare-sistema-guidato.ps1");
     const verifica = workflow.indexOf("npm run vendor:sistema:check", prepara);
-    const testJavascript = workflow.indexOf("npm test", verifica);
+    const testJavascript = workflow.indexOf(
+      "node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs",
+      verifica,
+    );
     assert.ok(prepara >= 0 && prepara < verifica, nome);
     assert.ok(verifica < testJavascript, nome);
   }
+});
+
+function bloccoPassaggio(workflow, nome) {
+  const inizio = workflow.indexOf(`      - name: ${nome}`);
+  assert.ok(inizio >= 0, `passaggio mancante: ${nome}`);
+  const prossimo = workflow.indexOf("\n      - name:", inizio + 1);
+  return workflow.slice(inizio, prossimo >= 0 ? prossimo : workflow.length);
+}
+
+test("il candidato production confina ogni segreto agli step strettamente necessari", async () => {
+  const workflow = await readFile(
+    join(RADICE, ".github", "workflows", "compila-production-updater-windows.yml"),
+    "utf8",
+  );
+  const primaDegliStep = workflow.slice(0, workflow.indexOf("    steps:"));
+  assert.doesNotMatch(primaDegliStep, /\$\{\{\s*secrets\./u,
+    "nessun secret deve essere disponibile a livello di job");
+
+  const dipendenze = bloccoPassaggio(workflow, "Dipendenze e runtime Pi");
+  const acquisizione = bloccoPassaggio(workflow, "Acquisisce Sistema Guidato verificato");
+  const configurazione = bloccoPassaggio(
+    workflow,
+    "Genera configurazione production o fallisce chiusa",
+  );
+  const verifica = bloccoPassaggio(workflow, "Verifica completa");
+  const build = bloccoPassaggio(workflow, "Compila candidato e firme updater");
+
+  assert.doesNotMatch(dipendenze, /\$\{\{\s*secrets\./u);
+  assert.match(acquisizione, /SISTEMA_GUIDATO_BUNDLE_TOKEN:\s*\$\{\{\s*secrets\./u);
+  assert.doesNotMatch(acquisizione, /TAURI_SIGNING_PRIVATE_KEY/u);
+  assert.match(configurazione, /TAURI_SIGNING_PRIVATE_KEY:\s*\$\{\{\s*secrets\./u);
+  assert.doesNotMatch(configurazione, /SISTEMA_GUIDATO_BUNDLE_TOKEN/u);
+  assert.doesNotMatch(configurazione, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u,
+    "la password serve soltanto al comando Tauri che firma");
+  assert.doesNotMatch(verifica, /\$\{\{\s*secrets\./u);
+  assert.match(
+    verifica,
+    /node --test --test-concurrency=1 tests\/\*\.test\.mjs app\/tests\/\*\.test\.mjs/u,
+  );
+  assert.match(build, /TAURI_SIGNING_PRIVATE_KEY:\s*\$\{\{\s*secrets\./u);
+  assert.match(build, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD:\s*\$\{\{\s*secrets\./u);
+  assert.doesNotMatch(build, /SISTEMA_GUIDATO_BUNDLE_TOKEN/u);
+
+  const occorrenzePat = workflow.match(/SISTEMA_GUIDATO_BUNDLE_TOKEN:\s*\$\{\{/gu) || [];
+  assert.equal(occorrenzePat.length, 1, "il PAT privato deve entrare in un solo step");
+  assert.match(workflow, /non crea una release/u);
+  assert.match(workflow, /non pubblica latest\.json/u);
+  assert.match(workflow, /non applica Authenticode/u);
+  assert.match(workflow, /non realizza rollback/u);
 });
 
 test("il bundle generato non viene assunto come file versionato", async () => {

@@ -153,6 +153,13 @@ se la configurazione production e completa. `createUpdaterArtifacts: true`
 compare esclusivamente nell'overlay generato; la chiave privata non entra mai
 nel file o nei log.
 
+I valori sensibili non sono definiti a livello di job: il PAT del bundle esiste
+soltanto nello step di acquisizione e viene rimosso prima di avviare Node; la
+chiave privata updater entra soltanto negli step di validazione e firma. Gli
+step `npm ci`, test JavaScript, smoke test e test Rust non ricevono alcun
+secret. Anche in production i test JavaScript sono eseguiti serialmente per
+file, come nella pipeline pilota, senza ridurre la copertura.
+
 Comandi di controllo:
 
 ```powershell
@@ -215,7 +222,8 @@ un drill reale N-1 → N → recovery/rollback, con evidenze, G11 potra essere
 chiuso; fino ad allora **ACC-16 resta non dimostrato**.
 
 Il workflow candidato carica artefatti privati per ispezione ma non crea una
-GitHub Release, non pubblica `latest.json` e non modifica alcuna installazione.
+GitHub Release, non pubblica `latest.json`, non applica Authenticode, non
+implementa rollback e non modifica alcuna installazione.
 Per l'eventuale promozione va seguita anche la
 [pipeline GitHub ufficiale Tauri](https://v2.tauri.app/distribute/pipelines/github/)
 senza rimuovere il gate umano.

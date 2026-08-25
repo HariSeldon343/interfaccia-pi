@@ -15,19 +15,6 @@ jobs:
   candidato-production:
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      # La chiave privata e la password restano GitHub Actions secrets. La
-      # pubblica puo essere letta, ma viene conservata come secret per
-      # mantenere intatte le due righe Minisign nell'iniezione dell'ambiente.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-      PI_GUI_UPDATER_PUBLIC_KEY: ${{ secrets.PI_GUI_UPDATER_PUBLIC_KEY }}
-      PI_GUI_UPDATER_ENDPOINTS_JSON: ${{ vars.PI_GUI_UPDATER_ENDPOINTS_JSON }}
-      SISTEMA_GUIDATO_BUNDLE_TOKEN: ${{ secrets.SISTEMA_GUIDATO_BUNDLE_TOKEN }}
-      SISTEMA_GUIDATO_BUNDLE_REPOSITORY: ${{ vars.SISTEMA_GUIDATO_BUNDLE_REPOSITORY }}
-      SISTEMA_GUIDATO_BUNDLE_TAG: ${{ vars.SISTEMA_GUIDATO_BUNDLE_TAG }}
-      SISTEMA_GUIDATO_BUNDLE_ASSET: ${{ vars.SISTEMA_GUIDATO_BUNDLE_ASSET }}
-      SISTEMA_GUIDATO_BUNDLE_SHA256: ${{ vars.SISTEMA_GUIDATO_BUNDLE_SHA256 }}
 
     steps:
       - name: Checkout
@@ -64,6 +51,14 @@ jobs:
 
       - name: Acquisisce Sistema Guidato verificato
         shell: pwsh
+        env:
+          # Il PAT fine-grained esiste soltanto durante questo download. Lo
+          # script lo rimuove dall'ambiente prima di avviare qualsiasi Node.
+          SISTEMA_GUIDATO_BUNDLE_TOKEN: ${{ secrets.SISTEMA_GUIDATO_BUNDLE_TOKEN }}
+          SISTEMA_GUIDATO_BUNDLE_REPOSITORY: ${{ vars.SISTEMA_GUIDATO_BUNDLE_REPOSITORY }}
+          SISTEMA_GUIDATO_BUNDLE_TAG: ${{ vars.SISTEMA_GUIDATO_BUNDLE_TAG }}
+          SISTEMA_GUIDATO_BUNDLE_ASSET: ${{ vars.SISTEMA_GUIDATO_BUNDLE_ASSET }}
+          SISTEMA_GUIDATO_BUNDLE_SHA256: ${{ vars.SISTEMA_GUIDATO_BUNDLE_SHA256 }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
@@ -73,6 +68,13 @@ jobs:
 
       - name: Genera configurazione production o fallisce chiusa
         shell: pwsh
+        env:
+          # La pubblica puo essere letta, ma resta secret per preservarne le
+          # due righe. La privata e visibile soltanto ai due passaggi che la
+          # convalidano o firmano gli artefatti updater.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PI_GUI_UPDATER_PUBLIC_KEY: ${{ secrets.PI_GUI_UPDATER_PUBLIC_KEY }}
+          PI_GUI_UPDATER_ENDPOINTS_JSON: ${{ vars.PI_GUI_UPDATER_ENDPOINTS_JSON }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
@@ -84,12 +86,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           npm run check
-          npm test
+          # Gli stessi test del pilot vengono eseguiti un file alla volta:
+          # nessun segreto di firma o download e presente in questo step.
+          node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
           npm run test:smoke
           cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Compila candidato e firme updater
         shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PI_GUI_UPDATER_PUBLIC_KEY: ${{ secrets.PI_GUI_UPDATER_PUBLIC_KEY }}
+          PI_GUI_UPDATER_ENDPOINTS_JSON: ${{ vars.PI_GUI_UPDATER_ENDPOINTS_JSON }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
@@ -127,6 +136,8 @@ jobs:
             src-tauri/target-production-ci/release/bundle/**/*.sig
             src-tauri/target-production-ci/release/bundle/SHA256SUMS.txt
 
-      # Nessuna release e nessun latest.json vengono pubblicati da questo job.
+      # Questo job produce soltanto candidati privati.
+      # Il job non crea una release e non pubblica latest.json.
+      # Il job non applica Authenticode e non realizza rollback.
       # G11 resta aperto finche il candidato non supera il drill reale N-1,
       # recovery e rollback documentato su una macchina Windows pulita.
