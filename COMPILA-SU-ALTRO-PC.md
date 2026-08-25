@@ -1,7 +1,8 @@
-# Interfaccia pi 2.5.3 — sorgente completo
+# Interfaccia pi 2.6.0 Pilot — sorgente completo
 
 Questa cartella contiene il pacchetto sorgente completo necessario per modificare
-l'interfaccia, il bridge e l'installer desktop di Interfaccia pi 2.5.3.
+l'interfaccia, il bridge, Sistema Guidato e l'installer desktop di Interfaccia pi
+2.6.0 Pilot.
 
 ## Prima di iniziare
 
@@ -9,7 +10,7 @@ Non compilare direttamente dentro kDrive. Copia o estrai il progetto in un
 percorso locale corto, per esempio:
 
 ```text
-C:\src\pi-gui-2.5.3
+C:\src\pi-gui-2.6.0
 ```
 
 In questo modo si evitano conflitti di sincronizzazione e limiti di lunghezza dei
@@ -27,29 +28,33 @@ percorsi di Windows.
 - Microsoft Edge WebView2 Runtime
 - connessione Internet per il primo ripristino delle dipendenze
 
-Il runtime PI distribuito nell'app è già incluso in `vendor/pi-runtime` e viene
-controllato prima della compilazione offline.
+Il runtime PI distribuito nell'app è già incluso in `vendor/pi-runtime`; il
+runtime minimo di Sistema Guidato è in `vendor/sistema-guidato`. Entrambi
+vengono controllati prima della compilazione offline.
 
 ## Compilazione e test
 
 Apri PowerShell nella cartella estratta ed esegui:
 
 ```powershell
-cd C:\src\pi-gui-2.5.3
+cd C:\src\pi-gui-2.6.0
 npm ci
 npm run check
-npm test
-cargo test --locked --manifest-path src-tauri/Cargo.toml
+node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
+npm run test:smoke
+cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.3'
+npm run vendor:sistema:check
+npm run release:check
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.0'
 npm run build:desktop:offline
 ```
 
 Gli installer prodotti si trovano qui:
 
 ```text
-src-tauri\target-final-2.5.3\release\bundle\nsis\Interfaccia pi_2.5.3_x64-setup.exe
-src-tauri\target-final-2.5.3\release\bundle\msi\Interfaccia pi_2.5.3_x64_en-US.msi
+src-tauri\target-final-2.6.0\release\bundle\nsis\Interfaccia pi_2.6.0_x64-setup.exe
+src-tauri\target-final-2.6.0\release\bundle\msi\Interfaccia pi_2.6.0_x64_en-US.msi
 ```
 
 ## Modificare l'installer

@@ -5460,6 +5460,9 @@ test("lo stato iniziale chiude la finestra di race prima del resume JSONL", asyn
   await attendi(30);
   const sessioneInAvvio = [...ambiente.ponte.sessioni.values()][0];
   assert.ok(sessioneInAvvio, "la prima sessione deve aver prenotato il proprio identificativo");
+  const statoDuranteAvvio = await (await fetch(ambiente.base + "/api/stato")).json();
+  assert.equal(statoDuranteAvvio.sessioni[0]?.avvioCompletato, false,
+    "uno snapshot concorrente non deve dichiarare pronta una sessione ancora da verificare");
   const fileSessione = join(cartella, `fake-session-${sessioneInAvvio.id}.jsonl`);
   const secondaPromessa = ambiente.post("/api/avvia", {
     cartella,
@@ -5472,6 +5475,21 @@ test("lo stato iniziale chiude la finestra di race prima del resume JSONL", asyn
   assert.equal(seconda.dati.esistente, true);
   assert.equal(seconda.dati.id, prima.dati.id);
   assert.equal(ambiente.ponte.sessioni.size, 1);
+  assert.equal(ambiente.ponte.sessioni.get(prima.dati.id)?.riassunto().avvioCompletato, true);
+});
+
+test("il cold start usa un budget di avvio distinto dalle letture RPC ordinarie", async (t) => {
+  const ambiente = await avviaPonteTest({
+    timeoutStatoIniziale: 40,
+    timeoutAvvioSessione: 800,
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "stato-lento");
+  await mkdir(cartella);
+
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200);
+  assert.equal(ambiente.ponte.sessioni.get(avvio.dati.id)?.proc != null, true);
 });
 
 test("un cambio RPC riserva il JSONL finche il nuovo stato non e verificato", async (t) => {
@@ -5511,7 +5529,7 @@ test("un cambio RPC riserva il JSONL finche il nuovo stato non e verificato", as
 });
 
 test("un get_state iniziale fallito non lascia una scheda fantasma", async (t) => {
-  const ambiente = await avviaPonteTest({ timeoutStatoIniziale: 120 });
+  const ambiente = await avviaPonteTest({ timeoutAvvioSessione: 120 });
   t.after(ambiente.chiudi);
   const cartella = join(ambiente.home, "stato-muto");
   await mkdir(cartella);
@@ -5910,6 +5928,7 @@ test("un catalogo comandi non verificabile o inatteso impedisce l'avvio", async 
     bloccaComandiEstensione: true,
     estensioniBuiltinConsentite: new Set(["llama"]),
     timeoutStatoIniziale: 150,
+    timeoutAvvioSessione: 150,
   });
   t.after(ambiente.chiudi);
   for (const nome of ["comandi-invalidi", "comandi-muti", "comandi-inattesi"]) {

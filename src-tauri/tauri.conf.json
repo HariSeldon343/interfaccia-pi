@@ -58,6 +58,7 @@
       "../app/public/attachment-core.js": "app/public/attachment-core.js",
       "../app/public/view-core.js": "app/public/view-core.js",
       "../app/public/updater-core.js": "app/public/updater-core.js",
+      "../app/public/startup-core.js": "app/public/startup-core.js",
       "../app/public/app.js": "app/public/app.js",
       "../vendor/pi-runtime/node": "runtime/node",
       "../vendor/pi-runtime/pi": "runtime/pi",

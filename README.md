@@ -28,6 +28,11 @@ modello e rende opzionale la finestra GPT-5.6 da 1,05M token. Il composer resta
 scrivibile mentre Pi libera spazio e l'attivita in corso ha un segnale visivo
 discreto.
 
+La 2.5.4 corregge il primo avvio dopo l'installazione: il caricamento a freddo
+di PI usa un tempo dedicato e, se il primo collegamento fallisce, la GUI si
+ricollega e ripristina automaticamente chat e selettore del modello senza
+richiedere la chiusura dell'app.
+
 La documentazione completa e in [LEGGIMI.md](LEGGIMI.md). Le modifiche della
 release sono in [CHANGELOG.md](CHANGELOG.md); compilazione, repository e strategia
 di aggiornamento sono descritti in

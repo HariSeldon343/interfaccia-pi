@@ -15,6 +15,11 @@ elenco a scomparsa e spiegate in linguaggio naturale.
 3. Controlla il modello indicato in alto; premi il suo nome per cambiarlo.
 4. Scrivi la richiesta e premi **Invia**.
 
+Al primo avvio dopo l'installazione il runtime incorporato puo richiedere
+qualche secondo in piu. La finestra resta in collegamento finche lo stato non e
+verificato; se il primo tentativo fallisce, riprova automaticamente senza
+obbligare a chiudere e riaprire l'app.
+
 La cartella viene aperta in una nuova scheda. Aprirne un'altra non chiude né
 cancella la conversazione precedente: ogni scheda ha un processo `pi`, un
 modello, una coda e una cronologia indipendenti. **Nuova scheda** riusa il
