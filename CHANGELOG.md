@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.6.0 RC — 2026-08-25
+## 2.6.0 Pilot (non-production) — 2026-08-25
 
 - **Sistema Guidato** e ora un pannello interno autonomo, apribile dal pulsante
   nella testata o dal comando virtuale `/sistema` anche quando non e stata

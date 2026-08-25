@@ -1,6 +1,6 @@
 # Distribuzione e aggiornamenti
 
-## Stato della versione 2.6.0 RC
+## Stato della versione 2.6.0 Pilot non-production
 
 Il repository pubblico autorevole e
 `https://github.com/HariSeldon343/interfaccia-pi`. I workflow inclusi sono
@@ -12,7 +12,7 @@ deliberatamente separati:
   (`.exe`) e MSI con i rispettivi hash SHA-256;
 - le release verificate vengono promosse manualmente su GitHub con EXE, MSI e
   `SHA256SUMS.txt`; nessun aggiornamento viene installato automaticamente nella
-  2.6.0 RC.
+  2.6.0 Pilot.
 
 Il repository non deve contenere `vendor/pi-runtime`: sono circa 204 MiB e oltre
 15.000 file. La CI lo ricostruisce da fonti e digest bloccati nello script

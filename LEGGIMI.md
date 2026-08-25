@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.6.0 RC, aggiornata il 25/08/2026.
+Versione 2.6.0 Pilot non-production, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
