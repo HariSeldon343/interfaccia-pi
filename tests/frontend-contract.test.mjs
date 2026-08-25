@@ -5,12 +5,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
-const [html, frontend, stile, linkCore, clipboardCore] = await Promise.all([
+const [html, frontend, stile, linkCore, clipboardCore, viewCore] = await Promise.all([
   readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
   readFile(join(RADICE, "app", "public", "app.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "stile.css"), "utf8"),
   readFile(join(RADICE, "app", "public", "link-core.js"), "utf8"),
   readFile(join(RADICE, "app", "public", "clipboard-core.js"), "utf8"),
+  readFile(join(RADICE, "app", "public", "view-core.js"), "utf8"),
 ]);
 
 function attributi(testo) {
@@ -476,6 +477,13 @@ test("Ctrl+V incolla screenshot come allegati senza intercettare il normale test
     "il composer deve restare bloccato durante la breve acquisizione asincrona");
 });
 
+test("la vista compatta viene caricata prima del frontend", () => {
+  assert.ok(html.indexOf('/view-core.js') < html.indexOf('/app.js'));
+  assert.match(frontend, /globalThis\.PiGuiViewCore/);
+  assert.match(viewCore, /pulisciRispostaAgente/);
+  assert.match(viewCore, /statoAttivita/);
+});
+
 test("la GUI non lascia che Pi trasformi silenziosamente gli allegati in image omitted", () => {
   const corrente = corpoFunzione("modelloCorrenteSessione");
   assert.match(corrente, /stato\.provider\s*===\s*sessione\.provider/,
@@ -809,18 +817,63 @@ test("l'albero della conversazione e raggiungibile direttamente dalla barra late
     "il pulsante deve essere incluso nella mappa DOM del frontend");
   assert.match(
     corpoFunzione("eseguiAzione"),
-    /azione\s*===\s*["']albero["'][\s\S]*?return\s+mostraAlberoSessione\(sessione\)/,
-    "l'azione laterale deve aprire direttamente l'albero della sessione attiva",
+    /azione\s*===\s*["']albero["'][\s\S]*?return\s+apriAlberoOppureSpiega\(sessione\)/,
+    "l'azione laterale deve conservare un feedback anche quando Pi lavora",
   );
 
   const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
   const bloccoDisabilitazione = interfaccia.match(
     /DOM\.btnAlbero\.disabled\s*=([\s\S]*?);/,
   )?.[1] || "";
-  assert.match(bloccoDisabilitazione, /sessione\.inEsecuzione/,
-    "l'albero non deve essere navigabile mentre Pi sta rispondendo");
-  assert.match(bloccoDisabilitazione, /sessione\.compattazioneInCorso/,
-    "l'albero non deve essere navigabile durante la compattazione");
+  assert.doesNotMatch(bloccoDisabilitazione, /sessione\.inEsecuzione|sessione\.compattazioneInCorso/,
+    "il controllo non deve sembrare scomparso mentre Pi lavora");
+  const occupato = corpoFunzione("apriAlberoOppureSpiega");
+  assert.match(occupato, /alberoTemporaneamenteOccupato/);
+  assert.match(occupato, /Cronologia e rami sono conservati/);
+});
+
+test("i riepiloghi di compattazione restano chiusi e vengono renderizzati solo su richiesta", () => {
+  const render = corpoFunzione("renderCronologia");
+  assert.match(render, /aggiungiRiepilogoContesto\(sessione,\s*"compaction"/);
+  assert.match(render, /aggiungiRiepilogoContesto\(sessione,\s*"branch"/);
+  assert.doesNotMatch(render, /Contesto precedente riassunto|Riepilogo del ramo precedente/);
+  assert.ok(render.indexOf("finalizzaGruppoAttivita") < render.indexOf("riconciliaInviiPendenti"),
+    "anche l'ultimo blocco tecnico ricostruito deve risultare concluso");
+  const riepilogo = corpoFunzione("aggiungiRiepilogoContesto");
+  assert.match(riepilogo, /crea\("details",\s*"riepilogo-contesto"\)/);
+  assert.match(riepilogo, /box\.addEventListener\("toggle"/);
+  assert.ok(riepilogo.indexOf("if (!box.open || renderizzato) return") < riepilogo.indexOf("renderMarkdown"));
+  assert.match(stile, /\.riepilogo-contesto-corpo\s*\{[\s\S]*?max-height:/);
+});
+
+test("lo stato locale non devia Pi e steer resta una scelta esplicita one-shot", () => {
+  const stato = elementoConId("btn-stato-attivita");
+  assert.equal(stato?.tag, "button");
+  const statoAttivita = corpoFunzione("testoStatoAttivita");
+  assert.match(statoAttivita, /nessuna percentuale inventata/i);
+  assert.match(statoAttivita, /sessione\.gruppiTurno/,
+    "lo stato deve contare tutti i gruppi del turno anche dopo un follow-up ottimistico");
+  assert.match(frontend, /DOM\.btnStatoAttivita\.onclick\s*=\s*mostraStatoAttivita/);
+  const opzioni = corpoElementoSemplice("modo-coda");
+  assert.ok(opzioni.indexOf('value="followUp"') < opzioni.indexOf('value="steer"'));
+  assert.match(opzioni, /non interrompe/);
+  assert.match(opzioni, /può deviare/);
+  assert.match(frontend, /Intervenire nel lavoro in corso\?/);
+  const invio = corpoFunzione("invia");
+  assert.match(invio, /modoScelto === "steer"[\s\S]*?sessione\.modoCoda = "followUp"/);
+});
+
+test("la barra distingue la stima tariffaria dall'addebito OAuth", () => {
+  const uso = corpoFunzione("testoUsoSessione");
+  assert.match(uso, /VISTA_CORE\.presentaCosto\(costo, provider\)/);
+  const barra = corpoFunzione("disegnaBarraStatoSessione");
+  assert.match(barra, /input non in cache/);
+  assert.match(barra, /sessione\.spiegazioneCosto/);
+  const statistiche = corpoFunzione("mostraStatistiche");
+  assert.match(statistiche, /Costo equivalente stimato/);
+  assert.match(frontend, /mostraStatistiche\(statistiche, sessione\)/,
+    "la risposta asincrona deve conservare la sessione che ha prodotto i dati");
+  assert.match(frontend, /mostraStatistiche\(risultato, sessione\)/);
 });
 
 test("il pulsante Modello non usa il PointerEvent come filtro di ricerca", () => {

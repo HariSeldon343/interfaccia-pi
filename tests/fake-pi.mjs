@@ -16,6 +16,7 @@ let fileSessione = indiceSessione >= 0 && process.argv[indiceSessione + 1]
 const persistenzaTardiva = process.cwd().includes("file-tardivo");
 if (!persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
 let contatoreSessioni = 0;
+let leafIdAttivo = process.cwd().includes("leaf-cronologia") ? "n-new" : null;
 
 function scrivi(valore) {
   process.stdout.write(JSON.stringify(valore) + "\n");
@@ -50,6 +51,15 @@ function gestisci(comando) {
     return;
   }
   if (comando.type === "get_messages") return risposta(comando, { messages });
+  if (comando.type === "get_entries") {
+    if (process.cwd().includes("leaf-autorevole")) {
+      return risposta(comando, { entries: [], leafId: "n-old" });
+    }
+    if (process.cwd().includes("leaf-cronologia")) {
+      return risposta(comando, { entries: [], leafId: leafIdAttivo });
+    }
+    return risposta(comando, { entries: [] });
+  }
   if (comando.type === "get_available_models") {
     return risposta(comando, {
       models: [{ provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 }],
@@ -78,6 +88,10 @@ function gestisci(comando) {
     if (process.cwd().includes("cambio-lento")) setTimeout(completa, 120);
     else completa();
     return;
+  }
+  if (comando.type === "navigate_tree") {
+    leafIdAttivo = comando.entryId || null;
+    return risposta(comando, { cancelled: false });
   }
   if (comando.type === "terminate_test") {
     risposta(comando);

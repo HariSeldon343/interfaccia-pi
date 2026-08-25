@@ -28,6 +28,8 @@ const {
   supportoImmaginiModello,
   tipoImmagineSupportato,
 } = CLIPBOARD_CORE;
+const VISTA_CORE = globalThis.PiGuiViewCore;
+if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
 
 const DOM = {
   schede: $("#schede"),
@@ -47,6 +49,7 @@ const DOM = {
   avvisi: $("#avvisi"),
   coda: $("#coda"),
   modoCoda: $("#modo-coda"),
+  btnStatoAttivita: $("#btn-stato-attivita"),
   invioOccupato: $("#invio-occupato"),
   spia: $("#spia"),
   etiStato: $("#eti-stato"),
@@ -1644,6 +1647,7 @@ function testoContestoSessione(sessione) {
 }
 
 function testoUsoSessione(sessione) {
+  sessione.spiegazioneCosto = null;
   const statistiche = sessione?.statisticheSessione || null;
   const usoLive = sessione?.ultimoUso || null;
   const valoreCumulativo = (chiave) => {
@@ -1678,7 +1682,12 @@ function testoUsoSessione(sessione) {
     })}%`);
   }
   if (Number.isFinite(costo) && costo > 0) {
-    parti.push(`${costo.toLocaleString("it-IT", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} $`);
+    const provider = sessione.provider || sessione.statoRpc?.model?.provider || "";
+    const presentazione = VISTA_CORE.presentaCosto(costo, provider);
+    if (presentazione) {
+      parti.push(presentazione.testo);
+      sessione.spiegazioneCosto = presentazione.spiegazione;
+    }
   }
   return parti.join(" · ") || "statistiche in attesa";
 }
@@ -1688,6 +1697,7 @@ function disegnaBarraStatoSessione(sessione) {
     DOM.statoCwd.textContent = "—";
     DOM.statoCwd.title = "";
     DOM.statoUso.textContent = "statistiche in attesa";
+    DOM.statoUso.title = "";
     DOM.contestoInfo.textContent = "Contesto —";
     DOM.statoModelloTui.textContent = "modello —";
     DOM.statoSessioneTui.setAttribute("aria-label", "Nessuna sessione pi attiva");
@@ -1702,6 +1712,10 @@ function disegnaBarraStatoSessione(sessione) {
   DOM.statoCwd.textContent = percorsoCompatto(cwd);
   DOM.statoCwd.title = cwd;
   DOM.statoUso.textContent = testoUsoSessione(sessione);
+  DOM.statoUso.title = [
+    "↑ input non in cache · ↓ output · R letture cache · W scritture cache",
+    sessione.spiegazioneCosto,
+  ].filter(Boolean).join(". ");
   DOM.contestoInfo.textContent = testoContestoSessione(sessione);
   DOM.statoModelloTui.textContent = `(${provider}) ${modello} • ${ragionamento}`;
   DOM.statoSessioneTui.setAttribute(
@@ -2404,10 +2418,13 @@ function creaSessione(meta) {
     attiva: meta.attiva !== false,
     riservata: Boolean(meta.riservata),
     inEsecuzione: Boolean(meta.inEsecuzione),
+    avvioTurnoIl: meta.inEsecuzione ? Date.now() : null,
     compattazioneInCorso: false,
+    avvisoCompattazione: null,
     contestoDaRicalcolare: false,
     sincronizzazione: true,
     messaggiSincronizzati: false,
+    gruppiTurno: [],
     haMessaggi: false,
     errore: false,
     ultimoErrorePi: null,
@@ -2423,6 +2440,7 @@ function creaSessione(meta) {
     richiestaCapacita: 0,
     capacitaInCaricamento: false,
     coda: { steering: [], followUp: [] },
+    modoCoda: "followUp",
     statoRpc: {},
     statisticheSessione: null,
     statisticheInCaricamento: false,
@@ -2634,6 +2652,12 @@ function disegnaSchede() {
     gruppo.append(apri, chiudi);
     DOM.schede.appendChild(gruppo);
   }
+  requestAnimationFrame(() => {
+    DOM.schede.querySelector(".scheda-gruppo.attiva")?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  });
 }
 
 async function chiudiSessione(id, operazione = null) {
@@ -2895,18 +2919,104 @@ function viaBenvenuto(sessione) {
   sessione.vista.querySelector("[data-benvenuto]")?.remove();
 }
 
+function finalizzaGruppoAttivita(gruppo) {
+  if (!gruppo) return;
+  gruppo.finalizzato = true;
+  aggiornaGruppoAttivita(gruppo);
+}
+
+function alberoTemporaneamenteOccupato(sessione) {
+  return Boolean(sessione?.inEsecuzione || sessione?.compattazioneInCorso);
+}
+
+function apriAlberoOppureSpiega(sessione) {
+  if (!sessione) return;
+  if (alberoTemporaneamenteOccupato(sessione)) {
+    toast(
+      "Cronologia e rami sono conservati. Potrai aprirli appena Pi termina la risposta in corso.",
+      "avviso",
+    );
+    return;
+  }
+  return mostraAlberoSessione(sessione);
+}
+
+function aggiungiRiepilogoContesto(sessione, tipo, testo) {
+  viaBenvenuto(sessione);
+  finalizzaGruppoAttivita(sessione.gruppoAttivita);
+  sessione.gruppoAttivita = null;
+  sessione.haMessaggi = true;
+  const etichetta = VISTA_CORE.etichettaRiepilogo(tipo);
+  const box = crea("details", "riepilogo-contesto");
+  const testa = crea("summary");
+  testa.appendChild(crea("span", "riepilogo-contesto-icona", tipo === "branch" ? "↳" : "↡"));
+  const titoli = crea("span", "riepilogo-contesto-titoli");
+  titoli.append(
+    crea("strong", null, etichetta.titolo),
+    crea("small", null, etichetta.descrizione),
+  );
+  testa.appendChild(titoli);
+  const caratteri = String(testo || "").length;
+  testa.appendChild(crea(
+    "span",
+    "riepilogo-contesto-dimensione",
+    caratteri ? `${caratteri.toLocaleString("it-IT")} caratteri` : "sintesi",
+  ));
+  const corpo = crea("div", "riepilogo-contesto-corpo");
+  corpo.appendChild(crea("p", "nota", "Apri la sintesi solo se ti serve: il testo completo non viene caricato nella vista finché resta chiusa."));
+  let renderizzato = false;
+  box.addEventListener("toggle", () => {
+    if (!box.open || renderizzato) return;
+    renderizzato = true;
+    renderMarkdown(corpo, testo, { sessione });
+  });
+  const azioni = crea("div", "riepilogo-contesto-azioni");
+  const rami = crea("button", "mini-azione apri-albero-contesto", "Cronologia e rami");
+  rami.type = "button";
+  rami.onclick = () => apriAlberoOppureSpiega(sessione);
+  azioni.appendChild(rami);
+  box.append(testa, corpo, azioni);
+  sessione.vista.appendChild(box);
+  inFondo(sessione);
+  return box;
+}
+
+function aggiornaEventoCompattazione(sessione, { completato = false, errore = "" } = {}) {
+  viaBenvenuto(sessione);
+  sessione.haMessaggi = true;
+  let box = sessione.avvisoCompattazione;
+  if (!box?.isConnected) {
+    box = crea("div", "evento-compattazione");
+    box.setAttribute("role", "status");
+    box.setAttribute("aria-live", "polite");
+    sessione.vista.appendChild(box);
+    sessione.avvisoCompattazione = box;
+  }
+  box.classList.toggle("errore", Boolean(errore));
+  box.textContent = errore
+    ? `Compattazione non completata: ${errore}`
+    : completato
+      ? "Spazio liberato. La sintesi resta chiusa e i rami precedenti sono conservati."
+      : "Sto liberando spazio senza cancellare la cronologia…";
+  inFondo(sessione);
+}
+
 function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdown = true } = {}) {
   viaBenvenuto(sessione);
   // Un messaggio visibile interrompe la sequenza di attivita interne. Gli
   // strumenti successivi formeranno un nuovo gruppo nel punto cronologico
   // corretto, senza inglobare la risposta testuale.
+  finalizzaGruppoAttivita(sessione.gruppoAttivita);
   sessione.gruppoAttivita = null;
   sessione.haMessaggi = true;
+  const testoVisibile = classe === "agente"
+    ? VISTA_CORE.pulisciRispostaAgente(testo)
+    : String(testo || "");
   const msg = crea("article", "msg " + classe);
   const autore = crea("div", "msg-chi", chi);
   const corpo = crea("div", "msg-corpo");
-  if (markdown) renderMarkdown(corpo, testo, { sessione });
-  else corpo.textContent = testo;
+  if (markdown) renderMarkdown(corpo, testoVisibile, { sessione });
+  else corpo.textContent = testoVisibile;
   msg.append(autore, corpo);
 
   if (immagini.length) {
@@ -2915,22 +3025,24 @@ function aggiungiMessaggio(sessione, chi, testo, classe, { immagini = [], markdo
       const img = document.createElement("img");
       img.alt = immagine.nome || "Immagine allegata";
       img.src = immagine.url || `data:${immagine.mimeType};base64,${immagine.data}`;
+      img.loading = "lazy";
+      img.decoding = "async";
       galleria.appendChild(img);
     }
     corpo.appendChild(galleria);
   }
 
-  if (testo) {
+  if (testoVisibile) {
     const azioni = crea("div", "msg-azioni");
     const copia = crea("button", "mini-azione", "Copia");
     copia.type = "button";
-    copia.onclick = () => copiaTesto(testo);
+    copia.onclick = () => copiaTesto(testoVisibile);
     azioni.appendChild(copia);
     msg.appendChild(azioni);
   }
   sessione.vista.appendChild(msg);
   inFondo(sessione);
-  return { msg, autore, corpo, raw: testo || "" };
+  return { msg, autore, corpo, raw: testoVisibile };
 }
 
 function testoDaContenuto(contenuto) {
@@ -3072,7 +3184,7 @@ function aggiornaGruppoAttivita(gruppo) {
   if (!gruppo?.box?.isConnected) return;
   const strumenti = [...gruppo.corpo.querySelectorAll(":scope > details.strumento")];
   const ragionamenti = [...gruppo.corpo.querySelectorAll(":scope > details.ragionamento")];
-  const errori = strumenti.filter((box) => box.classList.contains("fallito")).length;
+  const tentativiFalliti = strumenti.filter((box) => box.classList.contains("fallito")).length;
   const strumentiInCorso = strumenti.some((box) => (
     box.querySelector(".esito")?.textContent === "in corso…"
   ));
@@ -3085,13 +3197,18 @@ function aggiornaGruppoAttivita(gruppo) {
     parti.push(`${ragionamenti.length} ragionament${ragionamenti.length === 1 ? "o" : "i"}`);
   }
   gruppo.conteggio.textContent = parti.length ? " · " + parti.join(" · ") : "";
-  gruppo.stato.textContent = errori
-    ? `${errori} error${errori === 1 ? "e" : "i"}${inCorso ? " · in corso…" : ""}`
-    : inCorso
-      ? "in corso…"
-      : "completate";
-  gruppo.box.classList.toggle("in-corso", inCorso);
-  gruppo.box.classList.toggle("con-errori", errori > 0);
+  const stato = VISTA_CORE.statoAttivita({
+    tentativiFalliti,
+    inCorso,
+    finalizzato: Boolean(gruppo.finalizzato),
+  });
+  gruppo.stato.textContent = stato.testo;
+  gruppo.stato.title = tentativiFalliti
+    ? "Sono tentativi tecnici non riusciti; apri il gruppo per i dettagli. Un errore finale viene mostrato separatamente."
+    : "";
+  gruppo.box.classList.toggle("in-corso", stato.livello === "lavoro");
+  gruppo.box.classList.toggle("con-avvisi", stato.livello === "avviso");
+  gruppo.box.classList.remove("con-errori");
 }
 
 function ottieniGruppoAttivita(sessione) {
@@ -3113,7 +3230,9 @@ function ottieniGruppoAttivita(sessione) {
     conteggio,
     stato,
     ragionamentiInCorso: new Set(),
+    finalizzato: false,
   };
+  sessione.gruppiTurno.push(sessione.gruppoAttivita);
   aggiornaGruppoAttivita(sessione.gruppoAttivita);
   return sessione.gruppoAttivita;
 }
@@ -3221,6 +3340,8 @@ function renderCronologia(sessione, messaggi) {
   sessione.bloccoTesto = null;
   sessione.bloccoRagionamento = null;
   sessione.gruppoAttivita = null;
+  sessione.gruppiTurno = [];
+  sessione.avvisoCompattazione = null;
   sessione.ultimoErrorePi = null;
   sessione.ultimoErrorePiIl = 0;
   sessione.byteImmaginiCronologia = (messaggi || []).reduce(
@@ -3242,7 +3363,7 @@ function renderCronologia(sessione, messaggi) {
     }
     if (messaggio.role === "assistant") {
       const parti = Array.isArray(messaggio.content) ? messaggio.content : [];
-      const testo = testoDaContenuto(parti);
+      const testo = VISTA_CORE.pulisciRispostaAgente(testoDaContenuto(parti));
       const pensieri = parti
         .filter((parte) => parte?.type === "thinking")
         .map((parte) => parte.thinking || "")
@@ -3284,13 +3405,14 @@ function renderCronologia(sessione, messaggi) {
       continue;
     }
     if (messaggio.role === "compactionSummary") {
-      aggiungiMessaggio(sessione, "sistema", "Contesto precedente riassunto:\n" + messaggio.summary, "sistema");
+      aggiungiRiepilogoContesto(sessione, "compaction", messaggio.summary);
       continue;
     }
     if (messaggio.role === "branchSummary") {
-      aggiungiMessaggio(sessione, "sistema", "Riepilogo del ramo precedente:\n" + messaggio.summary, "sistema");
+      aggiungiRiepilogoContesto(sessione, "branch", messaggio.summary);
     }
   }
+  finalizzaGruppoAttivita(sessione.gruppoAttivita);
   riconciliaInviiPendenti(sessione, messaggi || []);
   if (!sessione.haMessaggi) sessione.vista.appendChild(benvenuto(sessione));
   inFondo(sessione);
@@ -3315,7 +3437,8 @@ function scaricaDeltaAccodati(sessione, { markdownFinale = false } = {}) {
   sessione.deltaRagionamentoInAttesa = "";
   if (markdownFinale && sessione.bloccoTesto) {
     sessione.bloccoTesto.corpo.classList.remove("in-streaming");
-    renderMarkdown(sessione.bloccoTesto.corpo, sessione.bloccoTesto.raw, { sessione });
+    const testoVisibile = VISTA_CORE.pulisciRispostaAgente(sessione.bloccoTesto.raw);
+    renderMarkdown(sessione.bloccoTesto.corpo, testoVisibile, { sessione });
   }
   inFondo(sessione);
 }
@@ -3719,11 +3842,14 @@ function gestisciEvento(evento) {
     if (sessione.id === APP.attivaId) toast("La sessione pi si e chiusa.", sessione.errore ? "errore" : "avviso");
   } else if (evento.type === "gui_errore") {
     if (/error|failed|exception|epipe/i.test(evento.messaggio || "")) {
-      sessione.errore = true;
       mostraErrorePi(sessione, evento.messaggio);
     }
   } else if (evento.type === "agent_start") {
     sessione.inEsecuzione = true;
+    sessione.avvioTurnoIl = Date.now();
+    sessione.gruppiTurno = [];
+    sessione.modoCoda = "followUp";
+    if (sessione.id === APP.attivaId) DOM.modoCoda.value = "followUp";
     sessione.turnoHaRisposto = false;
   } else if (evento.type === "agent_end") {
     if (evento.willRetry && sessione.id === APP.attivaId) {
@@ -3731,10 +3857,12 @@ function gestisciEvento(evento) {
     }
   } else if (evento.type === "agent_settled") {
     sessione.inEsecuzione = false;
+    sessione.avvioTurnoIl = null;
     sessione.turnoAperto = false;
     if (sessione.id === APP.attivaId) avvisa("");
     scaricaDeltaAccodati(sessione, { markdownFinale: true });
     chiudiRagionamento(sessione);
+    finalizzaGruppoAttivita(sessione.gruppoAttivita);
     if (sessione.messaggiSincronizzati) segnalaTurnoVuoto(sessione);
     // message_end precede agent_settled e il ponte rifiuta correttamente una
     // lettura del JSONL mentre PI sta ancora persistendo. Il coalescer ritenta
@@ -3760,7 +3888,9 @@ function gestisciEvento(evento) {
     sessione.bloccoTesto = null;
     const messaggio = evento.message;
     if (messaggio?.role === "assistant" && sessione.id === APP.attivaId) {
-      const risposta = testoDaContenuto(messaggio.content).trim();
+      const risposta = VISTA_CORE.pulisciRispostaAgente(
+        testoDaContenuto(messaggio.content),
+      ).trim();
       if (risposta) {
         DOM.annuncioRisposta.textContent = "";
         requestAnimationFrame(() => {
@@ -3804,17 +3934,20 @@ function gestisciEvento(evento) {
     sessione.compattazioneInCorso = true;
     sessione.contestoDaRicalcolare = false;
     sospendiTimeoutPromptPerCompattazione(sessione.id);
-    aggiungiMessaggio(sessione, "sistema", "Sto riassumendo la conversazione per liberare spazio…", "sistema");
+    aggiornaEventoCompattazione(sessione);
   } else if (evento.type === "compaction_end") {
     sessione.compattazioneInCorso = false;
     riprendiTimeoutPromptDopoCompattazione(sessione.id);
     if (evento.aborted || evento.errorMessage) {
-      aggiungiMessaggio(sessione, "errore", evento.errorMessage || "Riassunto annullato.", "errore");
+      aggiornaEventoCompattazione(sessione, {
+        errore: evento.errorMessage || "Riassunto annullato.",
+      });
     } else {
       sessione.statisticheSessione = null;
       sessione.ultimoUso = null;
       sessione.contestoDaRicalcolare = true;
-      aggiungiMessaggio(sessione, "sistema", "Spazio liberato: il contesto precedente e stato riassunto.", "sistema");
+      aggiornaEventoCompattazione(sessione, { completato: true });
+      sincronizzaMessaggiFinali(sessione);
       // /compact manuale non apre un turno agente e quindi non emette
       // agent_settled: aggiorniamo qui le statistiche quando non c'e un prompt
       // in preflight. Nel caso automatico se ne occupa agent_settled.
@@ -3938,10 +4071,14 @@ function aggiornaInterfacciaAttiva() {
   DOM.azioneRichiamaSkill.disabled = !utilizzabile || !cronologiaVerificata;
   DOM.azioneComandiEstensioni.disabled = !utilizzabile || !cronologiaVerificata;
   DOM.azioneRicaricaRisorse.disabled = DOM.btnRicaricaRisorse.disabled;
-  DOM.btnAlbero.disabled = !utilizzabile
-    || !sessione
-    || Boolean(sessione.inEsecuzione)
-    || Boolean(sessione.compattazioneInCorso);
+  DOM.btnAlbero.disabled = !APP.bridgeOnline
+    || !sessione?.attiva
+    || Boolean(sessione.sincronizzazione)
+    || Boolean(sessione.handoffInCorso)
+    || Boolean(sessione.chiusuraInCorso);
+  DOM.btnAlbero.title = alberoTemporaneamenteOccupato(sessione)
+    ? "La cronologia è conservata e sarà navigabile appena Pi termina la risposta."
+    : "Apri cronologia e rami";
   const fermaLaterale = document.querySelector("[data-azione='interrompi']");
   if (fermaLaterale) fermaLaterale.disabled = !utilizzabile || !sessione?.inEsecuzione;
 
@@ -3977,6 +4114,8 @@ function aggiornaInterfacciaAttiva() {
   DOM.etiRagionamento.textContent = traduciLivello(sessione.ragionamento);
   disegnaBarraStatoSessione(sessione);
   DOM.invioOccupato.hidden = !(sessione.inEsecuzione || sessione.compattazioneInCorso);
+  DOM.btnStatoAttivita.disabled = !(sessione.inEsecuzione || sessione.compattazioneInCorso);
+  DOM.modoCoda.value = sessione.modoCoda || "followUp";
   DOM.btnFermaTop.hidden = !sessione.inEsecuzione;
   disegnaComandi(sessione);
   disegnaCoda(sessione);
@@ -3999,6 +4138,51 @@ function disegnaCoda(sessione) {
   DOM.coda.textContent = correggi + dopo
     ? `Ricevuto da Pi: ${correggi} correzion${correggi === 1 ? "e" : "i"} da applicare al lavoro in corso; ${dopo} richiest${dopo === 1 ? "a" : "e"} per il turno successivo.`
     : "";
+}
+
+function durataStato(ms) {
+  const secondi = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (secondi < 60) return `${secondi} s`;
+  const minuti = Math.floor(secondi / 60);
+  const resto = secondi % 60;
+  return `${minuti} min${resto ? ` ${resto} s` : ""}`;
+}
+
+function testoStatoAttivita(sessione) {
+  if (!sessione) return "Nessuna conversazione attiva.";
+  if (sessione.compattazioneInCorso) {
+    return "Pi sta compattando il contesto. La cronologia non viene cancellata; nessuna percentuale viene stimata.";
+  }
+  if (!sessione.inEsecuzione) return "Pi non sta lavorando: la conversazione è pronta.";
+  const gruppi = sessione.gruppiTurno?.length
+    ? sessione.gruppiTurno
+    : sessione.gruppoAttivita
+      ? [sessione.gruppoAttivita]
+      : [];
+  const strumenti = gruppi.flatMap((gruppo) => (
+    [...gruppo.corpo.querySelectorAll(":scope > details.strumento")]
+  ));
+  const ragionamenti = gruppi.flatMap((gruppo) => (
+    [...gruppo.corpo.querySelectorAll(":scope > details.ragionamento")]
+  ));
+  const corrente = strumenti.find((box) => box.querySelector(".esito")?.textContent === "in corso…");
+  const nomeCorrente = corrente?.querySelector(".nome")?.textContent?.trim();
+  const falliti = strumenti.filter((box) => box.classList.contains("fallito")).length;
+  const inCoda = (sessione.coda?.steering?.length || 0) + (sessione.coda?.followUp?.length || 0);
+  const parti = [
+    `Pi sta lavorando${sessione.avvioTurnoIl ? ` da ${durataStato(Date.now() - sessione.avvioTurnoIl)}` : ""}`,
+    `${strumenti.length} operazioni`,
+    `${ragionamenti.length} ragionamenti`,
+  ];
+  if (nomeCorrente) parti.push(`ora: ${nomeCorrente}`);
+  if (falliti) parti.push(`${falliti} tentativ${falliti === 1 ? "o" : "i"} non riuscit${falliti === 1 ? "o" : "i"}`);
+  if (inCoda) parti.push(`${inCoda} messagg${inCoda === 1 ? "io" : "i"} in coda`);
+  parti.push("nessuna percentuale inventata");
+  return parti.join(" · ") + ".";
+}
+
+function mostraStatoAttivita() {
+  toast(testoStatoAttivita(sessioneAttiva()), "avviso");
 }
 
 function disegnaEstensioni(sessione) {
@@ -6750,7 +6934,7 @@ async function eseguiWorkflowComando(
       const statistiche = dati.stats || dati.result || (operazione
         ? await operazione.rpc({ type: "get_session_stats" })
         : await rpc({ type: "get_session_stats" }, { sessionId: sessione.id }));
-      mostraStatistiche(statistiche);
+      mostraStatistiche(statistiche, sessione);
       operazione?.completa();
     } catch (errore) {
       operazione?.fallisce(errore);
@@ -6800,7 +6984,7 @@ async function eseguiWorkflowComando(
 async function gestisciEsitoRpcBuiltin(sessione, nome, argomenti, risultato) {
   if (APP.sessioni.get(sessione.id) !== sessione) return;
   if (nome === "session") {
-    mostraStatistiche(risultato);
+    mostraStatistiche(risultato, sessione);
     return;
   }
   if (nome === "name") {
@@ -7327,6 +7511,13 @@ async function invia() {
         );
       }
     }
+    // “Intervieni adesso” vale per un solo invio. Il reset avviene prima
+    // dell'ack, cosi anche un errore di trasporto non lascia per sbaglio la
+    // modalita piu invasiva attiva sul messaggio successivo.
+    if (eraInEsecuzione && modoScelto === "steer") {
+      sessione.modoCoda = "followUp";
+      if (sessione.id === APP.attivaId) DOM.modoCoda.value = "followUp";
+    }
     await rpc(comando, { sessionId: sessione.id, timeout: 30000 });
     messaggio.autore.textContent = eraInEsecuzione
       ? modoScelto === "steer"
@@ -7404,9 +7595,13 @@ async function invia() {
 // Azioni conversazione e statistiche
 // ---------------------------------------------------------------------------
 
-function mostraStatistiche(dati) {
+function mostraStatistiche(dati, sessione) {
   const corpo = apriModale("Uso e costo della conversazione");
   const griglia = crea("div", "stat-grid");
+  const costo = VISTA_CORE.presentaCosto(
+    dati.cost,
+    sessione?.provider || sessione?.statoRpc?.model?.provider || "",
+  );
   const voci = [
     ["Messaggi totali", dati.totalMessages],
     ["Tuoi messaggi", dati.userMessages],
@@ -7415,7 +7610,7 @@ function mostraStatistiche(dati) {
     ["Token in entrata", dati.tokens?.input],
     ["Token in uscita", dati.tokens?.output],
     ["Token totali", dati.tokens?.total],
-    ["Costo della sessione", Number.isFinite(dati.cost) ? dati.cost.toFixed(4) + " $" : "—"],
+    ["Costo equivalente stimato", costo?.testo || "—"],
   ];
   for (const [etichetta, valore] of voci) {
     const scheda = crea("div", "stat");
@@ -7424,6 +7619,7 @@ function mostraStatistiche(dati) {
     griglia.appendChild(scheda);
   }
   corpo.appendChild(griglia);
+  if (costo?.spiegazione) corpo.appendChild(crea("p", "nota", costo.spiegazione));
   if (dati.contextUsage) {
     const percentuale = Number.isFinite(dati.contextUsage.percent) ? dati.contextUsage.percent : 0;
     const contesto = crea("div", "stat");
@@ -7496,13 +7692,16 @@ async function eseguiAzione(azione) {
   if (azione === "nuova") return nuovaConversazione();
   if (azione === "interrompi") return interrompi();
   if (azione === "avanzate") return apriControlliAvanzati();
-  if (azione === "albero") return mostraAlberoSessione(sessione);
+  if (azione === "albero") return apriAlberoOppureSpiega(sessione);
   if (azione === "ricarica") return ricaricaRisorsePi();
   try {
     if (azione === "comprimi") {
       await rpc({ type: "compact" }, { sessionId: sessione.id, timeout: 5 * 60 * 1000 });
     } else if (azione === "statistiche") {
-      mostraStatistiche(await rpc({ type: "get_session_stats" }, { sessionId: sessione.id }));
+      mostraStatistiche(
+        await rpc({ type: "get_session_stats" }, { sessionId: sessione.id }),
+        sessione,
+      );
     } else if (azione === "esporta") {
       const dati = await rpc({ type: "export_html" }, { sessionId: sessione.id, timeout: 60000 });
       const corpo = apriModale("Conversazione esportata");
@@ -8207,7 +8406,7 @@ async function copiaUltimaRisposta(sessione, operazione = null) {
       }
       throw new Error(messaggio);
     }
-    const testo = await risposta.text();
+    const testo = VISTA_CORE.pulisciRispostaAgente(await risposta.text());
     if (testo) await copiaTesto(testo);
     else toast("Non c'e ancora una risposta di pi da copiare.", "avviso");
     operazione?.completa();
@@ -8908,6 +9107,27 @@ document.addEventListener("pointerdown", (evento) => {
   }
 });
 DOM.btnInvia.onclick = invia;
+DOM.btnStatoAttivita.onclick = mostraStatoAttivita;
+DOM.modoCoda.addEventListener("change", async () => {
+  const sessione = sessioneAttiva();
+  if (!sessione) {
+    DOM.modoCoda.value = "followUp";
+    return;
+  }
+  if (DOM.modoCoda.value === "steer") {
+    const confermato = await conferma(
+      "Intervenire nel lavoro in corso?",
+      "Questo messaggio entra nel turno attivo e può cambiare il percorso o far concludere Pi prima del previsto. Per non interrompere scegli “falla dopo”; per controllare l'avanzamento usa “Stato reale”.",
+      "Intervieni adesso",
+    );
+    if (sessioneAttiva() !== sessione || !confermato) {
+      sessione.modoCoda = "followUp";
+      DOM.modoCoda.value = "followUp";
+      return;
+    }
+  }
+  sessione.modoCoda = DOM.modoCoda.value === "steer" ? "steer" : "followUp";
+});
 
 window.addEventListener("beforeunload", (evento) => {
   const sessione = sessioneAttiva();

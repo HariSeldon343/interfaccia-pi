@@ -81,6 +81,9 @@ const PROMPT_INTERFACCIA_GRAFICA = [
   "Per risorse locali preferisci un percorso assoluto Windows nel target; puoi usare un target relativo soltanto per una risorsa dentro la cartella di lavoro corrente.",
   "Non suggerire Ctrl+clic, scorciatoie o altri comportamenti del terminale.",
   "Non creare collegamenti sul Desktop salvo richiesta esplicita dell'utente.",
+  "Non promettere di continuare dopo una risposta finale: Pi lavora soltanto durante il turno attivo. Per un compito in più passi continua a usare gli strumenti fino al completamento o a un blocco reale, poi rispondi.",
+  "Se l'utente chiede lo stato durante il lavoro, non inventare percentuali e non abbandonare l'obiettivo principale.",
+  "Non dichiarare PASS, completato o 100% se una verifica deterministica e ancora fallita: prima correggi e riesegui il controllo. Presenta un eventuale autovoto come autovalutazione, non come prova indipendente.",
 ].join(" ");
 const PROMPT_SENZA_CARTELLA = [
   "Nessuna cartella di lavoro e stata selezionata in questa conversazione.",
@@ -607,10 +610,10 @@ async function vociSessioneDaPi({ cliPi, fileSessione }) {
 // ogni singolo messaggio e perfettamente valido. Per la vista usiamo le stesse
 // funzioni pure dell'installazione di PI, senza SessionManager.open (che puo
 // migrare e riscrivere un file vecchio).
-export async function caricaCronologiaDaPi({ cliPi, fileSessione }) {
+export async function caricaCronologiaDaPi({ cliPi, fileSessione, leafId = undefined }) {
   const modulo = await moduloSessionePiCompatibile(cliPi);
   const voci = await vociSessioneDaPi({ cliPi, fileSessione });
-  return modulo.buildSessionContext(voci).messages || [];
+  return modulo.buildSessionContext(voci, leafId).messages || [];
 }
 
 // Durante uno streaming il JSONL continua a crescere. Per mostrare la parte
@@ -620,6 +623,7 @@ export async function caricaCronologiaDaPi({ cliPi, fileSessione }) {
 export async function caricaCronologiaParzialeDaPi({
   cliPi,
   fileSessione,
+  leafId = undefined,
   massimoByte = LIMITE_FILE_CRONOLOGIA,
 }) {
   if (!fileSessione || !existsSync(fileSessione)) return [];
@@ -665,7 +669,10 @@ export async function caricaCronologiaParzialeDaPi({
       }
     }
     modulo.migrateSessionEntries(voci);
-    return modulo.buildSessionContext(voci.filter((voce) => voce?.type !== "session")).messages || [];
+    return modulo.buildSessionContext(
+      voci.filter((voce) => voce?.type !== "session"),
+      leafId,
+    ).messages || [];
   } finally {
     await file.close();
   }
@@ -2340,6 +2347,10 @@ export class SessionePi {
     this.fileSessione = null;
     this.identitaFileSessione = null;
     this.fileSessioneIncerta = false;
+    // `undefined` significa che il leaf va dedotto dall'ultimo append; `null`
+    // e invece un leaf autorevole alla radice vuota.
+    this.leafIdAttivo = undefined;
+    this.ultimoEntryIdAppend = null;
     this.revisioneFileSessione = 0;
     this.comandiCambioSessione = new Set();
     this.revisioniGetState = new Map();
@@ -2836,6 +2847,9 @@ export class SessionePi {
         this.clientReplayInterazione = prossimo.replayId;
       }
       this.inEsecuzione = true;
+      // Il nuovo turno appendera sul ramo scelto: finche il file non viene
+      // riletto, l'ultimo append completo e il fallback pi autorevole.
+      this.leafIdAttivo = undefined;
     }
     if (evento.type === "agent_settled") {
       this.inEsecuzione = false;
@@ -2937,12 +2951,35 @@ export class SessionePi {
         if (evento.success) {
           this.#azzeraUiEstensioni();
           this.#azzeraProprietariTurni();
+          if (evento.command !== "navigate_tree") {
+            this.leafIdAttivo = undefined;
+            this.ultimoEntryIdAppend = null;
+          }
         }
         // Anche i chiamanti del canale RPC generico beneficiano della barriera:
         // dopo ogni cambio apprendiamo subito il nuovo JSONL e solo allora ne
         // consentiamo il resume da un'altra finestra.
         this.inviaEAttendi({ type: "get_state" }, 8000)
-          .then(() => this.confermaIdentitaFileSessione({ consentiInesistente: true }))
+          .then(async () => {
+            // navigate_tree puo spostare il leaf su un nodo precedente senza
+            // aggiungere righe. Se l'albero e stato aperto, il suo ultimo ID
+            // append-only consente di chiedere a Pi soltanto il cursore nuovo.
+            if (
+              evento.command === "navigate_tree"
+              && evento.success
+              && this.ultimoEntryIdAppend
+            ) {
+              try {
+                await this.inviaEAttendi({
+                  type: "get_entries",
+                  since: this.ultimoEntryIdAppend,
+                }, 8000);
+              } catch {
+                this.leafIdAttivo = undefined;
+              }
+            }
+            return this.confermaIdentitaFileSessione({ consentiInesistente: true });
+          })
           .catch((errore) => {
             this.diffondi({
               type: "gui_errore",
@@ -3291,6 +3328,9 @@ export class SessionePi {
       this.comandiEstensione = verificati
         ? new Set(verificati.filter((comando) => comando.source === "extension").map((comando) => comando.name))
         : new Set();
+    }
+    if (evento.command === "get_entries" && Object.hasOwn(dati, "leafId")) {
+      this.leafIdAttivo = dati.leafId || null;
     }
   }
 
@@ -4461,6 +4501,7 @@ export function creaPonte({
       cliPi,
       fileSessione: foto.fileSessione,
       sessione,
+      leafId: sessione.leafIdAttivo,
       ...(parziale ? { massimoByte: foto.firmaFile?.size || 0 } : {}),
     });
     const firmaDopo = await firmaFileCronologia(foto.fileSessione);
@@ -4493,6 +4534,27 @@ export function creaPonte({
       fileSessione: foto.fileSessione,
       sessione,
     });
+    // Il JSONL e append-only, ma dopo navigate_tree il leaf attivo puo essere
+    // un nodo precedente senza nuove righe. Chiediamo solo il cursore a Pi:
+    // `since` sull'ultima entry produce normalmente entries=[] e il leafId
+    // autorevole, senza trasferire l'albero monolitico.
+    const cursoreAppend = albero?.leafId;
+    sessione.ultimoEntryIdAppend = cursoreAppend || null;
+    if (cursoreAppend) {
+      try {
+        const statoAlbero = await sessione.inviaEAttendi({
+          type: "get_entries",
+          since: cursoreAppend,
+        }, 8000);
+        if (Object.hasOwn(statoAlbero || {}, "leafId")) {
+          albero.leafId = statoAlbero.leafId || null;
+          sessione.leafIdAttivo = albero.leafId;
+        }
+      } catch {
+        // La fotografia raw resta comunque utilizzabile con il fallback
+        // append-only; installazioni Pi precedenti non devono perdere l'albero.
+      }
+    }
     const firmaDopo = await firmaFileCronologia(foto.fileSessione);
     if (!cronologiaAncoraCorrente(foto) || !stessaFirmaFile(foto.firmaFile, firmaDopo)) {
       throw erroreHttp("La conversazione e cambiata durante la lettura dell'albero: riprova.", 409);

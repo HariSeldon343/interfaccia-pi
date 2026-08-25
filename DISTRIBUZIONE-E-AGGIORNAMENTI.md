@@ -1,6 +1,6 @@
 # Distribuzione e aggiornamenti
 
-## Stato della versione 2.5.0
+## Stato della versione 2.5.1
 
 Il repository pubblico autorevole e
 `https://github.com/HariSeldon343/interfaccia-pi`. I workflow inclusi sono
@@ -12,7 +12,7 @@ deliberatamente separati:
   (`.exe`) e MSI con i rispettivi hash SHA-256;
 - le release verificate vengono promosse manualmente su GitHub con EXE, MSI e
   `SHA256SUMS.txt`; nessun aggiornamento viene installato automaticamente nella
-  2.5.0.
+  2.5.1.
 
 Il repository non deve contenere `vendor/pi-runtime`: sono circa 204 MiB e oltre
 15.000 file. La CI lo ricostruisce da fonti e digest bloccati nello script
@@ -91,6 +91,6 @@ Un updater che legge direttamente `latest.json` da GitHub richiede asset
 scaricabili senza autenticazione. Il repository pubblico soddisfa questo
 prerequisito, ma non sostituisce firma, lifecycle e rollback descritti sopra.
 
-La 2.5.0 resta volutamente a aggiornamento manuale: attivare l'updater prima di
+La 2.5.1 resta volutamente a aggiornamento manuale: attivare l'updater prima di
 avere repository definitivo, chiavi durevoli e strategia di firma creerebbe un
 canale fragile e difficile da migrare.

@@ -44,6 +44,9 @@ test("gli argomenti Pi isolano soltanto la modalita senza cartella", () => {
   assert.match(promptSenza, /\[etichetta descrittiva\]\(target\)/);
   assert.match(promptSenza, /Non suggerire Ctrl\+clic/);
   assert.match(promptSenza, /Non creare collegamenti sul Desktop/);
+  assert.match(promptSenza, /Non promettere di continuare dopo una risposta finale/);
+  assert.match(promptSenza, /non inventare percentuali/i);
+  assert.match(promptSenza, /verifica deterministica e ancora fallita/i);
   assert.match(promptSenza, /Nessuna cartella di lavoro/);
   assert.deepEqual(senza.slice(senza.indexOf("--extension"), senza.indexOf("--extension") + 2), ["--extension", estensione]);
   assert.ok(senza.includes("--no-approve"));

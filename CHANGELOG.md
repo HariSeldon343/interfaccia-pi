@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.5.1 — 2026-08-25
+
+- i riepiloghi di compattazione e di ramo non vengono più riversati come
+  lunghi messaggi di sistema: restano chiusi, vengono renderizzati soltanto su
+  richiesta e portano direttamente a **Cronologia e rami**;
+- la cronologia compatta segue il leaf realmente attivo anche dopo un ritorno a
+  un nodo precedente senza nuovi append; l'albero rimane visibile durante il
+  lavoro e spiega quando la navigazione è temporaneamente indisponibile;
+- i fallimenti intermedi dei tool sono mostrati in ambra come tentativi non
+  riusciti, mentre il rosso resta riservato agli errori terminali; lo stderr
+  diagnostico non lascia più una scheda permanentemente in errore;
+- le righe tecniche ripetute `ottimizzazione: OK` e `orchestrazione: OK` sono
+  rimosse dalla risposta visibile e dalla copia, conservando intatto il JSONL;
+- **Stato reale** descrive tempo trascorso, operazioni, ragionamenti, tool
+  corrente, tentativi falliti e coda senza interrompere Pi né inventare una
+  percentuale;
+- il costo viene etichettato come equivalente tariffario stimato; se il
+  provider attuale è `openai-codex` la barra indica OAuth e avverte che una
+  sessione mista può includere anche costi di altri provider o API;
+- **falla dopo** è la modalità predefinita mentre Pi lavora; **intervieni
+  adesso** avvisa che può deviare o concludere il turno e si disattiva dopo un
+  solo invio;
+- il prompt della GUI vieta promesse di lavoro in background, percentuali non
+  misurate e dichiarazioni di completamento mentre un controllo deterministico
+  è ancora fallito;
+- testata, schede, stato e barra laterale adottano un layout più neutro e
+  stabile, verificato senza overflow a 1136, 1024 e 820 pixel;
+- aggiunti test regressivi per presentazione, compattazione lazy, warning,
+  modalità della coda e leaf autorevole dopo `navigate_tree`.
+
 ## 2.5.0 — 2026-08-25
 
 - **Nuova scheda** apre una sessione Pi indipendente nello stesso contesto di

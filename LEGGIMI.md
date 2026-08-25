@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.5.0, aggiornata il 25/08/2026.
+Versione 2.5.1, aggiornata il 25/08/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -37,9 +37,19 @@ a sei sessioni complessive.
   precedente senza cancellare il lavoro successivo, che resta in un altro ramo;
 - cercare e riaprire conversazioni salvate realmente da `pi`;
 - inviare testo e immagini, anche incollando direttamente uno screenshot con
-  `Ctrl+V`, correggere il lavoro in corso oppure accodare una richiesta successiva;
+  `Ctrl+V`; mentre Pi lavora, **falla dopo** non interrompe il turno e
+  **intervieni adesso** è una scelta esplicita valida per un solo messaggio;
 - vedere risposta e stato in streaming; ragionamenti e strumenti tecnici restano
   raccolti in blocchi compatti, espandibili soltanto quando servono;
+- consultare **Stato reale** senza interrogare il modello e senza percentuali
+  inventate; i tentativi tecnici non riusciti sono avvisi, distinti dagli
+  errori terminali;
+- leggere token e costo equivalente senza confonderli con una fattura: se il
+  provider attuale è `openai-codex` la barra segnala OAuth e ricorda che una
+  sessione mista può includere costi di altri provider o API;
+- dopo una compattazione, vedere soltanto una sintesi chiusa e riaprire
+  **Cronologia e rami**: la compattazione non crea un ramo, ma non cancella i
+  nodi già registrati;
 - interrompere sempre il lavoro dalla barra superiore;
 - digitare `/` per cercare e richiamare dalla stessa casella tutti i 22 comandi
   incorporati di `pi`, oltre a prompt e skill, con nome leggibile e spiegazione;
@@ -127,7 +137,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.5.0\release\bundle\nsis\Interfaccia pi_2.5.0_x64-setup.exe`
+`src-tauri\target-final-2.5.1\release\bundle\nsis\Interfaccia pi_2.5.1_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -243,7 +253,7 @@ npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.0'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.5.1'
 npm run build:desktop:offline
 ```
 

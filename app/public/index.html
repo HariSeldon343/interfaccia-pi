@@ -227,10 +227,12 @@
         <div class="sotto-scrittura">
           <span id="suggerimento">Invio per inviare · Maiusc+Invio per andare a capo · Ctrl+V per incollare uno screenshot</span>
           <div class="invio-occupato" id="invio-occupato" hidden>
+            <button class="stato-reale" id="btn-stato-attivita" type="button"
+                    title="Mostra eventi reali senza interrompere Pi">Stato reale</button>
             <label for="modo-coda">Se pi sta lavorando:</label>
             <select id="modo-coda">
-              <option value="followUp">aggiungi dopo</option>
-              <option value="steer">correggi il lavoro adesso</option>
+              <option value="followUp">falla dopo · non interrompe</option>
+              <option value="steer">intervieni adesso · può deviare</option>
             </select>
           </div>
         </div>
@@ -266,6 +268,7 @@
   <script src="/auth-flow-core.js"></script>
   <script src="/link-core.js"></script>
   <script src="/clipboard-core.js"></script>
+  <script src="/view-core.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

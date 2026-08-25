@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   creaPonte,
+  caricaCronologiaDaPi,
   caricaCronologiaParzialeDaPi,
   caricaCatalogoBuiltinPi,
   leggiChangelogPi,
@@ -193,6 +194,34 @@ test("la fotografia parziale usa solo righe JSONL complete", async (t) => {
   });
   assert.equal(messaggi.length, 1);
   assert.equal(messaggi[0].content[0].text, "messaggio completo");
+});
+
+test("la cronologia compatta segue il leaf scelto e distingue la radice vuota", async (t) => {
+  const cartella = await mkdtemp(join(tmpdir(), "pi-gui-leaf-cronologia-"));
+  t.after(() => rm(cartella, { recursive: true, force: true }));
+  const fileSessione = join(cartella, "sessione.jsonl");
+  const voci = [
+    { type: "session", version: 3, id: "sessione-leaf", timestamp: "2026-08-25T00:00:00.000Z", cwd: cartella },
+    { type: "message", id: "u1", parentId: null, timestamp: "2026-08-25T00:00:01.000Z", message: { role: "user", content: [{ type: "text", text: "domanda ramo" }], timestamp: 1 } },
+    { type: "message", id: "a-old", parentId: "u1", timestamp: "2026-08-25T00:00:02.000Z", message: { role: "assistant", content: [{ type: "text", text: "risposta scelta" }], timestamp: 2 } },
+    { type: "message", id: "u-new", parentId: "a-old", timestamp: "2026-08-25T00:00:03.000Z", message: { role: "user", content: [{ type: "text", text: "ultima riga append" }], timestamp: 3 } },
+  ];
+  await writeFile(fileSessione, voci.map((voce) => JSON.stringify(voce)).join("\n") + "\n", "utf8");
+
+  const ramo = await caricaCronologiaDaPi({
+    cliPi: CLI_PI_REALE,
+    fileSessione,
+    leafId: "a-old",
+  });
+  assert.deepEqual(ramo.map((messaggio) => messaggio.content[0].text), [
+    "domanda ramo",
+    "risposta scelta",
+  ]);
+  assert.deepEqual(await caricaCronologiaDaPi({
+    cliPi: CLI_PI_REALE,
+    fileSessione,
+    leafId: null,
+  }), []);
 });
 
 test("LettoreJsonl rifiuta primitivi, array e response malformate", () => {
@@ -2735,6 +2764,79 @@ test("durante lo streaming la cronologia espone solo una fotografia parziale esp
   assert.equal(record.at(-1).tipo, "fine");
   assert.equal(record.at(-1).parziale, true);
   assert.equal(ambiente.ponte.sessioni.size, numeroSessioni);
+});
+
+test("l'albero usa il leaf autorevole di Pi dopo una navigazione senza append", async (t) => {
+  const ambiente = await avviaPonteTest({
+    caricaAlbero: async () => ({
+      nodi: [
+        { id: "n-old", parentId: null, type: "message", descrizione: "nodo precedente", profondita: 0 },
+        { id: "n-new", parentId: "n-old", type: "message", descrizione: "ultima riga append", profondita: 1 },
+      ],
+      leafId: "n-new",
+      totale: 2,
+    }),
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "leaf-autorevole");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200);
+
+  const albero = await ambiente.post("/api/albero", { sessionId: avvio.dati.id });
+  assert.equal(albero.risposta.status, 200);
+  assert.equal(albero.dati.leafId, "n-old");
+  assert.equal(albero.dati.totale, 2);
+});
+
+test("dopo navigate_tree anche la cronologia segue il leaf autorevole", async (t) => {
+  const leafRicevuti = [];
+  const ambiente = await avviaPonteTest({
+    caricaAlbero: async () => ({
+      nodi: [
+        { id: "n-old", parentId: null, type: "message", descrizione: "ramo scelto", profondita: 0 },
+        { id: "n-new", parentId: "n-old", type: "message", descrizione: "ultimo append", profondita: 1 },
+      ],
+      leafId: "n-new",
+      totale: 2,
+    }),
+    caricaCronologia: async ({ leafId }) => {
+      leafRicevuti.push(leafId);
+      return [];
+    },
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "leaf-cronologia");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200);
+
+  const albero = await ambiente.post("/api/albero", { sessionId: avvio.dati.id });
+  assert.equal(albero.risposta.status, 200);
+  assert.equal(albero.dati.leafId, "n-new");
+  const navigazione = await ambiente.post("/api/comando", {
+    sessionId: avvio.dati.id,
+    type: "navigate_tree",
+    entryId: "n-old",
+    options: { summarize: false },
+  });
+  assert.equal(navigazione.risposta.status, 200);
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const scadenza = Date.now() + 1500;
+  while (sessione.cambioSessioneInCorso && Date.now() < scadenza) await attendi(20);
+  assert.equal(sessione.cambioSessioneInCorso, false);
+
+  const cronologia = await fetch(ambiente.base + "/api/cronologia", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-pi-gui-token": ambiente.stato.tokenApi,
+    },
+    body: JSON.stringify({ sessionId: avvio.dati.id }),
+  });
+  assert.equal(cronologia.status, 200);
+  await cronologia.text();
+  assert.equal(leafRicevuti.at(-1), "n-old");
 });
 
 test("la cronologia oltre 32 MB arriva per record senza usare get_messages monolitico", async (t) => {
