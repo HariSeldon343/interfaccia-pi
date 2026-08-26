@@ -1,7 +1,7 @@
 # Interfaccia pi
 
 Interfaccia desktop Windows, accessibile e multi-sessione, per usare l'agente
-Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.1
+Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.2
 Pilot**, esplicitamente non-production, e include Pi 0.84.2 in un runtime
 autocontenuto e verificato.
 
@@ -12,6 +12,11 @@ processo GUI; dashboard e API restano sulla stessa origine e credenziali,
 token e cookie interni non entrano in URL, JavaScript o storage del browser.
 Il bundle proviene dal monorepo `sistema-guidato` ed e accettato soltanto dopo
 la verifica di compatibilita, inventario e SHA-256.
+
+La 2.6.2 unifica la copertura della 2.5.3 con Sistema Guidato 0.1.3: i vecchi
+sottocomandi `/sistema` aprono le sezioni equivalenti della dashboard e la
+libreria trusted consente di aggiungere SchemePack e template DOCX/XLSX senza
+esporre il runtime al modello.
 
 La 2.5.1 rende la conversazione più essenziale: riepiloghi di compattazione
 chiusi, tentativi tecnici distinti dagli errori finali, coda non invasiva per

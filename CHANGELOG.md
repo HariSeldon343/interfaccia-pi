@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.6.2 Pilot (non-production) — 2026-08-26
+
+- conserva integralmente tutte le funzioni generali della 2.5.3 e il pannello
+  Sistema Guidato introdotto nella linea 2.6;
+- integra Sistema Guidato 0.1.3 con una libreria grafica trusted per installare
+  SchemePack e template personalizzati DOCX/XLSX, con hash, scope e revisioni
+  immutabili;
+- instrada i sottocomandi storici `/sistema` verso le sezioni equivalenti della
+  dashboard senza ripristinare il motore dati obsoleto e senza usare testo
+  libero negli URL dell'iframe;
+- evita il ricaricamento della dashboard quando viene richiamata nuovamente la
+  stessa destinazione, preservando eventuali input non ancora salvati;
+- resta un pilot non-production, updater-disabled e non firmato Authenticode.
+
 ## 2.6.1 Pilot (non-production) — 2026-08-26
 
 - integra Sistema Guidato 0.1.2 con il collaudo funzionale SCO e il percorso

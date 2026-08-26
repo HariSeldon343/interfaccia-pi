@@ -1,8 +1,8 @@
-# Interfaccia pi 2.6.1 Pilot — sorgente completo
+# Interfaccia pi 2.6.2 Pilot — sorgente completo
 
 Questa cartella contiene il pacchetto sorgente completo necessario per modificare
 l'interfaccia, il bridge, Sistema Guidato e l'installer desktop di Interfaccia pi
-2.6.1 Pilot.
+2.6.2 Pilot.
 
 ## Prima di iniziare
 
@@ -10,7 +10,7 @@ Non compilare direttamente dentro kDrive. Copia o estrai il progetto in un
 percorso locale corto, per esempio:
 
 ```text
-C:\src\pi-gui-2.6.1
+C:\src\pi-gui-2.6.2
 ```
 
 In questo modo si evitano conflitti di sincronizzazione e limiti di lunghezza dei
@@ -37,7 +37,7 @@ vengono controllati prima della compilazione offline.
 Apri PowerShell nella cartella estratta ed esegui:
 
 ```powershell
-cd C:\src\pi-gui-2.6.1
+cd C:\src\pi-gui-2.6.2
 npm ci
 npm run check
 node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
@@ -46,15 +46,15 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 npm run vendor:pi:check
 npm run vendor:sistema:check
 npm run release:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.1'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.2'
 npm run build:desktop:offline
 ```
 
 Gli installer prodotti si trovano qui:
 
 ```text
-src-tauri\target-final-2.6.1\release\bundle\nsis\Interfaccia pi_2.6.1_x64-setup.exe
-src-tauri\target-final-2.6.1\release\bundle\msi\Interfaccia pi_2.6.1_x64_en-US.msi
+src-tauri\target-final-2.6.2\release\bundle\nsis\Interfaccia pi_2.6.2_x64-setup.exe
+src-tauri\target-final-2.6.2\release\bundle\msi\Interfaccia pi_2.6.2_x64_en-US.msi
 ```
 
 ## Modificare l'installer

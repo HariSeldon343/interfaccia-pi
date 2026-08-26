@@ -189,13 +189,36 @@ test("Sistema Guidato e un pannello interno accessibile senza capability nel bro
   assert.match(carica, /credentials:\s*"same-origin"/u);
   assert.match(carica, /"X-SG-Nonce":\s*nonce/u);
   assert.match(carica, /risposta\.headers\.get\("X-SG-Nonce"\)\s*!==\s*nonce/u);
-  assert.match(carica, /frameSistemaGuidato\.src\s*=\s*"\/sistema\/"/u);
+  assert.match(carica, /normalizzaDestinazioneSistemaGuidato\(destinazione\)/u);
+  assert.match(carica, /frameSistemaGuidato\.src\s*=\s*destinazioneConsentita/u);
   assert.doesNotMatch(carica, /localStorage|sessionStorage|X-SG-Token|api[-_]?key/iu);
   assert.doesNotMatch(frontend, /X-SG-Token/iu,
     "la capability interna non deve esistere nel JavaScript del browser");
-  assert.match(corpoFunzione("apriPannelloSistemaGuidato"), /sfondoSistemaGuidatoInerte\(true\)/u);
+  const apriPannello = corpoFunzione("apriPannelloSistemaGuidato");
+  assert.match(apriPannello, /sfondoSistemaGuidatoInerte\(true\)/u);
+  assert.match(apriPannello, /caricaPannelloSistemaGuidato\(destinazioneConsentita\)/u,
+    "un sottocomando deve aggiornare la destinazione anche quando il pannello e gia aperto");
+  assert.match(apriPannello, /PANNELLO_SISTEMA_GUIDATO\.destinazione\s*===\s*destinazioneConsentita/u,
+    "la stessa destinazione gia aperta non deve ricaricare l'iframe");
+  assert.match(apriPannello, /DOM\.frameSistemaGuidato\.src\s*!==\s*"about:blank"/u);
   assert.match(corpoFunzione("chiudiPannelloSistemaGuidato"), /sfondoSistemaGuidatoInerte\(false\)/u);
-  assert.match(corpoFunzione("eseguiWorkflowComando"), /sistema-guidato-panel/u);
+  const workflow = corpoFunzione("eseguiWorkflowComando");
+  assert.match(workflow, /sistema-guidato-panel/u);
+  assert.match(workflow, /destinazioneSistemaGuidatoDaArgomenti\(argomenti\)/u);
+
+  const destinazioneLegacy = corpoFunzione("destinazioneSistemaGuidatoDaArgomenti");
+  assert.match(destinazioneLegacy, /DESTINAZIONI_SOTTOCOMANDI_SISTEMA_GUIDATO\.get\(sottoComando\)/u);
+  assert.match(destinazioneLegacy, /DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA/u);
+  assert.doesNotMatch(destinazioneLegacy, /URLSearchParams|encodeURI|new URL/iu,
+    "gli argomenti liberi non devono poter costruire la URL dell'iframe");
+  for (const destinazione of [
+    "/sistema/?action=create",
+    "/sistema/?step=project",
+    "/sistema/?step=interview",
+    "/sistema/?step=evidence",
+    "/sistema/?step=documents",
+    "/sistema/?step=documents&content=1",
+  ]) assert.ok(frontend.includes(JSON.stringify(destinazione)), `destinazione trusted mancante: ${destinazione}`);
   assert.match(stile, /\.pannello-sistema-guidato\s*\{/u);
   assert.match(stile, /\.pannello-sistema-guidato-corpo iframe\s*\{/u);
 });

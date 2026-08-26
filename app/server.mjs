@@ -1735,6 +1735,35 @@ function senzaArgomenti(nome, argomenti) {
   if (argomenti) throw erroreHttp(`Il comando /${nome} non accetta argomenti`, 400);
 }
 
+const SOTTOCOMANDI_LEGACY_SISTEMA_GUIDATO = new Set([
+  "crea",
+  "nuovo",
+  "riprendi",
+  "continua",
+  "domande",
+  "questionario",
+  "evidenza",
+  "evidenze",
+  "documenti",
+  "output",
+  "stato",
+  "verifica",
+  "template",
+  "modelli",
+]);
+
+function sottoComandoLegacySistemaGuidato(argomenti) {
+  if (!argomenti) return "";
+  const sottoComando = argomenti.toLocaleLowerCase("it-IT");
+  if (!SOTTOCOMANDI_LEGACY_SISTEMA_GUIDATO.has(sottoComando)) {
+    throw erroreHttp(
+      "Il sottocomando di /sistema non e riconosciuto. Usa crea, riprendi, domande, evidenza, documenti, stato o template.",
+      400,
+    );
+  }
+  return sottoComando;
+}
+
 /**
  * Traduce una voce gia verificata del catalogo in una sola operazione nota.
  * Non legge mai un `type` fornito dal client: il tipo RPC nasce esclusivamente
@@ -1819,6 +1848,19 @@ export function preparaInvocazioneCapacita(capacita, valoreArgomenti) {
     case "reload":
       senzaArgomenti(capacita.name, argomenti);
       return { mode: "rpc", command: { type: "reload" } };
+    case "sistema": {
+      if (capacita.dispatch?.kind !== "workflow" || typeof capacita.dispatch.action !== "string") {
+        throw erroreHttp("Il comando /sistema non ha una strategia GUI verificata", 409);
+      }
+      const sottoComando = sottoComandoLegacySistemaGuidato(argomenti);
+      const { kind: _kind, ...workflow } = capacita.dispatch;
+      return {
+        mode: "workflow",
+        ...workflow,
+        command: capacita.name,
+        ...(sottoComando ? { arguments: sottoComando } : {}),
+      };
+    }
     default: {
       if (capacita.dispatch?.kind !== "workflow" || typeof capacita.dispatch.action !== "string") {
         throw erroreHttp(`Il comando /${capacita.name} non ha una strategia GUI verificata`, 409);

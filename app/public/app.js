@@ -111,10 +111,47 @@ const DOM = {
   toastArea: $("#toast-area"),
 };
 
+const DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA = "/sistema/";
+const DESTINAZIONI_SOTTOCOMANDI_SISTEMA_GUIDATO = new Map([
+  ["crea", "/sistema/?action=create"],
+  ["nuovo", "/sistema/?action=create"],
+  ["riprendi", "/sistema/?step=project"],
+  ["continua", "/sistema/?step=project"],
+  ["domande", "/sistema/?step=interview"],
+  ["questionario", "/sistema/?step=interview"],
+  ["evidenza", "/sistema/?step=evidence"],
+  ["evidenze", "/sistema/?step=evidence"],
+  ["documenti", "/sistema/?step=documents"],
+  ["output", "/sistema/?step=documents"],
+  ["stato", "/sistema/?step=project"],
+  ["verifica", "/sistema/?step=project"],
+  ["template", "/sistema/?step=documents&content=1"],
+  ["modelli", "/sistema/?step=documents&content=1"],
+]);
+const DESTINAZIONI_SISTEMA_GUIDATO_CONSENTITE = new Set([
+  DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA,
+  ...DESTINAZIONI_SOTTOCOMANDI_SISTEMA_GUIDATO.values(),
+]);
+
+function destinazioneSistemaGuidatoDaArgomenti(argomenti) {
+  const sottoComando = typeof argomenti === "string"
+    ? argomenti.trim().toLocaleLowerCase("it-IT")
+    : "";
+  return DESTINAZIONI_SOTTOCOMANDI_SISTEMA_GUIDATO.get(sottoComando)
+    || DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA;
+}
+
+function normalizzaDestinazioneSistemaGuidato(destinazione) {
+  return DESTINAZIONI_SISTEMA_GUIDATO_CONSENTITE.has(destinazione)
+    ? destinazione
+    : DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA;
+}
+
 const PANNELLO_SISTEMA_GUIDATO = {
   generazione: 0,
   controller: null,
   focusPrecedente: null,
+  destinazione: DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA,
 };
 
 function sfondoSistemaGuidatoInerte(inerte) {
@@ -140,7 +177,11 @@ function nonceSistemaGuidato() {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function caricaPannelloSistemaGuidato() {
+async function caricaPannelloSistemaGuidato(
+  destinazione = PANNELLO_SISTEMA_GUIDATO.destinazione,
+) {
+  const destinazioneConsentita = normalizzaDestinazioneSistemaGuidato(destinazione);
+  PANNELLO_SISTEMA_GUIDATO.destinazione = destinazioneConsentita;
   const generazione = ++PANNELLO_SISTEMA_GUIDATO.generazione;
   PANNELLO_SISTEMA_GUIDATO.controller?.abort();
   const controller = new AbortController();
@@ -168,7 +209,7 @@ async function caricaPannelloSistemaGuidato() {
     }
     if (generazione !== PANNELLO_SISTEMA_GUIDATO.generazione
       || DOM.pannelloSistemaGuidato.hidden) return;
-    DOM.frameSistemaGuidato.src = "/sistema/";
+    DOM.frameSistemaGuidato.src = destinazioneConsentita;
     DOM.frameSistemaGuidato.hidden = false;
     DOM.attesaSistemaGuidato.hidden = true;
     DOM.statoSistemaGuidato.textContent = salute.pi?.available
@@ -186,7 +227,17 @@ async function caricaPannelloSistemaGuidato() {
   }
 }
 
-async function apriPannelloSistemaGuidato() {
+async function apriPannelloSistemaGuidato(
+  destinazione = DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA,
+) {
+  const destinazioneConsentita = normalizzaDestinazioneSistemaGuidato(destinazione);
+  if (!DOM.pannelloSistemaGuidato.hidden
+    && PANNELLO_SISTEMA_GUIDATO.destinazione === destinazioneConsentita
+    && !DOM.frameSistemaGuidato.hidden
+    && DOM.frameSistemaGuidato.src !== "about:blank") {
+    DOM.btnChiudiSistemaGuidato.focus();
+    return;
+  }
   if (DOM.pannelloSistemaGuidato.hidden) {
     PANNELLO_SISTEMA_GUIDATO.focusPrecedente = document.activeElement instanceof HTMLElement
       ? document.activeElement
@@ -195,11 +246,8 @@ async function apriPannelloSistemaGuidato() {
     document.body.classList.add("pannello-sistema-guidato-aperto");
     sfondoSistemaGuidatoInerte(true);
     requestAnimationFrame(() => DOM.btnChiudiSistemaGuidato.focus());
-  } else if (!DOM.frameSistemaGuidato.hidden && DOM.frameSistemaGuidato.src !== "about:blank") {
-    DOM.btnChiudiSistemaGuidato.focus();
-    return;
   }
-  await caricaPannelloSistemaGuidato();
+  await caricaPannelloSistemaGuidato(destinazioneConsentita);
 }
 
 function chiudiPannelloSistemaGuidato() {
@@ -207,6 +255,7 @@ function chiudiPannelloSistemaGuidato() {
   PANNELLO_SISTEMA_GUIDATO.generazione += 1;
   PANNELLO_SISTEMA_GUIDATO.controller?.abort();
   PANNELLO_SISTEMA_GUIDATO.controller = null;
+  PANNELLO_SISTEMA_GUIDATO.destinazione = DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA;
   DOM.frameSistemaGuidato.src = "about:blank";
   DOM.frameSistemaGuidato.hidden = true;
   DOM.pannelloSistemaGuidato.hidden = true;
@@ -8310,7 +8359,7 @@ async function eseguiWorkflowComando(
   const azione = String(azioneOriginale || "").trim().toLowerCase().replace(/_/g, "-");
   if (["sistema", "sistema-guidato-panel"].includes(azione)) {
     try {
-      await apriPannelloSistemaGuidato();
+      await apriPannelloSistemaGuidato(destinazioneSistemaGuidatoDaArgomenti(argomenti));
       operazione?.completa();
     } catch (errore) {
       operazione?.fallisce(errore);

@@ -14,7 +14,7 @@ import { verificaBundleSistemaGuidato } from "../app/sistema-guidato-manager.mjs
 const QUI = dirname(fileURLToPath(import.meta.url));
 const RADICE = resolve(QUI, "..");
 const DESTINAZIONE = resolve(RADICE, "vendor", "sistema-guidato");
-const VERSIONE_HOST = "2.6.1";
+const VERSIONE_HOST = "2.6.2";
 const PI_BASELINE = "0.84.2";
 const PI_PATCH = "PI_GUI_RPC_ADAPTER_V1";
 const RELEASE_TEXT_EXTENSIONS = new Set([".css", ".htm", ".html", ".js", ".json", ".mjs", ".ts", ".txt"]);
@@ -172,7 +172,7 @@ async function aggiorna() {
     || compatibility.projectSchemaWriters?.includes(1)
     || !compatibility.projectSchemaWriters?.includes(2)
   ) {
-    throw new Error("Compatibilita Sistema Guidato non adatta all'host 2.6.1");
+    throw new Error("Compatibilita Sistema Guidato non adatta all'host 2.6.2");
   }
 
   const vendorRoot = resolve(RADICE, "vendor");

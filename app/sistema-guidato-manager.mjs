@@ -10,7 +10,7 @@ import { request as richiestaHttp } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const VERSIONE_HOST = "2.6.1";
+const VERSIONE_HOST = "2.6.2";
 const MOUNT_PATH = "/sistema";
 const LIMITE_MANIFEST = 2 * 1024 * 1024;
 const MAX_FILE_BUNDLE = 20_000;

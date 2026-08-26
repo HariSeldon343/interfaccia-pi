@@ -1006,10 +1006,19 @@ test("la tabella d'invocazione produce solo RPC note o workflow strutturati", ()
     action: "sistema-guidato-panel",
     command: "sistema",
   });
-  assert.throws(
-    () => preparaInvocazioneCapacita(voce("sistema"), "stato"),
-    /non accetta argomenti/i,
-  );
+  for (const sottoComando of [
+    "crea", "nuovo", "riprendi", "continua", "domande", "questionario", "evidenza",
+    "evidenze", "documenti", "output", "stato", "verifica", "template", "modelli",
+  ]) {
+    assert.deepEqual(preparaInvocazioneCapacita(voce("sistema"), sottoComando.toUpperCase()), {
+      mode: "workflow",
+      action: "sistema-guidato-panel",
+      command: "sistema",
+      arguments: sottoComando,
+    });
+  }
+  assert.throws(() => preparaInvocazioneCapacita(voce("sistema"), "stato dati-liberi"),
+    /sottocomando.*non e riconosciuto/i);
   assert.deepEqual(preparaInvocazioneCapacita(voce("model"), "gemma"), {
     mode: "workflow",
     action: "model-picker",
