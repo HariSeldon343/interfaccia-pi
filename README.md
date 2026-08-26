@@ -1,7 +1,7 @@
 # Interfaccia pi
 
 Interfaccia desktop Windows, accessibile e multi-sessione, per usare l'agente
-Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.0
+Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.1
 Pilot**, esplicitamente non-production, e include Pi 0.84.2 in un runtime
 autocontenuto e verificato.
 

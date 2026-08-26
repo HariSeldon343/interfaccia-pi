@@ -149,7 +149,7 @@ async function creaBundleFalso(base) {
     source: { packageVersion: "0.1.0" },
     host: {
       name: "interfaccia-pi",
-      version: "2.6.0",
+      version: "2.6.1",
       mountPath: "/sistema",
       sameOriginProxy: true,
       interfacciaPiPanel: true,
@@ -185,7 +185,7 @@ test("il bundle Sistema Guidato e fail-closed su compatibilita e digest", async 
   const bundleRoot = await creaBundleFalso(base);
 
   const verificato = await verificaBundleSistemaGuidato(bundleRoot);
-  assert.equal(verificato.manifest.host.version, "2.6.0");
+  assert.equal(verificato.manifest.host.version, "2.6.1");
   assert.equal(relative(bundleRoot, verificato.serverPath), join("runtime", "server", "server.mjs"));
 
   await writeFile(join(bundleRoot, "runtime", "dashboard", "index.html"), "alterato");

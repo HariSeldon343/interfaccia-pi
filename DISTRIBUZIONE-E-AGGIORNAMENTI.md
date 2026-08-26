@@ -1,6 +1,6 @@
 # Distribuzione e aggiornamenti
 
-## Stato della versione 2.6.0 Pilot non-production
+## Stato della versione 2.6.1 Pilot non-production
 
 Il repository pubblico autorevole e
 `https://github.com/HariSeldon343/interfaccia-pi`. I workflow inclusi sono
@@ -12,7 +12,7 @@ deliberatamente separati:
   (`.exe`) e MSI con i rispettivi hash SHA-256;
 - le release verificate vengono promosse manualmente su GitHub con EXE, MSI e
   `SHA256SUMS.txt`; nessun aggiornamento viene installato automaticamente nella
-  2.6.0 Pilot.
+  2.6.1 Pilot.
 
 Il repository non deve contenere `vendor/pi-runtime`: sono circa 204 MiB e oltre
 15.000 file. La CI lo ricostruisce da fonti e digest bloccati nello script
@@ -52,7 +52,7 @@ esista una cartella `C:\src\sistema-guidato`. La catena prevista e questa:
    passa l'albero a `vendor-sistema-guidato.mjs`;
 6. il vendoring ricontrolla inventario e SHA-256 di ogni file contro il release
    manifest, verifica Pi 0.84.2, patch RPC e schemi dati, genera il manifesto
-   dell'host 2.6.0 e infine `vendor:sistema:check` ricontrolla tutto prima di
+   dell'host 2.6.1 e infine `vendor:sistema:check` ricontrolla tutto prima di
    test o build Tauri.
 
 Se manca anche un solo secret/valore, il digest non coincide, l'asset contiene

@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.6.1 Pilot (non-production) — 2026-08-26
+
+- integra Sistema Guidato 0.1.2 con il collaudo funzionale SCO e il percorso
+  completo da intervista, processi, evidenze e gap fino al pre-audit;
+- rende persistenti input, output, interazioni e controlli nelle schede di
+  processo e mantiene i campi lunghi leggibili nell'interfaccia;
+- corregge i gate di campo di applicazione, questionario, matrice requisiti e
+  piano documentale, con messaggi espliciti sui passaggi ancora da validare;
+- rigenera DOCX e XLSX senza sovrascrivere le revisioni precedenti, senza
+  marcatori residui e con provenienze leggibili al posto degli ID tecnici;
+- conserva le approvazioni documentali come unico gate umano: la GUI non firma
+  o convalida autonomamente al posto del consulente o dell'organizzazione;
+- resta un pilot non-production, updater-disabled e non firmato Authenticode.
+
 ## 2.6.0 Pilot (non-production) — 2026-08-25
 
 - **Sistema Guidato** e ora un pannello interno autonomo, apribile dal pulsante

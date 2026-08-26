@@ -1,6 +1,6 @@
 {
   "name": "pi-gui",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "description": "Interfaccia grafica accessibile e multi-cartella per l'agente pi",
   "private": true,
   "scripts": {
