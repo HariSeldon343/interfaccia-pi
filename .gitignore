@@ -13,6 +13,12 @@
 /vendor/.pi-runtime-stage-*/
 /vendor/.pi-runtime-backup-*/
 
+# Estrazione documenti, rigenerata dall'archivio npm con integrità bloccata.
+/vendor/estrazione/
+/vendor/.estrazione.lock
+/vendor/.estrazione-stage-*/
+/.tmp-test/
+
 # Il modulo Sistema Guidato arriva da un release asset del repository privato,
 # bloccato da SHA-256, oppure da un monorepo locale indicato esplicitamente.
 /vendor/sistema-guidato/

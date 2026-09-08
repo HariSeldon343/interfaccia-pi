@@ -31,8 +31,8 @@ contemporaneamente: `pi` non ha un singolo workspace multi-root nativo.
 
 ## Uso quotidiano nell'interfaccia grafica
 
-1. Premi **Apri una cartella**.
-2. Scegli l'unità o la cartella, oppure incolla il percorso completo.
+1. Inizia senza cartella oppure premi **Apri una cartella**.
+2. Se usi una cartella, scegli l'unità o incolla il percorso completo.
 3. Decidi se usare istruzioni, skill e risorse locali del progetto.
 4. Premi il nome del modello in alto se vuoi cambiarlo.
 5. Scrivi la richiesta.
@@ -61,7 +61,8 @@ Invio, oppure fare click: il comando viene inserito nell'editor e puoi ancora
 leggerlo o completarne gli argomenti prima di inviarlo.
 
 Il pulsante **＋** accanto alla casella apre le stesse funzioni senza dover
-ricordare la sintassi: puoi allegare un'immagine supportata, oppure incollare
+ricordare la sintassi: puoi allegare file, scegliere **Allega cartella**,
+allegare un'immagine supportata oppure incollare
 direttamente uno screenshot nel composer con `Ctrl+V`, cercare una skill o
 una procedura nel catalogo reale della conversazione, vedere i comandi forniti
 dalle estensioni e ricaricare le risorse dopo un'installazione o una modifica di
@@ -90,16 +91,40 @@ bloccati e la chat non apre file eseguibili, installer, script, scorciatoie o
 altri formati attivi. Pi non crea collegamenti sul Desktop se non glielo chiedi
 esplicitamente.
 
-Gli allegati diretti della GUI sono immagini PNG, JPEG, WebP o GIF. Puoi
+Le immagini supportate dalla GUI sono PNG, JPEG, WebP o GIF. Puoi
 sceglierli dal pulsante **＋** o incollare uno screenshot con `Ctrl+V`: compare
 subito la stessa anteprima rimovibile prima dell'invio. Il modello selezionato
 deve essere indicato come **immagini** nella finestra **Scegli modello**. Con un
 modello solo testo, per esempio GLM-5.3 nell'attuale catalogo di Pi, la GUI ferma
 l'invio e te lo spiega invece di lasciare che Pi sostituisca l'allegato con
-`image omitted`. Il protocollo
-RPC di `pi` non espone un allegato file generico; per un documento o un sorgente
-usa un percorso assoluto nella richiesta oppure il riferimento `@file` di Pi
-completo nel terminale.
+`image omitted`.
+
+Per documenti e sorgenti usa **＋ > Allega file**, **Allega cartella** o
+trascina file e cartelle nella chat. Prima di leggere i contenuti compare
+un'unica domanda: indicizzare tutti i documenti nella libreria, scegliere
+quali indicizzare oppure usarli soltanto nella chat. **Scelgo** apre le
+caselle di spunta con percorso, tipo, dimensione e contatore. **No, solo nella
+chat** ammette fino a otto file singoli; una cartella si può solo indicizzare.
+**Annulla** o **Esc** annulla anche le immagini del trascinamento misto.
+Una selezione vuota in **Scelgo** lascia invece proseguire le immagini.
+
+L'indicizzazione conserva gli originali in `raw/<categoria>/` e aggiorna
+`.ingest-index.json`. Per PDF, DOCX, XLSX e PPTX crea accanto al documento un
+file `.testo.md`: è questo il percorso riferito a Pi. I file già testuali
+mantengono il riferimento all'originale; gli altri binari sono conservati
+senza essere riferiti. I PDF privi di testo richiedono OCR, che non è incluso.
+Se esiste `wiki/sources/`, viene creata anche una scheda fonte in bozza.
+
+Il chip **N file in libreria** resta con la bozza e si può rimuovere senza
+cancellare i documenti. Oltre otto riferimenti complessivi, Pi riceve i primi
+sette più l'indice: l'app mostra un avviso prima dell'invio. I testi lunghi
+si leggono con `offset` e `limit`.
+
+Il caricamento ammette 200 file e 300 MiB per operazione, fino a 10 MiB per
+file; eseguibili, cartelle nascoste e cartelle di dipendenze o compilazione
+sono esclusi. **Ferma** completa il file corrente e poi si arresta. Il
+riepilogo mostra indicizzati, duplicati e saltati e permette di copiare il
+percorso della libreria. Il cambio di scheda ferma i file successivi.
 
 Anche la shell rapida conserva la sintassi originale: `! git status` esegue il
 comando e aggiunge il risultato al contesto; `!! git status` lo esegue senza
@@ -213,6 +238,12 @@ la garanzia assoluta sull'intero albero richiederebbe un Job Object nativo.
 | Modelli personalizzati | `%USERPROFILE%\.pi\agent\models.json` |
 | Credenziali | `%USERPROFILE%\.pi\agent\auth.json` |
 | Conversazioni | `%USERPROFILE%\.pi\agent\sessions\` |
+| Libreria con cartella | `<cartella>\raw\<categoria>\` e `<cartella>\.ingest-index.json` |
+| Libreria senza cartella | `%USERPROFILE%\.pi\gui\libreria\` |
+| Schede fonte, se la directory esiste | `<cartella>\wiki\sources\` |
+
+La libreria non scade e non viene rimossa dalla pulizia degli allegati
+temporanei. I riferimenti della richiesta sono salvati insieme alla bozza.
 
 Nell'app installata la documentazione originale è inclusa nelle risorse, sotto
 `runtime\pi\docs\`. Nel percorso browser/portable si trova invece dentro il

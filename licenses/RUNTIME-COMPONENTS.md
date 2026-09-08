@@ -83,19 +83,55 @@ I file provengono dagli archivi ufficiali delle rispettive release GitHub. Le
 licenze presenti negli archivi sono conservate sotto `runtime/tools/licenses`.
 La cartella `runtime/tools` precede il `PATH` ereditato, insieme a Node.
 
+## Estrazione dei documenti
+
+- package: `pdfjs-dist`;
+- versione: `6.3.289`;
+- sorgente ufficiale:
+  <https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.3.289.tgz>;
+- integrità dell'archivio:
+  `sha512-ZHjSVpDa3D6izMq8/04lvkhkATUmL9px6ChPaXc1k6nU2Mrhlg1/7F0bdUqCwUjw3NsPTfPZsMDUU6ZIcRaeQw==`;
+- licenza: Apache-2.0, conservata integralmente in `app/estrazione/LICENSE`
+  nell'installazione e in `vendor/estrazione/LICENSE` nel sorgente preparato.
+
+Lo script `scripts/vendor-estrazione.mjs` verifica SHA-512 prima di estrarre
+dal tarball soltanto questi tre file, inventariati anche con SHA-256:
+
+| File | SHA-256 |
+|---|---|
+| `build/pdf.mjs` | `495588717f62303a839e91a5343deebf1b41f52e2f9f6361e73dee6ea6a4355e` |
+| `legacy/build/pdf.worker.mjs` | `df3bf6bf6b8b8dac8a4042d8c4ecf1cf21e1d197e0fe231c192122409eba656b` |
+| `LICENSE` | `0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594` |
+
+La prova con Node vendorizzato usa il modulo principale standard e il worker
+legacy. L'estrattore lavora sul testo, senza rendering, OCR, dipendenze canvas
+esterne o download a runtime. Il manifest e ogni file vengono verificati
+prima del caricamento; la localizzazione cerca prima `app/estrazione`
+nell'installazione e poi `vendor/estrazione` nel repository.
+
+L'estrazione DOCX, XLSX e PPTX usa il lettore ZIP/XML interno e `node:zlib`
+del Node distribuito. Non aggiunge pacchetti npm. La licenza PDF non è inclusa
+nel notice generato per Pi: è distribuita separatamente nel bundle estrazione.
+
 ## Procedura di build
 
 Da PowerShell nella radice del progetto:
 
 ```powershell
 npm run vendor:pi
+npm run vendor:estrazione
 npm run vendor:pi:check
+npm run vendor:estrazione:check
 npm run build:desktop:offline
 ```
 
 `vendor:pi` non riscarica nulla se l'inventario esistente supera la verifica.
 `vendor:pi:force` forza invece una ricostruzione completa. La build offline
 rifiuta un runtime assente, modificato o con versioni diverse dai pin.
+Anche `vendor:estrazione` riusa il bundle se supera la verifica;
+`vendor:estrazione:check` controlla manifest, elenco esatto e impronte dei file
+senza scaricare nulla. I tre script di build verificano o preparano anche
+l'estrattore PDF.
 
 Il runtime generato si trova in `vendor/pi-runtime`. Il suo `manifest.json`
 contiene l'inventario SHA-256 di ogni file. La directory è materiale di build e

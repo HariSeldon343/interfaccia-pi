@@ -1,5 +1,29 @@
 # Changelog
 
+## Non rilasciato
+
+- aggiunge trascinamento HTML5 di file e cartelle e **＋ > Allega cartella**;
+  prima di leggere i contenuti chiede una sola volta se indicizzare tutti i
+  documenti, scegliere con caselle di spunta oppure usarli soltanto nella chat;
+- mantiene le immagini nel flusso degli allegati; **Annulla** o **Esc** annulla
+  l'intero ingresso misto, mentre una selezione vuota lascia proseguire le immagini;
+- crea una libreria persistente in `raw/<categoria>/`, oppure in
+  `~/.pi/gui/libreria/` senza cartella di lavoro, con indice atomico
+  `.ingest-index.json`, deduplicazione MD5/SHA-256 e nomi senza sovrascritture;
+- estrae testo da PDF, DOCX, XLSX e PPTX in file `.testo.md` accanto agli
+  originali; segnala i PDF senza testo come probabili scansioni che richiedono
+  OCR, senza eseguire OCR automaticamente;
+- isola le estrazioni in worker con timeout e limiti di decompressione e testo;
+  distribuisce `pdfjs-dist` 6.3.289 con archivio e inventario verificati;
+- mostra avanzamento, pulsante **Ferma**, riepilogo dei conteggi e percorso
+  copiabile; applica esclusioni e quote prima di leggere i file oltre limite;
+- conserva con la bozza i riferimenti alla libreria in un chip rimovibile;
+  oltre otto riferimenti, invia i primi sette e l'indice con un avviso visibile;
+- crea una scheda fonte soltanto quando `wiki/sources/` esiste già, senza
+  sovrascrivere schede presenti;
+- mantiene la versione 2.6.2: l'aumento avverrà durante il rilascio, insieme
+  alla rigenerazione del pacchetto compatibile di Sistema Guidato.
+
 ## 2.6.2 Pilot (non-production) — 2026-08-26
 
 - conserva integralmente tutte le funzioni generali della 2.5.3 e il pannello

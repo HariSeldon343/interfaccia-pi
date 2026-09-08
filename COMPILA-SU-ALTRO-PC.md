@@ -28,9 +28,12 @@ percorsi di Windows.
 - Microsoft Edge WebView2 Runtime
 - connessione Internet per il primo ripristino delle dipendenze
 
-Il runtime PI distribuito nell'app è già incluso in `vendor/pi-runtime`; il
-runtime minimo di Sistema Guidato è in `vendor/sistema-guidato`. Entrambi
-vengono controllati prima della compilazione offline.
+Il pacchetto sorgente deve contenere il runtime PI in `vendor/pi-runtime`,
+Sistema Guidato in `vendor/sistema-guidato` e l'estrattore PDF in
+`vendor/estrazione`. I tre bundle vengono controllati prima della compilazione
+offline. Se l'estrattore manca, preparalo con `npm run vendor:estrazione`:
+scarica esclusivamente `pdfjs-dist` 6.3.289 e ne verifica l'impronta prima
+dell'estrazione, senza installazioni globali o nuove dipendenze npm del progetto.
 
 ## Compilazione e test
 
@@ -39,11 +42,13 @@ Apri PowerShell nella cartella estratta ed esegui:
 ```powershell
 cd C:\src\pi-gui-2.6.2
 npm ci
+npm run vendor:estrazione
 npm run check
 node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
 npm run test:smoke
 cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 npm run vendor:pi:check
+npm run vendor:estrazione:check
 npm run vendor:sistema:check
 npm run release:check
 $env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.2'
@@ -63,8 +68,11 @@ La configurazione principale è in `src-tauri/tauri.conf.json`. Gli script di
 preparazione e vendoring sono in `scripts/`; il frontend è in `app/`; il backend
 desktop Rust è in `src-tauri/src/`.
 
-Dopo una modifica, aumenta la versione sia in `package.json` sia nei file Tauri
-che la riportano, quindi ripeti i test e il comando di build.
+Le modifiche della tappa 2 restano nella sezione **Non rilasciato** del
+changelog e mantengono la versione 2.6.2. Al rilascio, aggiorna insieme tutti i
+file di versione e rigenera il pacchetto compatibile di Sistema Guidato:
+il suo manifesto deve corrispondere alla versione dell'host. Verifica la
+coerenza con `npm run release:check` prima della compilazione.
 
 ## Note
 
@@ -76,7 +84,9 @@ che la riportano, quindi ripeti i test e il comando di build.
   venga configurato un certificato di firma del codice.
 - Due build corrette possono avere hash differenti per timestamp, identificativi
   generati e versione esatta della toolchain.
-- Versioni del runtime incluso: Node 24.18.0, PI 0.84.2, fd 10.4.2, rg 15.2.0.
+- Versioni del runtime incluso: Node 24.18.0, PI 0.84.2, fd 10.4.2, rg 15.2.0,
+  pdfjs-dist 6.3.289. I test PDF richiedono il bundle verificato e falliscono
+  esplicitamente se manca; non vengono saltati.
 
 Verifica sempre l'archivio con l'hash indicato in `SORGENTE-SHA256.txt` prima di
 copiarlo o modificarlo su un altro computer.

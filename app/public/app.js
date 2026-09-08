@@ -32,6 +32,8 @@ const VISTA_CORE = globalThis.PiGuiViewCore;
 if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
 const ATTACHMENT_CORE = globalThis.PiGuiAttachmentCore;
 if (!ATTACHMENT_CORE) throw new Error("Il modulo degli allegati non e stato caricato");
+const LIBRARY_CORE = globalThis.PiGuiLibraryCore;
+if (!LIBRARY_CORE) throw new Error("Il modulo della libreria non è stato caricato");
 const UPDATER_CORE = globalThis.PI_GUI_UPDATER;
 if (!UPDATER_CORE) throw new Error("Il modulo degli aggiornamenti non e stato caricato");
 const STARTUP_CORE = globalThis.PiGuiStartupCore;
@@ -53,10 +55,14 @@ const DOM = {
   btnInvia: $("#btn-invia"),
   btnAllega: $("#btn-allega"),
   scegliFile: $("#scegli-file"),
+  scegliCartella: $("#scegli-cartella"),
   scegliImmagini: $("#scegli-immagini"),
   allegati: $("#allegati"),
   menuAzioniComposer: $("#menu-azioni-composer"),
   azioneAllegaFile: $("#azione-allega-file"),
+  azioneAllegaCartella: $("#azione-allega-cartella"),
+  modaleLibreria: $("#modale-libreria"),
+  progressoLibreria: $("#progresso-libreria"),
   azioneAllegaImmagine: $("#azione-allega-immagine"),
   azioneRichiamaSkill: $("#azione-richiama-skill"),
   azioneComandiEstensioni: $("#azione-comandi-estensioni"),
@@ -432,7 +438,7 @@ async function scriviAllegatiInvio(
         tipo,
         markerKey,
         creataIl: Date.now(),
-        allegati: allegati.map(({ id: allegatoId, token, ownerSessionId, tipo, nome, mimeType, data, dimensione, percorso }) => ({
+        allegati: allegati.map(({ id: allegatoId, token, ownerSessionId, tipo, nome, mimeType, data, dimensione, percorso, origineLibreria, percorsoIndice }) => ({
           id: allegatoId,
           token,
           ownerSessionId,
@@ -442,6 +448,8 @@ async function scriviAllegatiInvio(
           data,
           dimensione,
           percorso,
+          origineLibreria,
+          percorsoIndice,
         })),
       });
       transazione.oncomplete = () => risolvi();
@@ -492,11 +500,23 @@ async function eliminaAllegatiInvio(id) {
   }
 }
 
+function allegatoLibreriaValido(voce) {
+  const testoValido = (testo) => typeof testo === "string" && testo.length > 0
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(testo);
+  const assoluto = (percorso) => testoValido(percorso) && /^(?:[a-z]:[\\/]|[\\/])/i.test(percorso);
+  return voce?.origineLibreria === true && voce.tipo === "file"
+    && testoValido(voce.nome) && testoValido(voce.mimeType)
+    && assoluto(voce.percorso) && assoluto(voce.percorsoIndice)
+    && Number.isSafeInteger(voce.dimensione) && voce.dimensione >= 0
+    && voce.token == null && voce.ownerSessionId == null;
+}
+
 function riferimentiFileServer(allegati) {
   return Array.from(allegati || [])
     .filter(allegatoFile)
     .filter((allegato) => (
-      typeof allegato.id === "string"
+      allegato.origineLibreria !== true
+      && typeof allegato.id === "string"
       && typeof allegato.token === "string"
       && allegato.id
       && allegato.token
@@ -546,7 +566,7 @@ async function adottaFilePendentiBozza(sessione, allegati, { forzaCopia = false 
   const risultato = Array.from(allegati || []).map((allegato) => ({ ...allegato }));
   const daAdottare = [];
   risultato.forEach((allegato, indice) => {
-    if (!allegatoFile(allegato)) return;
+    if (!allegatoFile(allegato) || allegato.origineLibreria === true) return;
     if (typeof allegato.ownerSessionId !== "string" || !allegato.ownerSessionId) {
       throw new Error(
         "Un file della bozza non indica piu la sessione proprietaria. Rimuovilo e allegalo di nuovo.",
@@ -657,7 +677,7 @@ async function conservaFotografiaAllegati(
 function conservaAllegatiBozza(sessione) {
   const chiaveBozza = sessione.chiaveBozza;
   const lineageAttesa = sessione.lineageId || null;
-  const fotografia = sessione.allegati.map((allegato) => ({ ...allegato }));
+  const fotografia = [...sessione.allegati, ...(sessione.allegatiLibreria || [])].map((allegato) => ({ ...allegato }));
   sessione.allegatiNonPersistiti = true;
   const precedente = sessione.codaAllegatiBozza || Promise.resolve();
   sessione.codaAllegatiBozza = precedente
@@ -695,6 +715,14 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
     }
     return;
   }
+  const libreria = raccolti.filter((allegato) => allegato?.origineLibreria === true);
+  if (libreria.some((allegato) => !allegatoLibreriaValido(allegato))) {
+    sessione.erroreAllegatiBozza = "La bozza contiene un riferimento della libreria non valido. Riprova o scarta gli allegati mancanti.";
+    sessione.allegatiNonPersistiti = true;
+    if (sessione.id === APP.attivaId) aggiornaInterfacciaAttiva();
+    return;
+  }
+  raccolti = raccolti.filter((allegato) => allegato?.origineLibreria !== true);
   const immagini = raccolti.filter(allegatoImmagine);
   const file = raccolti.filter(allegatoFile);
   const dimensioneImmagini = immagini.reduce((totale, allegato) => totale + Number(allegato.dimensione || 0), 0);
@@ -751,6 +779,7 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
   sessione.allegati = raccolti.map((allegato) => allegatoImmagine(allegato)
     ? { ...allegato, url: `data:${allegato.mimeType};base64,${allegato.data}` }
     : { ...allegato });
+  sessione.allegatiLibreria = libreria.map((allegato) => ({ ...allegato }));
   sessione.erroreAllegatiBozza = null;
   if (!sessione.bozzaSporca && typeof record?.testo === "string") {
     sessione.bozza = record.testo;
@@ -759,11 +788,11 @@ async function ripristinaFotografiaAllegatiBozza(sessione, chiaveAttesa) {
   // dopo un riavvio del bridge i file vengono adottati dalla nuova sessione
   // con id/token ruotati: nessuna finestra puo cancellare il pending altrui.
   if (copiaPerAltroDocumento || adozione.modificati) {
-    const adottato = raccolti.length
+    const adottato = raccolti.length || libreria.length
       ? await conservaFotografiaAllegati(
         sessione,
         chiaveAttesa,
-        sessione.allegati.map((allegato) => ({ ...allegato })),
+        [...sessione.allegati, ...sessione.allegatiLibreria].map((allegato) => ({ ...allegato })),
         sessione.lineageId,
       )
       : scriviRecordBozzaSessione(sessione, {
@@ -1015,6 +1044,8 @@ function applicaLineageRisolta(lineageId) {
     sessione.bozzaNonPersistita = false;
     void eliminaFilePendentiBestEffort(sessione, sessione.allegati);
     sessione.allegati = [];
+    sessione.allegatiLibreria = [];
+    sessione.generazioneIngressiLibreria = Number(sessione.generazioneIngressiLibreria || 0) + 1;
     sessione.allegatiBundleId = null;
     sessione.lineageId = null;
     sessione.lineageModificataLocalmente = false;
@@ -1639,7 +1670,13 @@ function disegnaInviiDaVerificare(sessione = sessioneAttiva()) {
       sessione.bozza = invio.testo;
       sessione.bozzaSporca = true;
       if (invio.allegatiDati?.length) {
-        sessione.allegati = invio.allegatiDati.map((allegato) => ({ ...allegato }));
+        const libreria = invio.allegatiDati.filter((allegato) => allegato.origineLibreria === true);
+        if (libreria.some((allegato) => !allegatoLibreriaValido(allegato))) {
+          toast("La copia contiene riferimenti della libreria non validi. Ripristina i documenti dalla libreria.", "errore");
+          return;
+        }
+        sessione.allegati = invio.allegatiDati.filter((allegato) => allegato.origineLibreria !== true).map((allegato) => ({ ...allegato }));
+        sessione.allegatiLibreria = libreria.map((allegato) => ({ ...allegato }));
         void conservaAllegatiBozza(sessione);
       }
       salvaBozza(sessione);
@@ -1780,6 +1817,10 @@ async function dimenticaBozza(sessione, { preservaInviiPendenti = false } = {}) 
   if (eliminato && bundlePrecedente && !bundleBozzaReferenziato(bundlePrecedente)) {
     await dimenticaAllegatiBozza(sessione, bundlePrecedente);
   }
+  if (eliminato) {
+    sessione.allegatiLibreria = [];
+    sessione.generazioneIngressiLibreria = Number(sessione.generazioneIngressiLibreria || 0) + 1;
+  }
   eliminaRecordBozza(id);
   eliminaRecordBozza("runtime:" + id);
   try {
@@ -1832,6 +1873,7 @@ function aggiornaIdentitaBozza(sessione, fileSessione) {
       (recordProprioVecchio && (recordProprioVecchio.testo || recordProprioVecchio.allegatiBundleId))
       || sessione.bozzaSporca
       || sessione.allegati.length
+      || sessione.allegatiLibreria?.length
     ),
   );
   sessione.fileSessione = nuovoFile;
@@ -1910,10 +1952,12 @@ function aggiornaIdentitaBozza(sessione, fileSessione) {
       && invio.testo.trim() === String(testoCandidato).trim()
     )) ? "" : testoCandidato;
   }
-  if (haBozzaRuntimePropria && sessione.allegati.length) {
+  if (haBozzaRuntimePropria && (sessione.allegati.length || sessione.allegatiLibreria?.length)) {
     void conservaAllegatiBozza(sessione);
   } else {
     sessione.allegati = [];
+    sessione.allegatiLibreria = [];
+    sessione.generazioneIngressiLibreria = Number(sessione.generazioneIngressiLibreria || 0) + 1;
     void ripristinaAllegatiBozza(sessione);
   }
   if (sessione.id === APP.attivaId) {
@@ -2677,7 +2721,7 @@ async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) 
       sessione.bozzaSporca = true;
       salvaBozza(sessione);
     }
-    if (sessione.bozza.length || sessione.allegati.length) {
+    if (sessione.bozza.length || sessione.allegati.length || sessione.allegatiLibreria?.length) {
       throw new Error(
         "Prima invia, copia o cancella la bozza e rimuovi gli allegati: appartengono alla conversazione corrente.",
       );
@@ -2941,6 +2985,10 @@ function creaSessione(meta) {
           : inviiPendenti.at(-1)?.testo || ""
     ),
     allegati: [],
+    allegatiLibreria: [],
+    codaIngressiLibreria: Promise.resolve(),
+    generazioneIngressiLibreria: 0,
+    importazioniLibreriaInCorso: 0,
     codaAllegatiBozza: Promise.resolve(),
     codaImportazioneImmagini: Promise.resolve(),
     codaImportazioneFile: Promise.resolve(),
@@ -3162,11 +3210,13 @@ async function chiudiSessione(id, operazione = null) {
   }
   const testoConfermato = sessione.bozza;
   const allegatiConfermati = sessione.allegati.map((allegato) => allegato.id).join("\u0000");
+  const libreriaConfermata = firmeAllegati(sessione.allegatiLibreria || []).join("\u0000");
   const nonInviati = [
     testoConfermato.length ? "la bozza" : null,
     sessione.allegati.length
       ? `${sessione.allegati.length} allegat${sessione.allegati.length === 1 ? "o" : "i"}`
       : null,
+    sessione.allegatiLibreria?.length ? `${sessione.allegatiLibreria.length} riferimenti alla libreria` : null,
   ].filter(Boolean).join(" e ");
   const dettaglio = [
     sessione.inEsecuzione
@@ -3176,6 +3226,7 @@ async function chiudiSessione(id, operazione = null) {
       ? `Contenuto non inviato: ${nonInviati}. Se chiudi verra eliminato.`
       : null,
     "La conversazione gia salvata e le copie degli invii da verificare restano recuperabili.",
+    sessione.allegatiLibreria?.length ? "I documenti indicizzati restano nella libreria." : null,
   ].filter(Boolean).join(" ");
   const confermato = await conferma("Chiudere " + (sessione.nomeCartella || "la sessione") + "?", dettaglio, "Chiudi sessione");
   if (!confermato) {
@@ -3189,6 +3240,7 @@ async function chiudiSessione(id, operazione = null) {
     (sessione.id === APP.attivaId && DOM.input.value !== testoConfermato)
     || sessione.bozza !== testoConfermato
     || sessione.allegati.map((allegato) => allegato.id).join("\u0000") !== allegatiConfermati
+    || firmeAllegati(sessione.allegatiLibreria || []).join("\u0000") !== libreriaConfermata
   ) {
     sessione.chiusuraInCorso = false;
     aggiornaInterfacciaAttiva();
@@ -3616,7 +3668,9 @@ function riconciliaInviiPendenti(sessione, messaggi) {
       && (() => {
         const attese = invio.allegati || [];
         const presenti = allegatiDaContenuto(messaggio.content);
-        const firmeAttese = attese.map((allegato) => allegato.firma).sort();
+        const firmeAttese = Array.isArray(invio.firmePrompt) && invio.firmePrompt.every((firma) => typeof firma === "string")
+          ? [...invio.firmePrompt].sort()
+          : attese.map((allegato) => allegato.firma).sort();
         const firmePresenti = firmeAllegati(presenti);
         return firmeAttese.length === firmePresenti.length
           && firmeAttese.every((firma, indiceAllegato) => firma === firmePresenti[indiceAllegato]);
@@ -4773,6 +4827,7 @@ function aggiornaInterfacciaAttiva() {
       && !sessione.ripristinoAllegatiInCorso
       && !sessione.importazioniImmaginiInCorso
       && !sessione.importazioniFileInCorso
+      && !sessione.importazioniLibreriaInCorso
       && !sessione.erroreAllegatiBozza,
   );
   const utilizzabile = composerScrivibile && !sessione?.compattazioneInCorso;
@@ -4795,7 +4850,7 @@ function aggiornaInterfacciaAttiva() {
   DOM.btnAllega.disabled = !mutazioniUtilizzabili;
   DOM.btnInvia.disabled = !mutazioniUtilizzabili
     || !cronologiaVerificata
-    || (!DOM.input.value.trim() && !(sessione?.allegati.length));
+    || (!DOM.input.value.trim() && !sessione?.allegati.length && !sessione?.allegatiLibreria?.length);
   DOM.btnModello.disabled = !mutazioniUtilizzabili;
   DOM.btnRagionamento.disabled = !mutazioniUtilizzabili;
   DOM.btnControlli.disabled = !mutazioniUtilizzabili;
@@ -4824,6 +4879,7 @@ function aggiornaInterfacciaAttiva() {
     : "Allega un'immagine o incolla uno screenshot";
   DOM.azioneAllegaFile.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
   DOM.azioneAllegaFile.title = "Allega un file locale alla richiesta";
+  DOM.azioneAllegaCartella.disabled = DOM.azioneAllegaFile.disabled;
   DOM.azioneRichiamaSkill.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
   DOM.azioneComandiEstensioni.disabled = !mutazioniUtilizzabili || !cronologiaVerificata;
   DOM.azioneRicaricaRisorse.disabled = DOM.btnRicaricaRisorse.disabled;
@@ -7338,6 +7394,10 @@ async function eseguiAzioneMenuComposer(azione) {
     DOM.scegliFile.click();
     return;
   }
+  if (azione === "allega-cartella") {
+    DOM.scegliCartella.click();
+    return;
+  }
   if (azione === "allega-immagine") {
     if (avvisaModelloSenzaImmagini(sessioneAttiva())) return;
     DOM.scegliImmagini.click();
@@ -7767,23 +7827,321 @@ function accodaAggiuntaFile(file, sessione = sessioneAttiva()) {
   return coda;
 }
 
-async function accodaAggiuntaAllegati(file) {
+async function raccogliIngressiAllegati(file, origine = {}) {
+  const risultato = {ingressi: [], esclusi: [], daCartella: origine.daCartella === true};
+  function aggiungi(candidato, percorsoRelativo, daCartella) {
+    let motivo;
+    try {
+      percorsoRelativo = LIBRARY_CORE.normalizzaPercorsoRelativo(percorsoRelativo);
+      motivo = LIBRARY_CORE.motivoEsclusione({nome: candidato.name, percorsoRelativo, dimensione: candidato.size});
+    } catch { motivo = "percorso"; }
+    if (motivo) risultato.esclusi.push({nome: percorsoRelativo, motivo});
+    else risultato.ingressi.push({file: candidato, percorsoRelativo, daCartella});
+  }
+  async function visita(voce, genitore = "", daCartella = false) {
+    const percorso = genitore ? genitore + "/" + voce.name : voce.name;
+    if (voce.isDirectory) {
+      risultato.daCartella = true;
+      if (LIBRARY_CORE.cartellaEsclusa(voce.name)) {
+        risultato.esclusi.push({nome: percorso, motivo: "cartella"});
+        return;
+      }
+      const lettore = voce.createReader();
+      while (true) {
+        const gruppo = await new Promise((risolvi, rifiuta) => lettore.readEntries(risolvi, rifiuta));
+        if (!gruppo.length) break;
+        for (const figlio of gruppo) await visita(figlio, percorso, true);
+      }
+    } else if (voce.isFile) {
+      // FileSystemEntry.file restituisce metadati e un File; i contenuti attendono la scelta.
+      const candidato = await new Promise((risolvi, rifiuta) => voce.file(risolvi, rifiuta));
+      aggiungi(candidato, percorso, daCartella);
+    }
+  }
+  if (origine.voci?.length) {
+    for (const ingresso of origine.voci) {
+      try {
+        if (ingresso.voce) await visita(ingresso.voce);
+        else if (ingresso.file) aggiungi(ingresso.file, ingresso.file.name, false);
+      } catch { risultato.esclusi.push({nome: ingresso.voce?.name || ingresso.file?.name || "File", motivo: "lettura"}); }
+    }
+  } else {
+    for (const candidato of Array.from(file || [])) {
+      const relativo = candidato.webkitRelativePath || candidato.name;
+      const daCartella = origine.daCartella === true || Boolean(candidato.webkitRelativePath);
+      risultato.daCartella ||= daCartella;
+      aggiungi(candidato, relativo, daCartella);
+    }
+  }
+  return risultato;
+}
+
+function chiediIndicizzazioneLibreria(ingressi) {
+  return new Promise((risolvi) => {
+    let risolta = false;
+    function termina(scelta, selezionati = []) {
+      if (risolta) return;
+      risolta = true;
+      risolvi({scelta, selezionati});
+      queueMicrotask(() => DOM.input.focus({preventScroll: true}));
+    }
+    const corpo = apriModale("Indicizza nella libreria", {larga: true, onCancel: () => termina("annulla")});
+    APP.modale.precedente = DOM.input;
+    const guscio = DOM.modaleLibreria.content.firstElementChild.cloneNode(true);
+    corpo.appendChild(guscio);
+    const descrizione = crea("p", "nota", "Vuoi indicizzare questi " + ingressi.length + " file nella tua libreria?");
+    descrizione.id = "libreria-domanda";
+    DOM.modale.setAttribute("aria-describedby", descrizione.id);
+    guscio.appendChild(descrizione);
+    const annulla = crea("button", "bottone", "Annulla");
+    annulla.type = "button";
+    annulla.onclick = () => chiudiModale();
+    function confermaScelta(scelta, selezionati) {
+      chiudiModale({annulla: false});
+      termina(scelta, selezionati);
+    }
+    const tutti = crea("button", "bottone primario", "[1] Sì, indicizza tutti");
+    const scelgo = crea("button", "bottone", "[2] Scelgo");
+    const soloChat = crea("button", "bottone", "[3] No, solo nella chat");
+    for (const pulsante of [tutti, scelgo, soloChat]) pulsante.type = "button";
+    tutti.onclick = () => confermaScelta("si", ingressi);
+    soloChat.onclick = () => confermaScelta("no", []);
+    scelgo.onclick = () => {
+      const contatore = crea("p", "libreria-contatore");
+      contatore.setAttribute("role", "status");
+      const elenco = crea("div", "libreria-selezione");
+      const caselle = ingressi.map((ingresso) => {
+        const riga = crea("label", "libreria-riga");
+        const casella = crea("input");
+        casella.type = "checkbox";
+        casella.checked = true;
+        const testo = crea("span");
+        testo.append(crea("strong", null, ingresso.percorsoRelativo), crea("small", null, (LIBRARY_CORE.estensioneFile(ingresso.file.name).toUpperCase() || ingresso.file.type || "File") + " · " + dimensioneFile(ingresso.file.size)));
+        riga.append(casella, testo);
+        elenco.appendChild(riga);
+        return {casella, ingresso};
+      });
+      const aggiorna = () => { contatore.textContent = caselle.filter((voce) => voce.casella.checked).length + " di " + ingressi.length + " selezionati"; };
+      for (const voce of caselle) voce.casella.onchange = aggiorna;
+      aggiorna();
+      guscio.replaceChildren(descrizione, contatore, elenco);
+      const indicizza = crea("button", "bottone primario", "Indicizza selezionati");
+      indicizza.type = "button";
+      indicizza.onclick = () => confermaScelta("scelgo", caselle.filter((voce) => voce.casella.checked).map((voce) => voce.ingresso));
+      DOM.modalePiede.replaceChildren(annulla, indicizza);
+      (caselle[0]?.casella || indicizza).focus();
+    };
+    DOM.modalePiede.hidden = false;
+    DOM.modalePiede.append(annulla, tutti, scelgo, soloChat);
+  });
+}
+
+function sessioneLibreriaValida(sessione, chiaveBozza, generazione = Number(sessione.generazioneIngressiLibreria || 0)) {
+  return APP.sessioni.get(sessione.id) === sessione
+    && sessione.chiaveBozza === chiaveBozza
+    && Number(sessione.generazioneIngressiLibreria || 0) === generazione
+    && !sessione.handoffInCorso
+    && !sessione.chiusuraInCorso
+    && !sessione.renderCronologiaInCorso;
+}
+
+function mostraRiepilogoLibreria(riepilogo) {
+  const messaggio = "indicizzati " + riepilogo.indicizzati + ", duplicati " + riepilogo.duplicati + ", saltati " + riepilogo.saltati
+    + " (per tipo " + riepilogo.tipo + ", per dimensione " + riepilogo.dimensione + ", per quota " + riepilogo.quota + ")"
+    + (riepilogo.cartella ? ". Cartelle escluse: " + riepilogo.cartella : "")
+    + (riepilogo.nascosto ? ". File nascosti esclusi: " + riepilogo.nascosto : "")
+    + (riepilogo.fermati ? ". Non elaborati dopo l'arresto: " + riepilogo.fermati : "");
+  const elemento = crea("div", "toast libreria-riepilogo");
+  elemento.appendChild(crea("p", null, messaggio));
+  if (riepilogo.radice) {
+    elemento.appendChild(crea("code", "libreria-percorso", riepilogo.radice));
+    const copia = crea("button", "bottone", "Copia percorso della libreria");
+    copia.type = "button";
+    copia.onclick = () => { void copiaTesto(riepilogo.radice); };
+    elemento.appendChild(copia);
+  }
+  if (riepilogo.avvisi.length) elemento.appendChild(crea("p", "nota", [...new Set(riepilogo.avvisi)].slice(0, 10).join(" ")));
+  const chiudi = crea("button", "bottone", "Chiudi riepilogo");
+  chiudi.type = "button";
+  chiudi.onclick = () => elemento.remove();
+  elemento.appendChild(chiudi);
+  DOM.toastArea.appendChild(elemento);
+  setTimeout(() => elemento.remove(), 30000);
+}
+
+async function indicizzaIngressiLibreria(ingressi, sessione, chiaveBozza, esclusi = []) {
+  const generazione = Number(sessione.generazioneIngressiLibreria || 0);
+  const riepilogo = {indicizzati: 0, duplicati: 0, saltati: 0, tipo: 0, dimensione: 0, quota: 0, cartella: 0, nascosto: 0, fermati: 0, radice: "", avvisi: []};
+  for (const escluso of esclusi) {
+    if (escluso.motivo === "cartella") riepilogo.cartella += 1;
+    else {
+      riepilogo.saltati += 1;
+      if (["tipo", "dimensione", "nascosto"].includes(escluso.motivo)) riepilogo[escluso.motivo] += 1;
+      else riepilogo.avvisi.push(escluso.nome + ": escluso per " + escluso.motivo + ".");
+    }
+  }
+  const validi = [];
+  let byte = 0;
+  for (const ingresso of ingressi) {
+    if (validi.length >= 200 || byte + ingresso.file.size > 300 * 1024 * 1024) {
+      riepilogo.saltati += 1;
+      riepilogo.quota += 1;
+    } else {
+      validi.push(ingresso);
+      byte += ingresso.file.size;
+    }
+  }
+  const operazione = {id: crypto.randomUUID(), ferma: false};
+  sessione.operazioneLibreria = operazione;
+  const pannello = crea("div", "libreria-avanzamento");
+  const stato = crea("span", null, "Preparo " + validi.length + " file per la libreria.");
+  stato.setAttribute("role", "status");
+  const ferma = crea("button", "bottone", "Ferma");
+  ferma.type = "button";
+  ferma.onclick = () => {
+    operazione.ferma = true;
+    ferma.disabled = true;
+    stato.textContent = "Completo il file corrente e poi mi fermo.";
+  };
+  pannello.append(stato, ferma);
+  DOM.progressoLibreria.appendChild(pannello);
+  DOM.progressoLibreria.hidden = false;
+  const impronte = new Set();
+  let elaborati = 0;
+  try {
+    for (const ingresso of validi) {
+      if (operazione.ferma || !sessioneLibreriaValida(sessione, chiaveBozza, generazione) || APP.attivaId !== sessione.id) break;
+      stato.textContent = "Indicizzazione " + (elaborati + 1) + " di " + validi.length + ": " + ingresso.percorsoRelativo;
+      try {
+        const data = await leggiFileBase64(ingresso.file);
+        if (!sessioneLibreriaValida(sessione, chiaveBozza, generazione)) break;
+        const risposta = await chiedi("/api/libreria/indicizza", {corpo: {
+          sessionId: sessione.id,
+          operazioneId: operazione.id,
+          nome: ingresso.file.name,
+          percorsoRelativo: ingresso.percorsoRelativo,
+          mimeType: ingresso.file.type || "application/octet-stream",
+          dimensione: ingresso.file.size,
+          data,
+        }});
+        if (!risposta || !["indicizzato", "duplicato", "saltato"].includes(risposta.esito)) throw new Error("Il ponte non ha restituito un esito valido della libreria.");
+        if (typeof risposta.radice === "string") riepilogo.radice = risposta.radice;
+        if (Array.isArray(risposta.avvisi)) riepilogo.avvisi.push(...risposta.avvisi.filter((voce) => typeof voce === "string"));
+        if (risposta.esito === "saltato") {
+          riepilogo.saltati += 1;
+          if (["tipo", "dimensione", "quota", "nascosto"].includes(risposta.motivo)) riepilogo[risposta.motivo] += 1;
+          else if (typeof risposta.motivo === "string" && risposta.motivo) riepilogo.avvisi.push(ingresso.file.name + ": " + risposta.motivo);
+        } else {
+          const impronta = risposta.voce?.sha256;
+          if (typeof impronta !== "string" || !/^[a-f\d]{64}$/i.test(impronta)) throw new Error("Il ponte non ha restituito l'impronta del file indicizzato.");
+          if (risposta.esito === "duplicato" || impronte.has(impronta)) riepilogo.duplicati += 1;
+          else riepilogo.indicizzati += 1;
+          impronte.add(impronta);
+          if (typeof risposta.motivo === "string" && risposta.motivo
+            && (risposta.esito !== "duplicato" || risposta.motivo === "indice riparato")) riepilogo.avvisi.push(ingresso.file.name + ": " + risposta.motivo);
+          const riferimento = risposta.riferimento;
+          if (riferimento != null) {
+            if (typeof riferimento.nome !== "string" || !riferimento.nome || typeof riferimento.percorso !== "string" || !riferimento.percorso || typeof riferimento.mimeType !== "string" || !Number.isSafeInteger(riferimento.dimensione) || riferimento.dimensione < 0 || typeof risposta.percorsoIndice !== "string" || !risposta.percorsoIndice) throw new Error("Il ponte non ha restituito un riferimento leggibile della libreria.");
+            if (sessioneLibreriaValida(sessione, chiaveBozza, generazione)) {
+              sessione.allegatiLibreria ||= [];
+              if (!sessione.allegatiLibreria.some((voce) => voce.percorso === riferimento.percorso)) {
+                ramificaLineageBozza(sessione);
+                sessione.allegatiLibreria.push({tipo: "file", origineLibreria: true, percorsoIndice: risposta.percorsoIndice, nome: riferimento.nome, percorso: riferimento.percorso, mimeType: riferimento.mimeType, dimensione: riferimento.dimensione});
+                void conservaAllegatiBozza(sessione);
+                if (APP.attivaId === sessione.id) disegnaAllegati();
+              }
+            }
+          }
+        }
+      } catch (errore) {
+        riepilogo.saltati += 1;
+        riepilogo.avvisi.push(ingresso.file.name + ": " + testoErrore(errore));
+      }
+      elaborati += 1;
+    }
+  } finally {
+    riepilogo.fermati = validi.length - elaborati;
+    pannello.remove();
+    DOM.progressoLibreria.hidden = !DOM.progressoLibreria.children.length;
+    if (sessione.operazioneLibreria === operazione) sessione.operazioneLibreria = null;
+    mostraRiepilogoLibreria(riepilogo);
+  }
+  return riepilogo;
+}
+
+async function accodaAggiuntaAllegati(file, origine = {}) {
   const sessione = sessioneAttiva();
   const candidati = Array.from(file || []);
-  if (!sessione || !candidati.length) return 0;
-  const immagini = candidati.filter((voce) => tipoImmagineSupportato(voce.type));
-  const generici = candidati.filter((voce) => !tipoImmagineSupportato(voce.type));
-  let aggiunti = 0;
-  if (generici.length) aggiunti += await accodaAggiuntaFile(generici, sessione);
-  if (immagini.length) aggiunti += await accodaAggiuntaImmagini(immagini, sessione);
-  return aggiunti;
+  if (!sessione || (!candidati.length && !origine.voci?.length && !origine.daCartella)) return 0;
+  const chiaveBozza = sessione.chiaveBozza;
+  const generazione = Number(sessione.generazioneIngressiLibreria || 0);
+  const precedente = sessione.codaIngressiLibreria || Promise.resolve();
+  let rilascia;
+  const turno = new Promise((risolvi) => { rilascia = risolvi; });
+  sessione.codaIngressiLibreria = precedente.catch(() => {}).then(() => turno);
+  sessione.importazioniLibreriaInCorso = Number(sessione.importazioniLibreriaInCorso || 0) + 1;
+  aggiornaInterfacciaAttiva();
+  try {
+    await precedente.catch(() => {});
+    if (!sessioneLibreriaValida(sessione, chiaveBozza, generazione) || APP.attivaId !== sessione.id) return null;
+    const raccolta = await raccogliIngressiAllegati(candidati, origine);
+    if (!sessioneLibreriaValida(sessione, chiaveBozza, generazione) || APP.attivaId !== sessione.id) return null;
+    const immagini = raccolta.ingressi.filter((voce) => tipoImmagineSupportato(voce.file.type)).map((voce) => voce.file);
+    const documenti = raccolta.ingressi.filter((voce) => !tipoImmagineSupportato(voce.file.type));
+    if (raccolta.daCartella && documenti.length === 0) {
+      const conteggi = new Map();
+      for (const escluso of raccolta.esclusi) conteggi.set(escluso.motivo, (conteggi.get(escluso.motivo) || 0) + 1);
+      const esclusioni = conteggi.size ? ". Esclusi " + raccolta.esclusi.length + " elementi ("
+        + [...conteggi].map(([motivo, numero]) => motivo + ": " + numero).join(", ") + ")" : "";
+      toast("La cartella non conteneva documenti da indicizzare" + esclusioni + ".", "avviso");
+      return immagini.length && sessioneLibreriaValida(sessione, chiaveBozza, generazione)
+        ? await accodaAggiuntaImmagini(immagini, sessione) : 0;
+    }
+    const scelta = documenti.length > 0
+      ? await chiediIndicizzazioneLibreria(documenti)
+      : {scelta: "no", selezionati: []};
+    if (scelta.scelta === "annulla" || !sessioneLibreriaValida(sessione, chiaveBozza, generazione) || APP.attivaId !== sessione.id) return null;
+    let aggiunti = 0;
+    if (scelta.scelta === "no") {
+      if (raccolta.daCartella) toast("Una cartella si può solo indicizzare.", "avviso");
+      const generici = documenti.filter((voce) => !voce.daCartella).map((voce) => voce.file);
+      if (generici.length) aggiunti += await accodaAggiuntaFile(generici, sessione);
+      if (raccolta.esclusi.length) toast("Esclusi " + raccolta.esclusi.length + " elementi: " + raccolta.esclusi.map((voce) => voce.motivo).filter((motivo, indice, tutti) => tutti.indexOf(motivo) === indice).join(", ") + ".", "avviso");
+    } else if (scelta.selezionati.length || raccolta.esclusi.length) {
+      const riepilogo = await indicizzaIngressiLibreria(scelta.selezionati, sessione, chiaveBozza, raccolta.esclusi);
+      aggiunti += riepilogo.indicizzati + riepilogo.duplicati;
+    } else toast("Nessun file selezionato per la libreria.", "avviso");
+    if (immagini.length && sessioneLibreriaValida(sessione, chiaveBozza, generazione)) aggiunti += await accodaAggiuntaImmagini(immagini, sessione);
+    return aggiunti;
+  } catch (errore) {
+    toast(testoErrore(errore), "errore");
+    return 0;
+  } finally {
+    sessione.importazioniLibreriaInCorso = Math.max(0, Number(sessione.importazioniLibreriaInCorso || 0) - 1);
+    rilascia();
+    if (APP.attivaId === sessione.id) {
+      disegnaAllegati();
+      aggiornaInterfacciaAttiva();
+      if (!APP.modale && !sessione.chiusuraInCorso && !sessione.handoffInCorso) DOM.input.focus({preventScroll: true});
+    }
+  }
+}
+
+function rimuoviAllegatiLibreria(sessione) {
+  if (!sessione || sessione.renderCronologiaInCorso || sessione.invioInCorso || sessione.importazioniLibreriaInCorso) return;
+  ramificaLineageBozza(sessione);
+  sessione.allegatiLibreria = [];
+  void conservaAllegatiBozza(sessione);
+  disegnaAllegati();
+  aggiornaInterfacciaAttiva();
 }
 
 function disegnaAllegati() {
   const sessione = sessioneAttiva();
   const allegati = sessione?.allegati || [];
+  const libreria = sessione?.allegatiLibreria || [];
   DOM.allegati.replaceChildren();
-  DOM.allegati.hidden = !allegati.length;
+  DOM.allegati.hidden = !allegati.length && !libreria.length;
   allegati.forEach((allegato, indice) => {
     const file = allegatoFile(allegato);
     const box = crea("div", "allegato" + (file ? " allegato-file" : ""));
@@ -7818,6 +8176,20 @@ function disegnaAllegati() {
     box.appendChild(rimuovi);
     DOM.allegati.appendChild(box);
   });
+  if (libreria.length) {
+    const chip = crea("div", "allegato allegato-file allegato-libreria");
+    chip.title = libreria.map((voce) => voce.percorso).join("\n");
+    chip.appendChild(crea("strong", null, libreria.length + " file in libreria"));
+    const rimuovi = crea("button", null, "×");
+    rimuovi.type = "button";
+    rimuovi.setAttribute("aria-label", "Rimuovi i riferimenti alla libreria dalla richiesta");
+    rimuovi.disabled = Boolean(sessione.renderCronologiaInCorso || sessione.invioInCorso || sessione.importazioniLibreriaInCorso);
+    rimuovi.onclick = () => rimuoviAllegatiLibreria(sessione);
+    chip.appendChild(rimuovi);
+    DOM.allegati.appendChild(chip);
+    const {avviso} = LIBRARY_CORE.componiVociBlocco(allegati.filter(allegatoFile), libreria, libreria[0].percorsoIndice);
+    if (avviso) DOM.allegati.appendChild(crea("p", "nota libreria-avviso", avviso));
+  }
 }
 
 function trovaComandoCatalogo(sessione, nome) {
@@ -8822,7 +9194,7 @@ async function gestisciComandoComposer(sessione, fotografia, testo) {
   if (shell) {
     const comandoShell = shell[2].trim();
     if (!comandoShell) return false;
-    if (sessione.allegati.length) {
+    if (sessione.allegati.length || sessione.allegatiLibreria?.length) {
       toast("Rimuovi o invia prima le immagini allegate; non appartengono al comando shell.", "avviso");
       return true;
     }
@@ -8845,7 +9217,7 @@ async function gestisciComandoComposer(sessione, fotografia, testo) {
       return true;
     }
   }
-  if (["builtin", "extension"].includes(comando?.source) && sessione.allegati.length) {
+  if (["builtin", "extension"].includes(comando?.source) && (sessione.allegati.length || sessione.allegatiLibreria?.length)) {
     toast("Rimuovi o invia prima le immagini allegate; non appartengono al comando di pi.", "avviso");
     return true;
   }
@@ -8881,6 +9253,7 @@ async function invia() {
   aggiornaInterfacciaAttiva();
   try {
     const chiaveAttesa = sessione.chiaveBozza;
+    await (sessione.codaIngressiLibreria || Promise.resolve()).catch(() => {});
     await (sessione.codaImportazioneImmagini || Promise.resolve()).catch(() => {});
     await (sessione.codaImportazioneFile || Promise.resolve()).catch(() => {});
     await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
@@ -8925,7 +9298,7 @@ async function invia() {
   salvaBozza(sessione);
   clearTimeout(timerSalvaBozza.get(sessione.id));
   timerSalvaBozza.delete(sessione.id);
-  if (!testo && !sessione.allegati.length) return;
+  if (!testo && !sessione.allegati.length && !sessione.allegatiLibreria?.length) return;
   if (new TextEncoder().encode(bozzaInviata).byteLength > LIMITE_TESTO_RICHIESTA) {
     toast("Il testo supera 2 MB. Allegalo come file o dividilo in piu richieste.", "errore");
     return;
@@ -8942,8 +9315,13 @@ async function invia() {
     ? sessione.comandi.find((voce) => voce.name === nomeComando)
     : null;
   sessione.turnoAspettaTesto = comandoNoto?.source !== "extension";
-  const allegatiInviati = [...sessione.allegati];
-  const fileAllegati = allegatiInviati.filter(allegatoFile);
+  const libreriaInviata = [...(sessione.allegatiLibreria || [])];
+  if (libreriaInviata.some((voce) => !allegatoLibreriaValido(voce))) {
+    toast("Uno dei riferimenti della libreria non è valido. Rimuovi il chip e indicizza di nuovo il file.", "errore");
+    return;
+  }
+  const allegatiInviati = [...sessione.allegati, ...libreriaInviata];
+  let fileAllegati = sessione.allegati.filter(allegatoFile);
   const riferimentiFilePrompt = riferimentiFileServer(fileAllegati);
   if (
     riferimentiFilePrompt.length !== fileAllegati.length
@@ -8955,6 +9333,9 @@ async function invia() {
     );
     return;
   }
+  const composizione = LIBRARY_CORE.componiVociBlocco(fileAllegati, libreriaInviata, libreriaInviata[0]?.percorsoIndice);
+  fileAllegati = composizione.voci.map((voce) => ({ ...voce, tipo: "file" }));
+  if (composizione.avviso) toast(composizione.avviso, "avviso");
   const immaginiAllegateInvio = allegatiInviati.filter(allegatoImmagine);
   const immagini = immaginiAllegateInvio.map(({ data, mimeType }) => ({ type: "image", data, mimeType }));
   const copiaAllegati = allegatiInviati.map((voce) => ({ ...voce }));
@@ -8988,7 +9369,7 @@ async function invia() {
   sessione.seguiFondo = true;
   const messaggio = aggiungiMessaggio(sessione, "tu · in invio", testoInvio, "utente", {
     immagini: copiaAllegati.filter(allegatoImmagine),
-    file: copiaAllegati.filter(allegatoFile),
+    file: fileAllegati,
   });
   DOM.input.disabled = true;
   DOM.btnInvia.disabled = true;
@@ -9012,6 +9393,7 @@ async function invia() {
       creatoIl: Date.now(),
       lineageId: lineageInvio,
       origine: comandoNoto?.source || null,
+      firmePrompt: firmeAllegati([...fileAllegati, ...immaginiAllegateInvio]),
       allegati: allegatiInviati.map((allegato) => ({
         id: allegato.id,
         token: allegato.token,
@@ -9021,6 +9403,8 @@ async function invia() {
         mimeType: allegato.mimeType,
         dimensione: allegato.dimensione,
         percorso: allegato.percorso,
+        origineLibreria: allegato.origineLibreria,
+        percorsoIndice: allegato.percorsoIndice,
         firma: firmaAllegato(allegato),
       })),
       allegatiDati: allegatiInviati.map((allegato) => ({ ...allegato })),
@@ -9091,6 +9475,7 @@ async function invia() {
     // perso se PI viene chiuso prima del suo turno.
     const inviati = new Set(allegatiInviati);
     sessione.allegati = sessione.allegati.filter((allegato) => !inviati.has(allegato));
+    sessione.allegatiLibreria = (sessione.allegatiLibreria || []).filter((allegato) => !inviati.has(allegato));
     void conservaAllegatiBozza(sessione);
     if (sessione.id === APP.attivaId) {
       DOM.input.value = sessione.bozza;
@@ -9537,7 +9922,7 @@ async function passaConversazioneAlTerminale(
   clearTimeout(timerSalvaBozza.get(sessione.id));
   timerSalvaBozza.delete(sessione.id);
   if (sessione.bozzaSporca) salvaBozza(sessione);
-  if (sessione.bozza.length || sessione.allegati.length) {
+  if (sessione.bozza.length || sessione.allegati.length || sessione.allegatiLibreria?.length) {
     toast(
       "Prima copia, invia o cancella la bozza e rimuovi gli allegati: il terminale puo ricevere soltanto la cronologia gia salvata.",
       "errore",
@@ -9556,7 +9941,7 @@ async function passaConversazioneAlTerminale(
   sessione.handoffInCorso = true;
   aggiornaInterfacciaAttiva();
   await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
-  if (sessione.bozza.length || sessione.allegati.length) {
+  if (sessione.bozza.length || sessione.allegati.length || sessione.allegatiLibreria?.length) {
     sessione.handoffInCorso = false;
     aggiornaInterfacciaAttiva();
     toast("La bozza e cambiata: il passaggio al terminale e stato annullato.", "errore");
@@ -10589,8 +10974,12 @@ DOM.menuAzioniComposer.addEventListener("keydown", (evento) => {
 DOM.scegliFile.onchange = async () => {
   const aggiunti = await accodaAggiuntaAllegati(DOM.scegliFile.files || []);
   DOM.scegliFile.value = "";
-  if (aggiunti === 1) toast("File allegato alla richiesta.", "ok");
-  else if (aggiunti > 1) toast(`${aggiunti} file allegati alla richiesta.`, "ok");
+  if (aggiunti === 1) toast("Elaborato 1 file.", "ok");
+  else if (aggiunti > 1) toast(`Elaborati ${aggiunti} file.`, "ok");
+};
+DOM.scegliCartella.onchange = async () => {
+  await accodaAggiuntaAllegati(DOM.scegliCartella.files || [], {daCartella: true});
+  DOM.scegliCartella.value = "";
 };
 DOM.scegliImmagini.onchange = async () => {
   await accodaAggiuntaImmagini(DOM.scegliImmagini.files || []);
@@ -10627,9 +11016,10 @@ document.addEventListener("drop", async (evento) => {
   }
   chiudiMenuAzioniComposer();
   chiudiPaletteComandi({ sopprimi: true });
-  const aggiunti = await accodaAggiuntaAllegati(evento.dataTransfer?.files || []);
-  if (aggiunti === 1) toast("File trascinato nella richiesta.", "ok");
-  else if (aggiunti > 1) toast(`${aggiunti} file trascinati nella richiesta.`, "ok");
+  const voci = Array.from(evento.dataTransfer?.items || []).filter((voce) => voce.kind === "file").map((voce) => ({voce: voce.webkitGetAsEntry?.() || null, file: voce.getAsFile?.() || null}));
+  const aggiunti = await accodaAggiuntaAllegati(evento.dataTransfer?.files || [], {voci});
+  if (aggiunti === 1) toast("Elaborato 1 file trascinato.", "ok");
+  else if (aggiunti > 1) toast(`Elaborati ${aggiunti} file trascinati.`, "ok");
 });
 DOM.input.addEventListener("paste", async (evento) => {
   const immagini = immaginiDaClipboard(evento.clipboardData);
@@ -10755,6 +11145,8 @@ window.addEventListener("beforeunload", (evento) => {
     APP.attese.size
     || [...APP.sessioni.values()].some(
       (voce) => voce.allegati.length
+        || voce.allegatiLibreria?.length
+        || voce.importazioniLibreriaInCorso
         || voce.importazioniImmaginiInCorso
         || voce.importazioniFileInCorso
         || voce.inviiPendenti.length

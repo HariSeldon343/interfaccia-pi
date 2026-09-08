@@ -185,6 +185,7 @@
         <div class="coda" id="coda" hidden aria-live="polite"></div>
         <div class="invii-verifica" id="invii-verifica" hidden aria-live="polite"></div>
         <div class="allegati" id="allegati" hidden aria-label="File e immagini allegati"></div>
+        <div class="progresso-libreria" id="progresso-libreria" hidden aria-live="polite"></div>
 
         <div class="composer-shell" id="composer-shell">
           <div class="menu-azioni-composer" id="menu-azioni-composer" role="menu"
@@ -193,6 +194,11 @@
                     role="menuitem" data-azione-composer="allega-file" tabindex="-1">
               <span class="menu-azione-icona" aria-hidden="true">▱</span>
               <span><strong>Allega file</strong><small>PDF, Word, Excel, testo o altro file locale</small></span>
+            </button>
+            <button id="azione-allega-cartella" class="menu-azione-composer" type="button"
+                    role="menuitem" data-azione-composer="allega-cartella" tabindex="-1">
+              <span class="menu-azione-icona" aria-hidden="true">▰</span>
+              <span><strong>Allega cartella</strong><small>Indicizza i documenti nella libreria</small></span>
             </button>
             <button id="azione-allega-immagine" class="menu-azione-composer" type="button"
                     role="menuitem" data-azione-composer="allega-immagine" tabindex="-1">
@@ -227,6 +233,7 @@
 
           <div class="scrittura">
             <input id="scegli-file" type="file" multiple hidden>
+            <input id="scegli-cartella" type="file" webkitdirectory multiple hidden>
             <input id="scegli-immagini" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
             <button id="btn-allega" class="strumento-input" type="button" disabled
                     aria-label="Allega file o apri altre azioni" title="Allega file o immagini, richiama skill o usa estensioni"
@@ -313,11 +320,14 @@
     </section>
   </div>
 
+  <template id="modale-libreria"><div class="libreria-scelta"></div></template>
+
   <script src="/palette-core.js"></script>
   <script src="/auth-flow-core.js"></script>
   <script src="/link-core.js"></script>
   <script src="/clipboard-core.js"></script>
   <script src="/attachment-core.js"></script>
+  <script src="/library-core.js"></script>
   <script src="/view-core.js"></script>
   <script src="/updater-core.js"></script>
   <script src="/startup-core.js"></script>

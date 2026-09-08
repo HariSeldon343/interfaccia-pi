@@ -51,6 +51,8 @@ a sei sessioni complessive.
   anche incollando direttamente uno screenshot con `Ctrl+V`; mentre Pi lavora,
   **falla dopo** non interrompe il turno e
   **intervieni adesso** è una scelta esplicita valida per un solo messaggio;
+- trascinare cartelle o scegliere **＋ > Allega cartella** per indicizzare
+  documenti nella libreria locale, con testo estratto da PDF e file Office;
 - vedere risposta e stato in streaming; ragionamenti e strumenti tecnici restano
   raccolti in blocchi compatti, espandibili soltanto quando servono;
 - consultare **Stato reale** senza interrogare il modello e senza percentuali
@@ -228,7 +230,7 @@ marker separato; testo e immagini gia inviate sono recuperabili dalla sezione
 in IndexedDB e ripristinate con la bozza; se il salvataggio locale fallisce,
 l'app avverte di non chiudere o ricaricare la finestra.
 
-I file generici scelti dal composer vengono copiati sotto `.pi/gui/allegati`
+Con **No, solo nella chat**, i file generici scelti dal composer vengono copiati sotto `.pi/gui/allegati`
 con un token locale associato alla sessione. Finché appartengono soltanto a una
 bozza sono `pending` e la rimozione li cancella best-effort; quando il prompt
 entra nel canale RPC diventano permanenti e non possono più essere cancellati
@@ -297,16 +299,71 @@ chiesto a `pi` di lasciare in esecuzione.
 | `tests/sistema-guidato-manager.test.mjs` | test di singleton, proxy, session binding, rinnovo, crash e shutdown |
 | `tests/sistema-guidato-runtime-bundle.test.mjs` | test di manifesti, compatibilita, migrazione read-only e asset del pannello |
 
+## File, cartelle e libreria locale
+
+Trascina file o cartelle nella chat, oppure usa **＋ > Allega file** o
+**Allega cartella**. Prima di leggere i contenuti dei documenti compare una
+sola domanda: **Vuoi indicizzare questi N file nella tua libreria?**
+
+- **[1] Sì, indicizza tutti** copia e indicizza tutti i documenti ammessi.
+- **[2] Scelgo** mostra percorso relativo, tipo e dimensione, con tutte le
+  caselle inizialmente selezionate e un contatore aggiornato.
+- **[3] No, solo nella chat** usa gli allegati temporanei, fino a otto file.
+  Una cartella si può solo indicizzare; eventuali file singoli dello stesso
+  trascinamento possono comunque essere allegati.
+- **Annulla** o **Esc** scarta l'intero ingresso, comprese le immagini.
+  Con le altre scelte le immagini seguono il flusso consueto, anche se in
+  **Scelgo** non rimane selezionato alcun documento.
+
+Con una cartella di lavoro, gli originali sono copiati in
+`<cartella>/raw/<categoria>/` e l'indice è `<cartella>/.ingest-index.json`.
+Senza cartella, la radice è `%USERPROFILE%\.pi\gui\libreria\`. Questa
+libreria è persistente: la pulizia degli allegati temporanei non la elimina.
+Le categorie sono determinate dal nome del file: `normativa`, `audit`,
+`client-evidence`, `linee-guida`, `web-clip` e `documenti`. I file con lo stesso
+contenuto vengono riconosciuti senza copiarli nuovamente; nomi uguali con
+contenuti diversi ricevono un suffisso senza sovrascritture.
+
+PDF, DOCX, XLSX e PPTX hanno un file `<nome>.<estensione>.testo.md` accanto
+all'originale. Il riferimento inviato a Pi punta al testo estratto; per testo
+semplice e sorgenti punta all'originale. Gli altri binari vengono conservati
+ma non riferiti a Pi. Un PDF senza testo mostra la nota che serve OCR:
+l'app non esegue il riconoscimento delle scansioni. Le righe estratte sono
+spezzate per consentire la lettura dei documenti lunghi con `offset` e `limit`.
+Se esiste già `wiki/sources/`, viene aggiunta una scheda fonte in bozza con
+una sintesi provvisoria ricavata dal testo.
+
+Il chip **N file in libreria** conserva i riferimenti con la bozza. Rimuoverlo
+toglie i riferimenti dalla richiesta e lascia intatti i documenti indicizzati.
+Il messaggio può contenere fino a otto riferimenti complessivi fra allegati
+temporanei e libreria; oltre il limite, un avviso segnala che Pi riceverà i
+primi sette più l'indice dell'intera libreria.
+
+Ogni operazione ammette al massimo 200 documenti e 300 MiB, con 10 MiB per file.
+Sono esclusi eseguibili e script di sistema, cartelle nascoste e cartelle di
+dipendenze o compilazione. Il riepilogo distingue file saltati per tipo,
+dimensione e quota dalle cartelle escluse, il cui contenuto non viene
+esplorato. **Ferma** completa il file corrente e arresta i successivi;
+il riepilogo resta visibile per 30 secondi e offre **Copia percorso della libreria**.
+Ogni estrazione ha un timeout di 60 secondi. Gli archivi Office ammettono
+50 MiB decompressi per voce e 200 MiB complessivi; il testo estratto viene
+limitato a cinque milioni di caratteri, con una nota quando è troncato.
+L'indice ammette fino a 32 MiB: un aggiornamento che supererebbe il limite
+viene rifiutato prima di creare nuovi originali o modificare l'indice.
+
 ## Verifica e ricompilazione
 
 Dal terminale, nella cartella del progetto:
 
 ```text
+npm run vendor:estrazione
 npm run check
 npm test
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 npm run vendor:pi:check
+npm run vendor:estrazione:check
 npm run vendor:sistema:check
+npm run release:check
 $env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.2'
 npm run build:desktop:offline
 ```

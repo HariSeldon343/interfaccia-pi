@@ -5,6 +5,12 @@ Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.2
 Pilot**, esplicitamente non-production, e include Pi 0.84.2 in un runtime
 autocontenuto e verificato.
 
+Le modifiche **Non rilasciate** aggiungono una libreria locale: trascina file o
+cartelle, oppure usa **＋ > Allega cartella**, e scegli una sola volta se
+indicizzare tutti i documenti, selezionarne alcuni o usare soltanto la chat.
+PDF, DOCX, XLSX e PPTX vengono affiancati dal testo estratto; Pi riceve i
+percorsi leggibili. Questa tappa mantiene la versione **2.6.2**.
+
 La 2.6 integra **Sistema Guidato** come pannello interno, raggiungibile da un
 pulsante evidente e dal comando virtuale `/sistema` anche senza selezionare una
 cartella. Un solo servizio locale viene avviato su richiesta per l'intero
@@ -48,8 +54,11 @@ di aggiornamento sono descritti in
 ```powershell
 npm ci
 npm run vendor:pi
+npm run vendor:estrazione
 pwsh -NoProfile -File scripts/prepare-sistema-guidato.ps1 -SourcePath C:\src\sistema-guidato
 npm run check
+npm run vendor:estrazione:check
+npm run release:check
 npm test
 npm run test:smoke
 cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -58,6 +67,13 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 `vendor/pi-runtime` non viene versionato nel repository Git perché e un albero
 riproducibile di circa 204 MiB. Lo script di vendoring scarica esclusivamente le
 versioni bloccate, ne verifica i digest e genera il manifesto completo.
+
+`vendor/estrazione` contiene soltanto i tre file inventariati di
+`pdfjs-dist` 6.3.289, compresa la licenza Apache-2.0. Il tarball viene
+verificato con SHA-512 prima dell'estrazione; ogni file ha un'impronta SHA-256
+nel manifest. Il bundle è un output non versionato e viene verificato anche
+all'avvio dell'estrattore. DOCX, XLSX e PPTX usano il lettore ZIP/XML interno,
+senza nuove dipendenze npm a runtime.
 
 Anche `vendor/sistema-guidato` e un output verificato e non viene versionato.
 In locale richiede il percorso esplicito del monorepo; in CI viene scaricato da

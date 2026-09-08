@@ -52,14 +52,19 @@ test("build desktop richiede il vendor verificato e Node 22.19 minimo", async ()
     readFile(join(RADICE, "avvia.mjs"), "utf8"),
   ]);
   assert.equal(pacchetto.engines.node, ">=22.19.0");
+  assert.equal(pacchetto.scripts.test, "node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs");
   assert.equal(lock.packages[""].engines.node, ">=22.19.0");
   assert.equal(
     pacchetto.scripts["build:desktop"],
-    "npm run vendor:pi && npm run vendor:sistema:prepare && tauri build",
+    "npm run vendor:pi && npm run vendor:estrazione && npm run vendor:sistema:prepare && tauri build",
   );
   assert.equal(
     pacchetto.scripts["build:desktop:offline"],
-    "npm run vendor:pi:check && npm run vendor:sistema:check && tauri build",
+    "npm run vendor:pi:check && npm run vendor:estrazione:check && npm run vendor:sistema:check && tauri build",
+  );
+  assert.equal(
+    pacchetto.scripts["build:desktop:production"],
+    "npm run vendor:pi:check && npm run vendor:estrazione:check && npm run vendor:sistema:check && npm run updater:production:prepare && tauri build --config src-tauri/tauri.production.generated.json",
   );
   assert.match(launcher, /VERSIONE_NODE_MINIMA = \[22, 19, 0\]/);
   assert.match(launcher, /versioneNodeSupportata\(process\.versions\.node\)/);
@@ -84,6 +89,10 @@ test("Tauri include runtime completo e il launcher release lo preferisce", async
   assert.equal(config.bundle.resources["../app/public/updater-core.js"], "app/public/updater-core.js");
   assert.equal(config.bundle.resources["../app/sistema-guidato-manager.mjs"], "app/sistema-guidato-manager.mjs");
   assert.equal(config.bundle.resources["../vendor/sistema-guidato"], "app/sistema-guidato");
+  assert.equal(config.bundle.resources["../vendor/estrazione"], "app/estrazione");
+  for (const modulo of ["libreria.mjs", "estrazione.mjs", "estrazione-worker.mjs", "estrazione-runtime.mjs", "persistenza-atomica.mjs", "public/library-core.js"]) {
+    assert.equal(config.bundle.resources["../app/" + modulo], "app/" + modulo, "Risorsa runtime mancante: " + modulo);
+  }
   assert.equal(config.bundle.resources["../app/extensions"], undefined);
   assert.equal(config.app.windows[0].dragDropEnabled, false,
     "WebView2 deve lasciare il drag/drop dei file alla pagina HTML");
@@ -99,6 +108,27 @@ test("Tauri include runtime completo e il launcher release lo preferisce", async
   assert.match(rust, /cartelle\.push\(percorso_semplice\(tools\)\)/);
   assert.match(rust, /#\[cfg\(debug_assertions\)\][\s\S]*fn runtime_pi_sviluppo/);
   assert.match(rust, /#\[cfg\(not\(debug_assertions\)\)\][\s\S]*None/);
+});
+
+test("estrazione: script di verifica e CI preparano il bundle con cache legata ai pin", async () => {
+  const pacchetto = JSON.parse(await readFile(join(RADICE, "package.json"), "utf8"));
+  assert.equal(pacchetto.scripts["vendor:estrazione"], "node scripts/vendor-estrazione.mjs");
+  assert.equal(pacchetto.scripts["vendor:estrazione:check"], "node scripts/vendor-estrazione.mjs --check");
+  const controlli = pacchetto.scripts.check.split(" && ");
+  for (const file of ["app/libreria.mjs", "app/estrazione.mjs", "app/estrazione-worker.mjs", "app/estrazione-runtime.mjs", "app/persistenza-atomica.mjs", "app/public/library-core.js", "scripts/vendor-estrazione.mjs"]) {
+    assert.ok(controlli.includes("node --check " + file), "Controllo sintattico mancante: " + file);
+  }
+  assert.equal(pacchetto.dependencies, undefined);
+  for (const nome of ["verifica-windows.yml", "compila-windows.yml"]) {
+    const workflow = (await readFile(join(RADICE, ".github", "workflows", nome), "utf8")).replace(/\r\n/g, "\n");
+    assert.match(workflow, /path: vendor\/estrazione/, "Cache estrazione mancante: " + nome);
+    assert.match(workflow, /key: estrazione-.*hashFiles\('scripts\/vendor-estrazione\.mjs', 'app\/estrazione-runtime\.mjs'\)/);
+    const pi = workflow.indexOf("npm run vendor:pi:check");
+    const estrazione = workflow.indexOf("npm run vendor:estrazione\n");
+    const verifica = workflow.indexOf("npm run vendor:estrazione:check");
+    const sistema = workflow.indexOf("- name: Acquisisce Sistema Guidato");
+    assert.ok(pi >= 0 && estrazione > pi && verifica > estrazione && sistema > verifica, "Ordine di preparazione bundle non valido: " + nome);
+  }
 });
 
 test("vendor isola npm, completa il lock e non acquisisce il profilo utente", async () => {

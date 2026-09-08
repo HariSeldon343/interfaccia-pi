@@ -40,6 +40,12 @@ jobs:
           path: vendor/pi-runtime
           key: pi-runtime-${{ runner.os }}-${{ hashFiles('scripts/vendor-pi-runtime.mjs', 'scripts/patches/**', 'package-lock.json') }}
 
+      - name: Cache estrazione verificata
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: vendor/estrazione
+          key: estrazione-${{ runner.os }}-${{ hashFiles('scripts/vendor-estrazione.mjs', 'app/estrazione-runtime.mjs') }}
+
       - name: Dipendenze e runtime
         shell: pwsh
         run: |
@@ -48,6 +54,14 @@ jobs:
           npm ci
           npm run vendor:pi
           npm run vendor:pi:check
+
+      - name: Prepara estrazione documenti
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          npm run vendor:estrazione
+          npm run vendor:estrazione:check
 
       - name: Acquisisce Sistema Guidato dal repository privato
         shell: pwsh
