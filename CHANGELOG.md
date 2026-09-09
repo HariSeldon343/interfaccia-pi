@@ -1,6 +1,6 @@
 # Changelog
 
-## Non rilasciato
+## 2.7.0 Pilot (non-production) — 2026-09-09
 
 - rende sicuro il cambio modello: se necessario riassume con il modello
   corrente e verifica lo spazio prima di attivare la destinazione; un catalogo
@@ -26,7 +26,10 @@
   sotto il controllo dell'utente;
 - aggiorna il protocollo del ponte alla versione 8, con stato della compattazione
   preventiva, annullamento, protezione degli invii concorrenti e statistiche
-  sconosciute indicate come non disponibili; la versione del prodotto resta 2.6.2;
+  sconosciute indicate come non disponibili;
+- sblocca il primo avvio senza un modello configurato verificando il catalogo
+  senza riassociare i modelli non GPT; corregge il pulsante a ingranaggio dei
+  **Controlli avanzati** e mostra una sola volta gli errori del cambio modello;
 - aggiunge trascinamento HTML5 di file e cartelle e **＋ > Allega cartella**;
   prima di leggere i contenuti chiede una sola volta se indicizzare tutti i
   documenti, scegliere con caselle di spunta oppure usarli soltanto nella chat;
@@ -46,8 +49,7 @@
   oltre otto riferimenti, invia i primi sette e l'indice con un avviso visibile;
 - crea una scheda fonte soltanto quando `wiki/sources/` esiste già, senza
   sovrascrivere schede presenti;
-- mantiene la versione 2.6.2: l'aumento avverrà durante il rilascio, insieme
-  alla rigenerazione del pacchetto compatibile di Sistema Guidato.
+- resta un pilot non-production, updater-disabled e non firmato Authenticode.
 
 ## 2.6.2 Pilot (non-production) — 2026-08-26
 

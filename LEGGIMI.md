@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.6.2 Pilot non-production, aggiornata il 26/08/2026.
+Versione 2.7.0 Pilot non-production, aggiornata il 09/09/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -171,7 +171,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.6.2\release\bundle\nsis\Interfaccia pi_2.6.2_x64-setup.exe`
+`src-tauri\target-final-2.7.0\release\bundle\nsis\Interfaccia pi_2.7.0_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -382,7 +382,7 @@ npm run vendor:pi:check
 npm run vendor:estrazione:check
 npm run vendor:sistema:check
 npm run release:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.6.2'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.7.0'
 npm run build:desktop:offline
 ```
 

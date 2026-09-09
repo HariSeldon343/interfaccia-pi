@@ -43,13 +43,13 @@ async function cammina(radice) {
   return risultati;
 }
 
-test("il bundle vendorizzato dichiara host, mount e proxy del pilot 2.6.2", async () => {
+test("il bundle vendorizzato dichiara host, mount e proxy del pilot 2.7.0", async () => {
   const { integrazione } = await manifesti();
   assert.equal(integrazione.schemaVersion, 1);
   assert.equal(integrazione.component, "sistema-guidato");
   assert.deepEqual(integrazione.host, {
     name: "interfaccia-pi",
-    version: "2.6.2",
+    version: "2.7.0",
     mountPath: "/sistema",
     sameOriginProxy: true,
     interfacciaPiPanel: true,

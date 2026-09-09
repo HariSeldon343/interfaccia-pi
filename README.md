@@ -1,17 +1,17 @@
 # Interfaccia pi
 
 Interfaccia desktop Windows, accessibile e multi-sessione, per usare l'agente
-Pi con o senza una cartella di lavoro. La versione candidata è la **2.6.2
+Pi con o senza una cartella di lavoro. La versione candidata è la **2.7.0
 Pilot**, esplicitamente non-production, e include Pi 0.84.2 in un runtime
 autocontenuto e verificato.
 
-Le modifiche **Non rilasciate** aggiungono una libreria locale: trascina file o
+La **2.7.0** aggiunge una libreria locale: trascina file o
 cartelle, oppure usa **＋ > Allega cartella**, e scegli una sola volta se
 indicizzare tutti i documenti, selezionarne alcuni o usare soltanto la chat.
 PDF, DOCX, XLSX e PPTX vengono affiancati dal testo estratto; Pi riceve i
-percorsi leggibili. Questa tappa mantiene la versione **2.6.2**.
+percorsi leggibili.
 
-Le modifiche non rilasciate completano anche il cambio modello sicuro: quando
+La 2.7.0 porta anche il cambio modello sicuro: quando
 serve, il modello corrente riassume la conversazione prima del cambio. GPT-5.6
 Sol, Terra e Luna usano automaticamente 1.050.000 token solo con account ChatGPT
 (`openai-codex`); con chiave API (`openai`) il catalogo resta a 272.000 e il
@@ -29,7 +29,7 @@ token e cookie interni non entrano in URL, JavaScript o storage del browser.
 Il bundle proviene dal monorepo `sistema-guidato` ed e accettato soltanto dopo
 la verifica di compatibilita, inventario e SHA-256.
 
-La 2.6.2 unifica la copertura della 2.5.3 con Sistema Guidato 0.1.3: i vecchi
+La 2.6.2 ha unificato la copertura della 2.5.3 con Sistema Guidato 0.1.3: i vecchi
 sottocomandi `/sistema` aprono le sezioni equivalenti della dashboard e la
 libreria trusted consente di aggiungere SchemePack e template DOCX/XLSX senza
 esporre il runtime al modello.
