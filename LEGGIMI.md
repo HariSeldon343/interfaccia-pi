@@ -37,9 +37,10 @@ a sei sessioni complessive.
   vedendo subito se LM Studio, Ollama o llama.cpp sono realmente in esecuzione;
 - vedere la finestra di contesto effettiva e cambiare modello con un riassunto
   preventivo, eseguito con il modello corrente quando lo spazio non basta;
-- usare automaticamente 1.050.000 token con GPT-5.6 Sol, Terra e Luna e account
-  ChatGPT (`openai-codex`): il consumo pesa sui limiti del piano, senza fattura
-  per token. Con chiave API (`openai`) resta il default di catalogo a 272.000;
+- usare automaticamente 1.050.000 token con GPT-5.6 Sol, Terra e Luna e GPT-6 Astra
+  con account ChatGPT (`openai-codex`): il consumo pesa sui limiti del piano,
+  senza fattura per token. Con chiave API (`openai`) resta il default di catalogo
+  a 272.000;
   nel pannello **Finestra di contesto** si può attivare o disattivare il contesto
   esteso dopo aver letto le tariffe del modello. Oltre la soglia indicata la
   tariffa lunga si applica all'intera richiesta. Gli override personali vengono

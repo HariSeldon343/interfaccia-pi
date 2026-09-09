@@ -6858,20 +6858,32 @@ function creaInformazioneContestoModelli(sessione, { nascosto = false } = {}) {
       pannello.appendChild(crea(
         "p",
         "nota",
-        "Con account ChatGPT non viene emessa una fattura per token: il consumo pesa sui limiti del piano. Per GPT-5.6 la finestra estesa si applica automaticamente, salvo preferenze personali già impostate.",
+        "Con account ChatGPT non viene emessa una fattura per token: il consumo pesa sui limiti del piano. Per GPT-5.6 Sol, Terra e Luna e GPT-6 Astra la finestra estesa si applica automaticamente, salvo preferenze personali già impostate.",
       ));
     }
-    if (
-      modello?.provider !== "openai"
-      || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(modello.id)
-    ) return;
+    if (modello?.provider !== "openai") return;
+    if (!statoApi) {
+      const stato = crea("p", erroreApi ? "avviso-sicurezza" : "nota",
+        erroreApi || "Verifico la configurazione API...");
+      stato.setAttribute("role", "status");
+      stato.setAttribute("aria-live", "polite");
+      pannello.appendChild(stato);
+      if (erroreApi || letturaInCorso) {
+        const riprova = bottoneAzione("Riprova la verifica API", () => leggiStatoApi());
+        riprova.disabled = letturaInCorso;
+        pannello.appendChild(riprova);
+      }
+      if (!letturaInCorso && !erroreApi) void leggiStatoApi();
+      return;
+    }
+    if (!Array.isArray(statoApi.managedModelIds) || !statoApi.managedModelIds.includes(modello.id)) return;
 
     const riga = crea("label", "riga-impostazione impostazione-spiegata");
     const testo = crea("span", "testo-impostazione");
-    const titolo = "Usa il contesto esteso di GPT-5.6 in API (1.050.000 token)";
+    const titolo = "Usa il contesto esteso di GPT-5.6 Sol, Terra e Luna e GPT-6 Astra in API (1.050.000 token)";
     testo.append(
       crea("strong", null, titolo),
-      crea("small", null, "La scelta vale per Sol, Terra e Luna con chiave API."),
+      crea("small", null, "La scelta vale per GPT-5.6 Sol, Terra e Luna e GPT-6 Astra con chiave API."),
     );
     const interruttore = crea("input");
     interruttore.type = "checkbox";
@@ -6913,11 +6925,6 @@ function creaInformazioneContestoModelli(sessione, { nascosto = false } = {}) {
     stato.setAttribute("role", "status");
     stato.setAttribute("aria-live", "polite");
     pannello.appendChild(stato);
-    if ((erroreApi || letturaInCorso) && !statoApi) {
-      const riprova = bottoneAzione("Riprova la verifica API", () => leggiStatoApi());
-      riprova.disabled = letturaInCorso;
-      pannello.appendChild(riprova);
-    }
     interruttore.onchange = async () => {
       if (salvataggioInCorso || interruttore.disabled) return;
       const enabled = interruttore.checked;
@@ -6954,7 +6961,6 @@ function creaInformazioneContestoModelli(sessione, { nascosto = false } = {}) {
         }
       }
     };
-    if (!statoApi && !letturaInCorso && !erroreApi) void leggiStatoApi();
   };
 
   const risultato = {

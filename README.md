@@ -12,10 +12,10 @@ PDF, DOCX, XLSX e PPTX vengono affiancati dal testo estratto; Pi riceve i
 percorsi leggibili.
 
 La 2.7.0 porta anche il cambio modello sicuro: quando
-serve, il modello corrente riassume la conversazione prima del cambio. GPT-5.6
-Sol, Terra e Luna usano automaticamente 1.050.000 token solo con account ChatGPT
-(`openai-codex`); con chiave API (`openai`) il catalogo resta a 272.000 e il
-contesto esteso è una scelta esplicita nel pannello informativo, con i costi
+serve, il modello corrente riassume la conversazione prima del cambio.
+GPT-5.6 Sol, Terra e Luna e GPT-6 Astra usano automaticamente 1.050.000 token solo
+con account ChatGPT (`openai-codex`); con chiave API (`openai`) il catalogo resta
+a 272.000 e il contesto esteso è una scelta esplicita nel pannello informativo, con i costi
 letti dal catalogo. Gli override personali restano protetti. Il ponte versione 8
 compatta inoltre prima dei nuovi turni dalla soglia predefinita del 90%, regolabile
 fra 50 e 95 nelle **Impostazioni della GUI** e salvata in

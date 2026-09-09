@@ -5,10 +5,11 @@
 - rende sicuro il cambio modello: se necessario riassume con il modello
   corrente e verifica lo spazio prima di attivare la destinazione; un catalogo
   incompleto lascia a Pi la decisione sul modello, senza compattazioni preventive;
-- estende automaticamente GPT-5.6 Sol, Terra e Luna a 1.050.000 token solo con
-  account ChatGPT (`openai-codex`); in API (`openai`) resta il catalogo a 272.000,
-  con interruttore esplicito e tariffe lunghe lette dal catalogo del modello;
-  migra i vecchi override API della GUI e conserva quelli personali;
+- estende automaticamente GPT-5.6 Sol, Terra e Luna e GPT-6 Astra a 1.050.000 token
+  solo con account ChatGPT (`openai-codex`); in API (`openai`) resta il catalogo
+  a 272.000, con interruttore esplicito e tariffe lunghe lette dal catalogo del modello;
+  migra i vecchi override API della GUI e conserva quelli personali; il pannello
+  riceve dal server la lista unica dei modelli gestiti;
 - aggiunge la compattazione preventiva nel ponte prima dei nuovi turni, dalla
   soglia predefinita del 90%, configurabile fra 50 e 95 nelle **Impostazioni della
   GUI** e persistente in `~/.pi/gui/impostazioni.json`; non cambia l'impostazione

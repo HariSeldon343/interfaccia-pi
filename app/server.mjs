@@ -72,7 +72,7 @@ const SOGLIA_COMPATTAZIONE_PREDEFINITA = 90;
 const { RISERVA_CAMBIO_MODELLO } = VISTA_CORE;
 const MARGINE_STIMA_DOPO_COMPATTAZIONE = 4_096;
 const PROVIDER_GPT_CONTESTO_ESTESO = ["openai", "openai-codex"];
-const MODELLI_GPT_CONTESTO_ESTESO = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MODELLI_GPT_CONTESTO_ESTESO = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
 const CHIAVE_METADATI_INTERFACCIA_PI = "_interfacciaPi";
 const CHIAVE_PROVENIENZA_CONTESTO_GPT = "gptExtendedContextV1";
 const LIMITE_RIGA_RPC = 32 * 1024 * 1024;
@@ -2295,7 +2295,12 @@ function leggiProvenienzaContestoGpt(configurazione) {
     if (provenienza.version === 2 && provider.source !== (providerId === "openai" ? "api-explicit" : "account-automatic")) nonValida();
     const modelliGestiti = Object.keys(provider.models);
     if (modelliGestiti.some((modello) => !MODELLI_GPT_CONTESTO_ESTESO.includes(modello))) nonValida();
-    if (provenienza.version === 1 && modelliGestiti.length !== MODELLI_GPT_CONTESTO_ESTESO.length) nonValida();
+    // La V1 registrava esattamente i primi tre id storici. I nuovi modelli
+    // gestiti non devono invalidare la provenienza da migrare.
+    if (provenienza.version === 1 && (
+      modelliGestiti.length !== 3
+      || MODELLI_GPT_CONTESTO_ESTESO.slice(0, 3).some((id) => !Object.hasOwn(provider.models, id))
+    )) nonValida();
     for (const modelloId of modelliGestiti) {
       const modello = provider.models[modelloId];
       if (
@@ -2303,7 +2308,9 @@ function leggiProvenienzaContestoGpt(configurazione) {
         || typeof modello.overrideExisted !== "boolean"
         || typeof modello.contextWindowExisted !== "boolean"
       ) nonValida();
-      if (!provider.modelOverridesExisted && modello.overrideExisted) nonValida();
+      // In V2 un modello puo essere acquisito dopo la creazione del contenitore
+      // da parte della GUI, conservando campi personali aggiunti nel frattempo.
+      if (provenienza.version === 1 && !provider.modelOverridesExisted && modello.overrideExisted) nonValida();
       if (!modello.overrideExisted && modello.contextWindowExisted) nonValida();
       if (
         modello.contextWindowExisted !== Object.hasOwn(modello, "contextWindow")
@@ -2340,13 +2347,18 @@ function statoContestoGpt(configurazione, providerId = "openai") {
   const esterni = MODELLI_GPT_CONTESTO_ESTESO.some((id) =>
     Object.hasOwn(configurazione.providers?.[providerId]?.modelOverrides?.[id] || {}, "contextWindow")
     && !Object.hasOwn(gestiti?.models || {}, id));
-  const conflict = esterni || (managed ? mode !== "extended" : mode !== "short");
+  // Una scelta API salvata resta esplicita anche se il catalogo gestito cresce:
+  // si puo ripristinarla o completarla senza acquisire override personali.
+  const sceltaGestitaIntegra = managed && Object.keys(gestiti.models).length > 0
+    && Object.keys(gestiti.models).every((id) =>
+      configurazione.providers?.[providerId]?.modelOverrides?.[id]?.contextWindow === CONTESTO_GPT_ESTESO);
+  const conflict = esterni || (managed ? !sceltaGestitaIntegra : mode !== "short");
   return {
     mode,
     managed,
     mutable: !conflict,
     conflict,
-    enabled: mode === "extended",
+    enabled: sceltaGestitaIntegra || mode === "extended",
     ...(univoca ? { contextWindow: primo } : {}),
   };
 }
@@ -2550,6 +2562,7 @@ function finestreContestoGpt(configurazione) {
 function rispostaContestoGpt(configurazione, refreshRequired) {
   return {
     ...statoContestoGpt(configurazione),
+    managedModelIds: MODELLI_GPT_CONTESTO_ESTESO,
     restartRequired: false,
     refreshRequired: Boolean(refreshRequired),
   };
@@ -2617,6 +2630,12 @@ function verificaCatalogoContestoGpt(
         && typeof modello === "object"
         && String(modello.provider || "").toLowerCase() === provider
         && String(modello.id || "").toLowerCase() === id);
+      // Il catalogo remoto puo esporre solo alcuni modelli gestiti e quello
+      // incorporato puo non conoscere ancora Astra. Il corrente resta obbligatorio.
+      if (corrispondenze.length === 0 && (
+        provider !== providerCorrenteNormalizzato
+        || id !== String(modelloCorrente || "").toLowerCase()
+      )) continue;
       if (
         corrispondenze.length !== 1
         || corrispondenze[0].contextWindow !== attesa
@@ -3676,14 +3695,14 @@ export class SessionePi {
         || erroriCatalogoRilevanti(catalogo.errors || [], providerVerificati).length > 0
       ) {
         throw erroreHttp(
-          "Pi ha segnalato errori per i provider GPT-5.6 effettivamente disponibili",
+          "Pi ha segnalato errori per i provider di GPT-5.6 Sol, Terra e Luna e GPT-6 Astra effettivamente disponibili",
           409,
         );
       }
       this.#verificaSequenzaCatalogoCorrente(sequenza);
 
-      // Solo i GPT-5.6 gestiti richiedono di confermare la finestra dopo la
-      // riscrittura di models.json. Senza un modello corrente utilizzabile,
+      // GPT-5.6 Sol, Terra e Luna e GPT-6 Astra richiedono di confermare la
+      // finestra dopo la riscrittura di models.json. Senza un modello corrente utilizzabile,
       // la verifica del catalogo deve consentire la successiva scelta dalla GUI.
       if (!modelloGptContestoGestito(provider, modello)) {
         this.catalogoModelliDaRicaricare = false;
@@ -10041,16 +10060,16 @@ if (eseguitoDirettamente) {
   try {
     const contestoAutomatico = await configuraCapacitaMassimaGpt56(homedir());
     if (contestoAutomatico.modificata) {
-      console.log("  Contesto GPT-5.6 aggiornato: estensione automatica solo per l'account openai-codex; API a scelta esplicita.");
+      console.log("  Contesto GPT-5.6 Sol, Terra e Luna e GPT-6 Astra aggiornato: estensione automatica solo per l'account openai-codex; API a scelta esplicita.");
     } else if (contestoAutomatico.protetta) {
-      console.warn("  Contesto GPT-5.6: mantengo l'override personale presente in models.json.");
+      console.warn("  Contesto GPT-5.6 Sol, Terra e Luna e GPT-6 Astra: mantengo l'override personale presente in models.json.");
     }
   } catch (errore) {
     // Un file personale malformato o non modificabile non deve impedire
     // l'accesso alle altre funzioni. Il catalogo effettivo resta visibile nella
     // GUI e l'errore viene conservato nel log di avvio.
     console.warn(
-      "  Non ho applicato automaticamente il contesto massimo GPT-5.6:",
+      "  Non ho applicato automaticamente il contesto massimo GPT-5.6 Sol, Terra e Luna e GPT-6 Astra:",
       String(errore?.message || errore),
     );
   }

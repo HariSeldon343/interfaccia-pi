@@ -1112,10 +1112,10 @@ test("il contesto dei modelli è dinamico e il cambio sotto pressione resta sicu
   assert.match(snapshot, /contestoGptDaRicaricare[\s\S]*?aggiornaCatalogoContestoGptSessione/,
     "lo snapshot deve riprendere la verifica del catalogo ancora pendente");
   assert.doesNotMatch(frontend, /function\s+(?:modelloGpt56Configurabile|creaGestioneContestoEstesoGpt)\s*\(/,
-    "la GUI non deve ripristinare il vecchio selettore universale di GPT-5.6");
+    "la GUI non deve ripristinare il vecchio selettore universale del contesto GPT");
   for (const nome of ["apriSceltaModello", "preparaCatalogoModelliDinamico", "dettaglioModello", "pressioneContestoCambioModello"]) {
-    assert.doesNotMatch(corpoFunzione(nome), /gpt-5\.6|GPT-5\.6|\/api\/contesto-esteso-gpt|cost\??\.tiers|1[._]050[._]000|272[._]000/,
-      `il picker generico non deve contenere una politica dedicata a GPT-5.6: ${nome}`);
+    assert.doesNotMatch(corpoFunzione(nome), /gpt-5\.6|GPT-5\.6|gpt-6-astra|GPT-6 Astra|\/api\/contesto-esteso-gpt|cost\??\.tiers|1[._]050[._]000|272[._]000/,
+      `il picker generico non deve contenere una politica dedicata al contesto GPT: ${nome}`);
   }
   assert.doesNotMatch(frontend, /Conferma 1,05M|Usa 1\.050\.000 token/,
     "il vecchio interruttore universale 272k/1,05M deve restare assente");
@@ -1133,9 +1133,11 @@ test("il contesto dei modelli è dinamico e il cambio sotto pressione resta sicu
     "il pannello deve spiegare la compattazione preventiva");
   assert.match(informazione, /conserva il modello precedente/,
     "il pannello deve descrivere il fallimento atomico dello switch");
-  assert.match(informazione, /modello\?\.provider !== "openai"[\s\S]*?!\["gpt-5\.6-sol", "gpt-5\.6-terra", "gpt-5\.6-luna"\]\.includes\(modello\.id\)[\s\S]*?\) return;/,
-    "l'unico interruttore del pannello deve riguardare GPT-5.6 sul provider API");
-  assert.match(informazione, /Usa il contesto esteso di GPT-5\.6 in API \(1\.050\.000 token\)/);
+  assert.match(informazione, /modello\?\.provider !== "openai"[\s\S]*?!statoApi\.managedModelIds\.includes\(modello\.id\)\) return;/,
+    "l'unico interruttore del pannello deve riguardare i modelli indicati dal server sul provider API");
+  assert.doesNotMatch(frontend, /\bgpt-(?:5\.6-(?:sol|terra|luna)|6-astra)\b/,
+    "il frontend non deve contenere una lista scritta a mano degli id dei modelli gestiti");
+  assert.match(informazione, /Usa il contesto esteso di GPT-5\.6 Sol, Terra e Luna e GPT-6 Astra in API \(1\.050\.000 token\)/);
   assert.match(informazione, /cost[\s\S]*?\.tiers[\s\S]*?inputTokensAbove/,
     "soglia e prezzi lunghi devono provenire dal catalogo");
   assert.match(informazione, /l'intera richiesta usa la tariffa lunga/);
@@ -1282,6 +1284,7 @@ test("il picker mostra un solo toast quando il cambio modello fallisce via HTTP 
 
 test("il pannello API usa le tariffe del modello e conserva la scelta salvata se il catalogo fallisce", async () => {
   const richieste = [];
+  const managedModelIds = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
   const creaNodo = (tag, classe = "", textContent = "") => ({
     tag, className: classe, textContent, children: [],
     setAttribute(nome, valore) { this[nome] = valore; },
@@ -1308,7 +1311,7 @@ test("il pannello API usa le tariffe del modello e conserva la scelta salvata se
     (valore) => valore.toLocaleString("it-IT"),
     async (via, { corpo }) => {
       richieste.push({ via, corpo });
-      return { enabled: corpo.enabled === true, mutable: true, conflict: false, refreshRequired: Object.hasOwn(corpo, "enabled") };
+      return { managedModelIds, enabled: corpo.enabled === true, mutable: true, conflict: false, refreshRequired: Object.hasOwn(corpo, "enabled") };
     },
     () => false,
     async () => {
@@ -1354,19 +1357,96 @@ test("il pannello API usa le tariffe del modello e conserva la scelta salvata se
   assert.match(testo(pannello), /Scelta API salvata e cataloghi verificati/);
   assert.equal(aggiornamentiLista, 2);
 
+  const astra = creaPannello({
+    ...sessione,
+    modello: {
+      provider: "openai", id: "gpt-6-astra", contextWindow: 272000,
+      cost: { input: 10, output: 50, tiers: [{ inputTokensAbove: 272000, input: 20, output: 75 }] },
+    },
+  });
+  astra.aggiorna();
+  await Promise.resolve();
+  assert.equal(nodi(astra.elemento).find((nodo) => nodo.type === "checkbox").disabled, false,
+    "GPT-6 Astra deve offrire l'interruttore API quando è nella lista del server");
+  assert.match(testo(astra), /GPT-5\.6 Sol, Terra e Luna e GPT-6 Astra/);
+  assert.match(testo(astra), /input 10 -> 20, output 50 -> 75 USD per milione/,
+    "Astra deve mostrare le proprie tariffe dal catalogo");
+
   for (const modello of [
     { ...sessione.modello, provider: "openai-codex" },
     { ...sessione.modello, id: "altro-modello" },
   ]) {
     const senzaScelta = creaPannello({ ...sessione, modello });
     senzaScelta.aggiorna();
+    await Promise.resolve();
     assert.equal(nodi(senzaScelta.elemento).some((nodo) => nodo.type === "checkbox"), false);
     if (modello.provider === "openai-codex") {
       assert.match(testo(senzaScelta), /non viene emessa una fattura per token/);
       assert.match(testo(senzaScelta), /il consumo pesa sui limiti del piano/);
+    } else {
+      assert.doesNotMatch(testo(senzaScelta), /GPT-5\.6|GPT-6 Astra|tariffa lunga|scelta API/i,
+        "un modello fuori lista non deve avere informazioni o controlli dedicati");
     }
   }
-  assert.equal(richieste.length, 3, "account ChatGPT e altri modelli non devono interrogare la scelta API");
+  assert.equal(richieste.length, 5,
+    "ogni pannello API legge la lista del server, mentre l'account ChatGPT non interroga la scelta API");
+});
+
+test("una risposta senza managedModelIds non mostra l'interruttore e non lancia eccezioni", async () => {
+  const richieste = [];
+  const risposta = { enabled: false, mutable: true, conflict: false };
+  let rispostaApi = risposta;
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [],
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    replaceChildren(...nodi) { this.children = nodi; },
+  });
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const creaPannello = new Function(
+    "crea", "APP", "modelloCorrenteSessione", "finestraModelloSessione", "numero", "chiedi",
+    "contestoGptSessioneOccupata", "aggiornaCataloghiContestoGptAperti", "testoErrore", "bottoneAzione",
+    `return function(sessione, { nascosto = false } = {}) { ${corpoFunzione("creaInformazioneContestoModelli")} };`,
+  )(
+    creaNodo, { modale: {} }, (sessione) => sessione.modello, () => 272000, String,
+    async (via, { corpo }) => {
+      richieste.push({ via, corpo });
+      return rispostaApi;
+    },
+    () => false, async () => {}, (errore) => errore.message,
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+  );
+  const sessione = {
+    id: "sessione-api-astra", invioInCorso: false, contestoGptDaRicaricare: false,
+    modello: { provider: "openai", id: "gpt-6-astra" },
+  };
+  for (const gestito of [false, true]) {
+    rispostaApi = gestito ? { ...risposta, managedModelIds: ["gpt-6-astra"] } : risposta;
+    let pannello;
+    await assert.doesNotReject(async () => {
+      pannello = creaPannello(sessione);
+      pannello.aggiorna();
+      await Promise.resolve();
+      pannello.aggiorna();
+    });
+    const elementi = nodi(pannello.elemento);
+    assert.equal(elementi.some((nodo) => nodo.textContent === "Riprova la verifica API"), false);
+    const interruttore = elementi.find((nodo) => nodo.type === "checkbox");
+    if (gestito) {
+      assert.ok(interruttore, "la stessa risposta con Astra nell'elenco deve mostrare l'interruttore");
+      assert.equal(interruttore.checked, false);
+      assert.equal(interruttore.disabled, false);
+    } else {
+      assert.equal(interruttore, undefined);
+      assert.equal(elementi.some((nodo) => nodo.className === "avviso-sicurezza"), false,
+        "il campo assente non deve generare avvisi di errore");
+    }
+  }
+  assert.deepEqual(richieste, [
+    { via: "/api/contesto-esteso-gpt", corpo: {} },
+    { via: "/api/contesto-esteso-gpt", corpo: {} },
+  ]);
 });
 
 test("due verifiche API ravvicinate producono una sola richiesta", async () => {
@@ -1409,7 +1489,7 @@ test("due verifiche API ravvicinate producono una sola richiesta", async () => {
   assert.equal(richieste.length, 2, "dopo il primo errore i due clic devono avviare una sola nuova richiesta");
   assert.equal(bottoneRiprova().disabled, true, "il bottone deve restare disabilitato durante la verifica");
   await secondo;
-  completaVerifica({ enabled: false, mutable: true, conflict: false });
+  completaVerifica({ managedModelIds: ["gpt-5.6-terra"], enabled: false, mutable: true, conflict: false });
   await primo;
   assert.equal(bottoneRiprova(), undefined);
   assert.equal(nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox").disabled, false);

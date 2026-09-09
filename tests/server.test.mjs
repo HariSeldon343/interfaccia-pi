@@ -73,6 +73,26 @@ function catalogoGpt56(contextWindowApi, contextWindowAccount = 272_000) {
   return models;
 }
 
+function configurazioneContestoGptV2Storica(providerId) {
+  const storici = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+  return {
+    providers: { [providerId]: { modelOverrides: Object.fromEntries(
+      storici.map((id) => [id, { contextWindow: 1_050_000 }]),
+    ) } },
+    _interfacciaPi: { gptExtendedContextV1: {
+      version: 2, managedBy: "interfaccia-pi", fileExisted: false,
+      providersContainerExisted: false, metadataContainerExisted: false,
+      providers: { [providerId]: {
+        source: providerId === "openai" ? "api-explicit" : "account-automatic",
+        providerExisted: false, modelOverridesExisted: false,
+        models: Object.fromEntries(storici.map((id) => [id, {
+          overrideExisted: false, contextWindowExisted: false,
+        }])),
+      } },
+    } },
+  };
+}
+
 function intercettaRpcSessione(sessione, gestisci) {
   const scriviOriginale = sessione.proc.stdin.write;
   sessione.proc.stdin.write = (riga) => {
@@ -111,7 +131,7 @@ test("politica distinta per provider", async (t) => {
   assert.equal(Object.hasOwn(configurazione.providers, "openai"), false);
   assert.equal(configurazione._interfacciaPi.gptExtendedContextV1.version, 2);
   for (const provider of ["openai-codex"]) {
-    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
       assert.equal(
         configurazione.providers[provider].modelOverrides[modello].contextWindow,
         1_050_000,
@@ -135,16 +155,18 @@ test("l'avvio non sovrascrive un contextWindow personale su entrambi i provider"
   await writeFile(percorso, originale, "utf8");
 
   const personale = JSON.parse(originale);
+  personale.providers.openai.modelOverrides["gpt-6-astra"] = { contextWindow: 700_000, maxTokens: 128_000 };
   personale.providers["openai-codex"] = { modelOverrides: {
     "gpt-5.6-sol": { contextWindow: 272_000, name: "Limite personale" },
     "gpt-5.6-terra": { contextWindow: 800_000 },
+    "gpt-6-astra": { contextWindow: 272_000, name: "Astra personale" },
   } };
   await writeFile(percorso, JSON.stringify(personale), "utf8");
   const esito = await configuraCapacitaMassimaGpt56(home);
   assert.equal(esito.modificata, true);
   const dopo = JSON.parse(await readFile(percorso, "utf8"));
   assert.deepEqual(dopo.providers.openai, personale.providers.openai);
-  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra"]) {
     assert.deepEqual(dopo.providers["openai-codex"].modelOverrides[id], personale.providers["openai-codex"].modelOverrides[id]);
   }
   assert.equal(dopo.providers["openai-codex"].modelOverrides["gpt-5.6-luna"].contextWindow, 1_050_000);
@@ -203,12 +225,218 @@ test("la migrazione rimuove solo gli override automatici su openai e preserva qu
     "gpt-5.6-terra": { contextWindow: 777_777 },
     "gpt-5.6-luna": { contextWindow: 272_000 },
   });
-  assert.deepEqual(dopo.providers["openai-codex"], providers["openai-codex"]);
+  assert.deepEqual(dopo.providers["openai-codex"].modelOverrides, {
+    ...providers["openai-codex"].modelOverrides,
+    "gpt-6-astra": { contextWindow: 1_050_000 },
+  });
   assert.equal(dopo.datoUtente, true);
   assert.equal(dopo._interfacciaPi.gptExtendedContextV1.version, 2);
   assert.equal(Object.hasOwn(dopo._interfacciaPi.gptExtendedContextV1.providers, "openai"), false);
   const testo = await readFile(percorso, "utf8");
   assert.equal((await configuraCapacitaMassimaGpt56(home)).modificata, false);
+  assert.equal(await readFile(percorso, "utf8"), testo);
+});
+
+test("il contesto esteso automatico copre anche GPT-6 Astra con account", async (t) => {
+  for (const { nome, esistente, astra } of [
+    { nome: "crea la configurazione assente", esistente: false },
+    { nome: "completa la configurazione 2.7.0 con tre modelli", esistente: true },
+    { nome: "preserva i campi Astra aggiunti alla configurazione 2.7.0", esistente: true,
+      astra: { maxTokens: 128_000, name: "Astra personale" } },
+  ]) {
+    await t.test(nome, async (t) => {
+      const home = await mkdtemp(join(tmpdir(), "pi-gui-contesto-astra-"));
+      const directory = join(home, ".pi", "agent");
+      const percorso = join(directory, "models.json");
+      const modelli = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"];
+      let precedente = null;
+      if (esistente) {
+        precedente = configurazioneContestoGptV2Storica("openai-codex");
+        if (astra) precedente.providers["openai-codex"].modelOverrides["gpt-6-astra"] = astra;
+        await mkdir(directory, { recursive: true });
+        await writeFile(percorso, JSON.stringify(precedente), "utf8");
+      }
+      const backup = [];
+      const configurazioni = [];
+      const preparaHome = async (home) => {
+        configurazioni.push(await configuraCapacitaMassimaGpt56(home, {
+          rimuoviBackupConfigurazione: async (file, opzioni) => {
+            backup.push(JSON.parse(await readFile(file, "utf8")));
+            return rm(file, opzioni);
+          },
+        }));
+      };
+      let primo;
+      let secondo;
+      t.after(async () => {
+        await secondo?.chiudi();
+        await primo?.chiudi();
+        await rm(home, { recursive: true, force: true });
+      });
+      primo = await avviaPonteTest({ home, conservaHome: true, preparaHome });
+      assert.equal(configurazioni[0].modificata, true);
+      const testo = await readFile(percorso, "utf8");
+      const configurazione = JSON.parse(testo);
+      const provenienza = configurazione._interfacciaPi.gptExtendedContextV1;
+      assert.deepEqual(Object.keys(configurazione.providers), ["openai-codex"]);
+      assert.deepEqual(Object.keys(configurazione.providers["openai-codex"].modelOverrides), modelli);
+      assert.equal(provenienza.version, 2);
+      assert.equal(provenienza.managedBy, "interfaccia-pi");
+      assert.deepEqual(Object.keys(provenienza.providers), ["openai-codex"]);
+      assert.equal(provenienza.providers["openai-codex"].source, "account-automatic");
+      assert.deepEqual(Object.keys(provenienza.providers["openai-codex"].models), modelli);
+      for (const id of modelli) {
+        assert.equal(configurazione.providers["openai-codex"].modelOverrides[id].contextWindow, 1_050_000);
+        assert.deepEqual(provenienza.providers["openai-codex"].models[id], {
+          overrideExisted: id === "gpt-6-astra" && Boolean(astra), contextWindowExisted: false,
+        });
+      }
+      assert.deepEqual(configurazione.providers["openai-codex"].modelOverrides["gpt-6-astra"], {
+        ...astra, contextWindow: 1_050_000,
+      });
+      assert.deepEqual(backup, esistente ? [precedente] : []);
+      assert.deepEqual(await readdir(directory), ["models.json"]);
+      await primo.chiudi();
+      primo = null;
+      secondo = await avviaPonteTest({ home, conservaHome: true, preparaHome });
+      assert.equal(configurazioni[1].modificata, false);
+      assert.equal(await readFile(percorso, "utf8"), testo);
+      assert.deepEqual(backup, esistente ? [precedente] : []);
+      assert.deepEqual(await readdir(directory), ["models.json"]);
+    });
+  }
+});
+
+test("la lista dei modelli gestiti arriva al client dal server", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const esito = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+  assert.deepEqual(esito.dati.managedModelIds, [
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra",
+  ]);
+});
+
+test("la scelta API della 2.7.0 con tre modelli resta completabile e ripristinabile", async (t) => {
+  for (const personale of [false, true]) {
+    for (const completa of [false, true]) {
+      await t.test(`campi Astra personali ${personale}, completamento ${completa}`, async (t) => {
+        const precedente = configurazioneContestoGptV2Storica("openai");
+        const astra = { maxTokens: 128_000, name: "Astra personale" };
+        if (personale) precedente.providers.openai.modelOverrides["gpt-6-astra"] = astra;
+        const ambiente = await avviaPonteTest({ preparaHome: async (home) => {
+          const directory = join(home, ".pi", "agent");
+          await mkdir(directory, { recursive: true });
+          await writeFile(join(directory, "models.json"), JSON.stringify(precedente), "utf8");
+          await configuraCapacitaMassimaGpt56(home);
+        } });
+        t.after(ambiente.chiudi);
+        const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+        const automatica = JSON.parse(await readFile(percorso, "utf8"));
+        assert.deepEqual(automatica.providers.openai, precedente.providers.openai);
+        const account = automatica.providers["openai-codex"];
+        assert.equal(account.modelOverrides["gpt-6-astra"].contextWindow, 1_050_000);
+        const stato = await ambiente.post("/api/contesto-esteso-gpt", {});
+        assert.equal(stato.risposta.status, 200, JSON.stringify(stato.dati));
+        assert.equal(stato.dati.mode, "mixed");
+        assert.equal(stato.dati.enabled, true);
+        assert.equal(stato.dati.managed, true);
+        assert.equal(stato.dati.mutable, true);
+        assert.equal(stato.dati.conflict, false);
+        const cartella = join(ambiente.home, "scelta-api-precedente");
+        await mkdir(cartella);
+        const avvio = await ambiente.post("/api/avvia", { cartella });
+        assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+        const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+        if (completa) {
+          const esito = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
+          assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+          assert.equal(esito.dati.mode, "extended");
+          const testo = await readFile(percorso, "utf8");
+          const configurazione = JSON.parse(testo);
+          assert.deepEqual(configurazione.providers.openai.modelOverrides["gpt-6-astra"], {
+            ...(personale ? astra : {}), contextWindow: 1_050_000,
+          });
+          assert.deepEqual(configurazione._interfacciaPi.gptExtendedContextV1.providers.openai.models["gpt-6-astra"], {
+            overrideExisted: personale, contextWindowExisted: false,
+          });
+          assert.equal((await configuraCapacitaMassimaGpt56(ambiente.home)).modificata, false);
+          assert.equal((await ambiente.post("/api/contesto-esteso-gpt", richiesta(true))).dati.refreshRequired, false);
+          assert.equal(await readFile(percorso, "utf8"), testo);
+        }
+        const esito = await ambiente.post("/api/contesto-esteso-gpt", richiesta(false));
+        assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+        const ripristinata = JSON.parse(await readFile(percorso, "utf8"));
+        assert.deepEqual(ripristinata.providers["openai-codex"], account);
+        assert.equal(Object.hasOwn(ripristinata._interfacciaPi.gptExtendedContextV1.providers, "openai"), false);
+        if (personale) {
+          assert.deepEqual(ripristinata.providers.openai, { modelOverrides: { "gpt-6-astra": astra } });
+        } else {
+          assert.equal(Object.hasOwn(ripristinata.providers, "openai"), false);
+        }
+      });
+    }
+  }
+});
+
+test("una provenienza V2 con tre modelli non acquisisce un contextWindow personale già presente su GPT-6 Astra", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-contesto-v2-personale-"));
+  const directory = join(home, ".pi", "agent");
+  const percorso = join(directory, "models.json");
+  const precedente = configurazioneContestoGptV2Storica("openai-codex");
+  const api = configurazioneContestoGptV2Storica("openai");
+  Object.assign(precedente.providers, api.providers);
+  Object.assign(precedente._interfacciaPi.gptExtendedContextV1.providers,
+    api._interfacciaPi.gptExtendedContextV1.providers);
+  const astra = { contextWindow: 500_000, maxTokens: 128_000, name: "Astra personale" };
+  for (const provider of ["openai-codex", "openai"]) {
+    precedente.providers[provider].modelOverrides["gpt-6-astra"] = { ...astra };
+  }
+  const originale = JSON.stringify(precedente);
+  const configurazioni = [];
+  const preparaHome = async (home) => {
+    configurazioni.push(await configuraCapacitaMassimaGpt56(home));
+  };
+  let primo;
+  let secondo;
+  t.after(async () => {
+    await secondo?.chiudi();
+    await primo?.chiudi();
+    await rm(home, { recursive: true, force: true });
+  });
+  await mkdir(directory, { recursive: true });
+  await writeFile(percorso, originale, "utf8");
+
+  primo = await avviaPonteTest({ home, conservaHome: true, preparaHome });
+  assert.equal(configurazioni[0].modificata, false);
+  const testo = await readFile(percorso, "utf8");
+  assert.equal(testo, originale);
+  const configurazione = JSON.parse(testo);
+  const provenienza = configurazione._interfacciaPi.gptExtendedContextV1;
+  assert.equal(provenienza.version, 2);
+  for (const provider of ["openai-codex", "openai"]) {
+    const gestiti = provenienza.providers[provider].models;
+    assert.equal(Object.hasOwn(gestiti, "gpt-6-astra"), false);
+    assert.deepEqual(Object.keys(gestiti), ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    assert.deepEqual(configurazione.providers[provider].modelOverrides["gpt-6-astra"], astra);
+    for (const id of Object.keys(gestiti)) {
+      assert.equal(configurazione.providers[provider].modelOverrides[id].contextWindow, 1_050_000);
+    }
+  }
+
+  const cartella = join(home, "scelta-api-personale");
+  await mkdir(cartella);
+  const avvio = await primo.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+  const esito = await primo.post("/api/contesto-esteso-gpt", { enabled: true, sessionId: avvio.dati.id });
+  assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+  assert.match(esito.dati.errore, /contesto GPT gestito dalla GUI.*cambiato esternamente/);
+  assert.equal(await readFile(percorso, "utf8"), testo);
+
+  await primo.chiudi();
+  primo = null;
+  secondo = await avviaPonteTest({ home, conservaHome: true, preparaHome });
+  assert.equal(configurazioni[1].modificata, false);
   assert.equal(await readFile(percorso, "utf8"), testo);
 });
 
@@ -234,6 +462,66 @@ test("riavvio idempotente", async (t) => {
   assert.deepEqual(JSON.parse(disattiva).providers["openai-codex"], account);
   assert.equal((await configuraCapacitaMassimaGpt56(ambiente.home)).modificata, false);
   assert.equal(await readFile(percorso, "utf8"), disattiva);
+});
+
+test("un modello del catalogo remoto con finestra estesa supera la verifica del catalogo", async (t) => {
+  const ambiente = await avviaPonteTest({
+    preparaHome: (home) => configuraCapacitaMassimaGpt56(home),
+    timeoutRicaricaCatalogoModelliMs: 500,
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "catalogo-remoto-astra");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-6-astra";
+  sessione.nomeModello = "GPT-6 Astra";
+  assert.equal(sessione.catalogoModelliDaRicaricare, true);
+  let contextWindow = 272_000;
+  let modelloPresente = false;
+  const modello = () => ({ provider: "openai-codex", id: "gpt-6-astra", name: "GPT-6 Astra", contextWindow });
+  const tipi = [];
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    tipi.push(comando.type);
+    if (comando.type === "refresh_models") return { data: { aborted: false, timedOut: false, errors: [] } };
+    if (comando.type === "get_available_models") return { data: {
+      models: modelloPresente ? [modello()] : catalogoGpt56(272_000, 1_050_000)
+        .filter((voce) => voce.provider === "openai-codex"),
+      errors: [],
+    } };
+    if (comando.type === "set_model") {
+      assert.equal(comando.provider, "openai-codex");
+      assert.equal(comando.modelId, "gpt-6-astra");
+      return { data: modello() };
+    }
+    if (comando.type === "get_state") return { data: {
+      model: modello(), sessionFile: sessione.fileSessione, isStreaming: false, isCompacting: false,
+    } };
+    return { success: false, error: "Comando inatteso" };
+  });
+  try {
+    for (const presente of [false, true]) {
+      modelloPresente = presente;
+      const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+      assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+      assert.equal(sessione.catalogoModelliDaRicaricare, true);
+      assert.equal(tipi.includes("set_model"), false);
+      assert.equal(sessione.sequenzaCatalogoModelliInCorso, null);
+      tipi.length = 0;
+    }
+    contextWindow = 1_050_000;
+    const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+    assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+    assert.deepEqual(tipi, ["refresh_models", "get_available_models", "set_model", "get_state"]);
+    assert.equal(esito.dati.catalogoModelliDaRicaricare, false);
+    assert.equal(sessione.catalogoModelliDaRicaricare, false);
+    assert.equal(sessione.sequenzaCatalogoModelliInCorso, null);
+    assert.equal(sessione.rebindModelloInCorso, null);
+  } finally {
+    ripristina();
+  }
 });
 
 test("un catalogo locale senza GPT rilascia il latch automatico e consente il prompt", async (t) => {
@@ -3392,6 +3680,7 @@ test("il contesto GPT esteso espone lo stato breve e richiede mutazioni esatte a
   assert.match(senzaToken.dati.errore, /autorizzata/i);
   const lettura = await ambiente.post("/api/contesto-esteso-gpt", {});
   assert.deepEqual(lettura.dati, {
+    managedModelIds: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"],
     mode: "short",
     managed: false,
     mutable: true,
@@ -3435,6 +3724,7 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
         modelOverrides: {
           "gpt-5.6-sol": { maxTokens: 77_000 },
           "gpt-5.6-terra": { reasoning: true },
+          "gpt-6-astra": { maxTokens: 128_000, name: "Astra personale" },
           "modello-personale": { contextWindow: 99_000 },
         },
       },
@@ -3462,6 +3752,7 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
   const attivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(true));
   assert.equal(attivazione.risposta.status, 200, JSON.stringify(attivazione.dati));
   assert.deepEqual(attivazione.dati, {
+    managedModelIds: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"],
     mode: "extended",
     managed: true,
     mutable: true,
@@ -3489,10 +3780,14 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
     contextWindowExisted: false,
   });
   assert.equal(provenienza.providers.openai.models["gpt-5.6-luna"].overrideExisted, false);
+  assert.deepEqual(provenienza.providers.openai.models["gpt-6-astra"], {
+    overrideExisted: true,
+    contextWindowExisted: false,
+  });
   assert.equal(Object.hasOwn(provenienza.providers, "openai-codex"), false);
   assert.deepEqual(configurazioneAttiva.providers["openai-codex"], originale.providers["openai-codex"]);
   for (const providerId of ["openai"]) {
-    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
       assert.equal(
         configurazioneAttiva.providers[providerId].modelOverrides[modelloId].contextWindow,
         1_050_000,
@@ -3510,6 +3805,7 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
   assert.equal(await readFile(percorso, "utf8"), testoAttivo);
   const disattivazione = await ambiente.post("/api/contesto-esteso-gpt", richiesta(false));
   assert.deepEqual(disattivazione.dati, {
+    managedModelIds: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"],
     mode: "short",
     managed: false,
     mutable: true,
@@ -3601,7 +3897,7 @@ test("il contesto GPT esteso classifica custom e mixed e non sovrascrive overrid
   const uniforme = { providers: {} };
   for (const providerId of ["openai", "openai-codex"]) {
     uniforme.providers[providerId] = { modelOverrides: {} };
-    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
       uniforme.providers[providerId].modelOverrides[modelloId] = { contextWindow: 500_000 };
     }
   }
@@ -3620,6 +3916,7 @@ test("l'interruttore API preserva anche un override personale pari al default", 
   const avvio = await ambiente.post("/api/avvia", { cartella });
   const configurazione = { providers: { openai: { modelOverrides: {
     "gpt-5.6-sol": { contextWindow: 272_000 },
+    "gpt-6-astra": { contextWindow: 272_000 },
   } } } };
   const directory = join(ambiente.home, ".pi", "agent");
   await mkdir(directory, { recursive: true });
@@ -3874,7 +4171,7 @@ test("un errore di cleanup del backup non annulla il commit ne il latch", async 
   const configurazione = JSON.parse(await readFile(percorso, "utf8"));
   assert.equal(Object.hasOwn(configurazione.providers, "openai-codex"), false);
   for (const provider of ["openai"]) {
-    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
       assert.equal(
         configurazione.providers[provider].modelOverrides[modello].contextWindow,
         1_050_000,
@@ -4218,7 +4515,7 @@ test("OAuth openai-codex verifica solo i provider disponibili e sempre quello co
   ));
   assert.equal(Object.hasOwn(configurazione.providers, "openai-codex"), false);
   for (const provider of ["openai"]) {
-    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]) {
       assert.equal(
         configurazione.providers[provider].modelOverrides[modello].contextWindow,
         1_050_000,
