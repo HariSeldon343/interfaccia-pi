@@ -8,6 +8,22 @@ const require = createRequire(import.meta.url);
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vista = require(join(RADICE, "app", "public", "view-core.js"));
 
+test("la riserva condivisa del cambio modello è 16.384 anche nei fallback", async () => {
+  const { readFile } = await import("node:fs/promises");
+  assert.equal(vista.RISERVA_CAMBIO_MODELLO, 16_384);
+  for (const riservaToken of [undefined, null, NaN, -1]) {
+    assert.equal(vista.pianoCambioModello({
+      modelloDestinazione: { provider: "test", id: "destinazione", contextWindow: 32_000 },
+      riservaToken,
+    }).budget, 32_000 - vista.RISERVA_CAMBIO_MODELLO);
+  }
+  for (const file of ["app/server.mjs", "app/public/app.js"]) {
+    const codice = await readFile(join(RADICE, file), "utf8");
+    assert.match(codice, /const \{ RISERVA_CAMBIO_MODELLO \} = VISTA_CORE/);
+    assert.doesNotMatch(codice, /RISERVA_CAMBIO_MODELLO\s*=\s*16_384/);
+  }
+});
+
 test("i marker di orchestrazione iniziali non sporcano la risposta visibile", () => {
   assert.equal(
     vista.pulisciRispostaAgente(
@@ -174,4 +190,63 @@ test("provider diversi con lo stesso id non identificano lo stesso modello", () 
     }),
     null,
   );
+});
+
+test("il cambio modello usa la finestra dichiarata dal target e la riserva del cambio", () => {
+  const corrente = { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 1_050_000 };
+  const target = { provider: "anthropic", id: "claude-haiku-4-5", contextWindow: 200_000 };
+  assert.deepEqual(
+    vista.pianoCambioModello({
+      modelloCorrente: corrente,
+      modelloDestinazione: target,
+      tokenContesto: 183_616,
+    }),
+    {
+      stessaIdentita: false,
+      finestra: 200_000,
+      budget: 183_616,
+      usati: 183_616,
+      usoConosciuto: true,
+      compatta: false,
+    },
+  );
+  assert.equal(
+    vista.pianoCambioModello({
+      modelloCorrente: corrente,
+      modelloDestinazione: target,
+      tokenContesto: 183_617,
+    }).compatta,
+    true,
+  );
+});
+
+test("statistiche mancanti non diventano zero e riselezionare lo stesso modello non compatta", () => {
+  const corrente = { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 1_050_000 };
+  const sconosciuto = vista.pianoCambioModello({
+    modelloCorrente: corrente,
+    modelloDestinazione: { provider: "zai", id: "glm-5.3", contextWindow: 1_000_000 },
+    tokenContesto: null,
+  });
+  assert.equal(sconosciuto.usoConosciuto, false);
+  assert.equal(sconosciuto.usati, null);
+  assert.equal(sconosciuto.compatta, false);
+  assert.equal(
+    vista.pianoCambioModello({
+      modelloCorrente: corrente,
+      modelloDestinazione: { ...corrente },
+      tokenContesto: 1_100_000,
+    }).compatta,
+    false,
+  );
+});
+
+test("la logica accetta finestre arbitrarie dal catalogo senza whitelist", () => {
+  const piano = vista.pianoCambioModello({
+    modelloCorrente: { provider: "a", id: "grande" },
+    modelloDestinazione: { provider: "b", id: "custom", contextWindow: 777_777 },
+    tokenContesto: 761_394,
+  });
+  assert.equal(piano.finestra, 777_777);
+  assert.equal(piano.budget, 761_393);
+  assert.equal(piano.compatta, true);
 });

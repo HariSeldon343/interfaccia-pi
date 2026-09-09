@@ -31,6 +31,7 @@ import { creaGestoreEstrazione } from "./estrazione-worker.mjs";
 import { creaSerializzatore, scriviFileAtomico } from "./persistenza-atomica.mjs";
 import { creaGestoreLibreria, quotaOperazioneConsentita } from "./libreria.mjs";
 import LIBRERIA_CORE from "./public/library-core.js";
+import VISTA_CORE from "./public/view-core.js";
 
 const FILE_CORRENTE = fileURLToPath(import.meta.url);
 const QUI = dirname(FILE_CORRENTE);
@@ -52,7 +53,7 @@ export function durataAutoStopConfigurata(valore, predefinita = 45000) {
 
 const PORTA = portaConfigurata(process.env.PI_GUI_PORT);
 const FIRMA_PONTE = "pi-gui-bridge";
-const VERSIONE_PONTE = 7;
+const VERSIONE_PONTE = 8;
 const LIMITE_CORPO = 16 * 1024 * 1024; // immagini incluse
 const LIMITE_FILE_ALLEGATO = 10 * 1024 * 1024;
 const LIMITE_BASE64_FILE_ALLEGATO = Math.ceil(LIMITE_FILE_ALLEGATO / 3) * 4;
@@ -67,6 +68,9 @@ const LIMITE_MANIFEST_FILE_ALLEGATO = 4096;
 const VERSIONE_MANIFEST_FILE_ALLEGATO = 1;
 const CONTESTO_GPT_PREDEFINITO = 272_000;
 const CONTESTO_GPT_ESTESO = 1_050_000;
+const SOGLIA_COMPATTAZIONE_PREDEFINITA = 90;
+const { RISERVA_CAMBIO_MODELLO } = VISTA_CORE;
+const MARGINE_STIMA_DOPO_COMPATTAZIONE = 4_096;
 const PROVIDER_GPT_CONTESTO_ESTESO = ["openai", "openai-codex"];
 const MODELLI_GPT_CONTESTO_ESTESO = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const CHIAVE_METADATI_INTERFACCIA_PI = "_interfacciaPi";
@@ -2258,13 +2262,13 @@ function leggiProvenienzaContestoGpt(configurazione) {
   const provenienza = metadati[CHIAVE_PROVENIENZA_CONTESTO_GPT];
   const nonValida = () => {
     throw erroreHttp(
-      "La provenienza del contesto GPT in models.json non e valida; non modifico il file",
+      "La provenienza del contesto GPT in models.json non è valida; non modifico il file",
       409,
     );
   };
   if (
     !oggettoJson(provenienza)
-    || provenienza.version !== 1
+    || ![1, 2].includes(provenienza.version)
     || provenienza.managedBy !== "interfaccia-pi"
     || typeof provenienza.fileExisted !== "boolean"
     || typeof provenienza.providersContainerExisted !== "boolean"
@@ -2275,7 +2279,10 @@ function leggiProvenienzaContestoGpt(configurazione) {
     !provenienza.fileExisted
     && (provenienza.providersContainerExisted || provenienza.metadataContainerExisted)
   ) nonValida();
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
+  const providerGestiti = Object.keys(provenienza.providers);
+  if (providerGestiti.some((provider) => !PROVIDER_GPT_CONTESTO_ESTESO.includes(provider))) nonValida();
+  if (provenienza.version === 1 && providerGestiti.length !== PROVIDER_GPT_CONTESTO_ESTESO.length) nonValida();
+  for (const providerId of providerGestiti) {
     const provider = provenienza.providers[providerId];
     if (
       !oggettoJson(provider)
@@ -2283,9 +2290,13 @@ function leggiProvenienzaContestoGpt(configurazione) {
       || typeof provider.modelOverridesExisted !== "boolean"
       || !oggettoJson(provider.models)
     ) nonValida();
-    if (!provenienza.providersContainerExisted && provider.providerExisted) nonValida();
+    if (provenienza.version === 1 && !provenienza.providersContainerExisted && provider.providerExisted) nonValida();
     if (!provider.providerExisted && provider.modelOverridesExisted) nonValida();
-    for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
+    if (provenienza.version === 2 && provider.source !== (providerId === "openai" ? "api-explicit" : "account-automatic")) nonValida();
+    const modelliGestiti = Object.keys(provider.models);
+    if (modelliGestiti.some((modello) => !MODELLI_GPT_CONTESTO_ESTESO.includes(modello))) nonValida();
+    if (provenienza.version === 1 && modelliGestiti.length !== MODELLI_GPT_CONTESTO_ESTESO.length) nonValida();
+    for (const modelloId of modelliGestiti) {
       const modello = provider.models[modelloId];
       if (
         !oggettoJson(modello)
@@ -2304,17 +2315,15 @@ function leggiProvenienzaContestoGpt(configurazione) {
   return provenienza;
 }
 
-function statoContestoGpt(configurazione) {
+function statoContestoGpt(configurazione, providerId = "openai") {
   const valori = [];
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
-    for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
-      const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
-      valori.push(
-        override && Object.hasOwn(override, "contextWindow")
-          ? override.contextWindow
-          : CONTESTO_GPT_PREDEFINITO,
-      );
-    }
+  for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
+    const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
+    valori.push(
+      override && Object.hasOwn(override, "contextWindow")
+        ? override.contextWindow
+        : CONTESTO_GPT_PREDEFINITO,
+    );
   }
   let mode;
   if (valori.every((valore) => valore === CONTESTO_GPT_PREDEFINITO)) mode = "short";
@@ -2326,8 +2335,12 @@ function statoContestoGpt(configurazione) {
   const univoca = typeof primo === "number"
     && Number.isFinite(primo)
     && valori.every((valore) => Object.is(valore, primo));
-  const managed = Boolean(leggiProvenienzaContestoGpt(configurazione));
-  const conflict = managed ? mode !== "extended" : mode !== "short";
+  const gestiti = leggiProvenienzaContestoGpt(configurazione)?.providers[providerId];
+  const managed = Boolean(gestiti);
+  const esterni = MODELLI_GPT_CONTESTO_ESTESO.some((id) =>
+    Object.hasOwn(configurazione.providers?.[providerId]?.modelOverrides?.[id] || {}, "contextWindow")
+    && !Object.hasOwn(gestiti?.models || {}, id));
+  const conflict = esterni || (managed ? mode !== "extended" : mode !== "short");
   return {
     mode,
     managed,
@@ -2344,65 +2357,72 @@ function creaProvenienzaContestoGpt(configurazione, { fileExisted }) {
     configurazione,
     CHIAVE_METADATI_INTERFACCIA_PI,
   );
-  const providers = {};
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
-    const providerExisted = providersContainerExisted
-      && Object.hasOwn(configurazione.providers, providerId);
-    const provider = providerExisted ? configurazione.providers[providerId] : null;
-    const modelOverridesExisted = providerExisted
-      && Object.hasOwn(provider, "modelOverrides");
-    const models = {};
-    for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
-      const overrideExisted = modelOverridesExisted
-        && Object.hasOwn(provider.modelOverrides, modelloId);
-      const override = overrideExisted ? provider.modelOverrides[modelloId] : null;
-      const contextWindowExisted = overrideExisted
-        && Object.hasOwn(override, "contextWindow");
-      models[modelloId] = {
-        overrideExisted,
-        contextWindowExisted,
-        ...(contextWindowExisted ? { contextWindow: override.contextWindow } : {}),
-      };
-    }
-    providers[providerId] = {
-      providerExisted,
-      modelOverridesExisted,
-      models,
-    };
-  }
   return {
-    version: 1,
+    version: 2,
     managedBy: "interfaccia-pi",
     fileExisted,
     providersContainerExisted,
     metadataContainerExisted,
-    providers,
+    providers: {},
   };
 }
 
-function verificaAssenzaOverrideGptEsterni(configurazione) {
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
-    for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
-      const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
-      if (
-        override
-        && Object.hasOwn(override, "contextWindow")
-        && override.contextWindow !== CONTESTO_GPT_PREDEFINITO
-      ) {
-        throw erroreHttp(
-          `Il modello ${providerId}/${modelloId} ha un contextWindow esterno o personalizzato; non lo sovrascrivo`,
-          409,
-        );
-      }
+function creaProvenienzaProviderGpt(configurazione, providerId, modelli) {
+  const providerExisted = Object.hasOwn(configurazione.providers || {}, providerId);
+  const provider = providerExisted ? configurazione.providers[providerId] : null;
+  const modelOverridesExisted = providerExisted
+    && Object.hasOwn(provider, "modelOverrides");
+  const models = {};
+  for (const modelloId of modelli) {
+    const overrideExisted = modelOverridesExisted
+      && Object.hasOwn(provider.modelOverrides, modelloId);
+    const override = overrideExisted ? provider.modelOverrides[modelloId] : null;
+    const contextWindowExisted = overrideExisted
+      && Object.hasOwn(override, "contextWindow");
+    models[modelloId] = {
+      overrideExisted,
+      contextWindowExisted,
+      ...(contextWindowExisted ? { contextWindow: override.contextWindow } : {}),
+    };
+  }
+  return {
+    providerExisted,
+    modelOverridesExisted,
+    models,
+    source: providerId === "openai" ? "api-explicit" : "account-automatic",
+  };
+}
+
+function verificaAssenzaOverrideGptEsterni(configurazione, providerId = "openai") {
+  for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
+    const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
+    if (
+      override
+      && Object.hasOwn(override, "contextWindow")
+    ) {
+      throw erroreHttp(
+        `Il modello ${providerId}/${modelloId} ha un contextWindow esterno o personalizzato; non lo sovrascrivo`,
+        409,
+      );
     }
   }
 }
 
-function abilitaContestoGpt(configurazione, { fileExisted }) {
+function abilitaContestoGpt(configurazione, { fileExisted, providerId = "openai", automatico = false }) {
   let provenienza = leggiProvenienzaContestoGpt(configurazione);
+  const gestiti = provenienza?.providers[providerId]?.models || {};
+  // L'automatismo non acquisisce mai un contextWindow personale, neppure se
+  // coincide con il default. La scelta API esplicita conserva il round-trip
+  // degli altri campi, senza acquisire finestre già configurate dall'utente.
+  const modelli = MODELLI_GPT_CONTESTO_ESTESO.filter((modelloId) => {
+    const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
+    if (Object.hasOwn(gestiti, modelloId)) return override?.contextWindow === CONTESTO_GPT_ESTESO;
+    return !automatico || !Object.hasOwn(override || {}, "contextWindow");
+  });
+  if (modelli.length === 0) return false;
   let modificata = false;
   if (!provenienza) {
-    verificaAssenzaOverrideGptEsterni(configurazione);
+    if (!automatico) verificaAssenzaOverrideGptEsterni(configurazione, providerId);
     provenienza = creaProvenienzaContestoGpt(configurazione, { fileExisted });
     if (!Object.hasOwn(configurazione, CHIAVE_METADATI_INTERFACCIA_PI)) {
       configurazione[CHIAVE_METADATI_INTERFACCIA_PI] = {};
@@ -2411,80 +2431,88 @@ function abilitaContestoGpt(configurazione, { fileExisted }) {
       = provenienza;
     modificata = true;
   }
+  if (!provenienza.providers[providerId]) {
+    provenienza.providers[providerId] = creaProvenienzaProviderGpt(configurazione, providerId, modelli);
+    modificata = true;
+  } else {
+    const nuovi = modelli.filter((modello) => !Object.hasOwn(gestiti, modello));
+    if (nuovi.length) {
+      Object.assign(provenienza.providers[providerId].models,
+        creaProvenienzaProviderGpt(configurazione, providerId, nuovi).models);
+      modificata = true;
+    }
+  }
   if (!Object.hasOwn(configurazione, "providers")) {
     configurazione.providers = {};
     modificata = true;
   }
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
-    if (!Object.hasOwn(configurazione.providers, providerId)) {
-      configurazione.providers[providerId] = {};
+  if (!Object.hasOwn(configurazione.providers, providerId)) {
+    configurazione.providers[providerId] = {};
+    modificata = true;
+  }
+  const provider = configurazione.providers[providerId];
+  if (!Object.hasOwn(provider, "modelOverrides")) {
+    provider.modelOverrides = {};
+    modificata = true;
+  }
+  for (const modelloId of modelli) {
+    if (!Object.hasOwn(provider.modelOverrides, modelloId)) {
+      provider.modelOverrides[modelloId] = {};
       modificata = true;
     }
-    const provider = configurazione.providers[providerId];
-    if (!Object.hasOwn(provider, "modelOverrides")) {
-      provider.modelOverrides = {};
+    if (provider.modelOverrides[modelloId].contextWindow !== CONTESTO_GPT_ESTESO) {
+      provider.modelOverrides[modelloId].contextWindow = CONTESTO_GPT_ESTESO;
       modificata = true;
-    }
-    for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
-      if (!Object.hasOwn(provider.modelOverrides, modelloId)) {
-        provider.modelOverrides[modelloId] = {};
-        modificata = true;
-      }
-      if (provider.modelOverrides[modelloId].contextWindow !== CONTESTO_GPT_ESTESO) {
-        provider.modelOverrides[modelloId].contextWindow = CONTESTO_GPT_ESTESO;
-        modificata = true;
-      }
     }
   }
   return modificata;
 }
 
-function ripristinaContestoGpt(configurazione, provenienza) {
+function ripristinaContestoGpt(configurazione, provenienza, providerId = "openai", { preservaModificati = false } = {}) {
   if (
     provenienza.providersContainerExisted
     && !Object.hasOwn(configurazione, "providers")
   ) configurazione.providers = {};
-  for (const providerId of PROVIDER_GPT_CONTESTO_ESTESO) {
-    const precedente = provenienza.providers[providerId];
-    if (
-      precedente.providerExisted
-      && !Object.hasOwn(configurazione.providers || {}, providerId)
-    ) {
-      if (!Object.hasOwn(configurazione, "providers")) configurazione.providers = {};
-      configurazione.providers[providerId] = {};
-    }
-    const provider = configurazione.providers?.[providerId];
-    if (!provider) continue;
-    if (
-      precedente.modelOverridesExisted
-      && !Object.hasOwn(provider, "modelOverrides")
-    ) provider.modelOverrides = {};
-    const modelOverrides = provider.modelOverrides;
-    if (modelOverrides) {
-      for (const modelloId of MODELLI_GPT_CONTESTO_ESTESO) {
-        const modelloPrecedente = precedente.models[modelloId];
-        if (
-          modelloPrecedente.overrideExisted
-          && !Object.hasOwn(modelOverrides, modelloId)
-        ) modelOverrides[modelloId] = {};
-        const override = modelOverrides[modelloId];
-        if (!override) continue;
-        if (modelloPrecedente.contextWindowExisted) {
-          override.contextWindow = modelloPrecedente.contextWindow;
-        } else {
-          delete override.contextWindow;
-        }
-        if (!modelloPrecedente.overrideExisted && Object.keys(override).length === 0) {
-          delete modelOverrides[modelloId];
-        }
+  const precedente = provenienza.providers[providerId];
+  if (!precedente) return;
+  if (
+    precedente.providerExisted
+    && !Object.hasOwn(configurazione.providers || {}, providerId)
+  ) {
+    if (!Object.hasOwn(configurazione, "providers")) configurazione.providers = {};
+    configurazione.providers[providerId] = {};
+  }
+  const provider = configurazione.providers?.[providerId];
+  if (
+    precedente.modelOverridesExisted
+    && !Object.hasOwn(provider, "modelOverrides")
+  ) provider.modelOverrides = {};
+  const modelOverrides = provider?.modelOverrides;
+  if (modelOverrides) {
+    for (const modelloId of Object.keys(precedente.models)) {
+      const modelloPrecedente = precedente.models[modelloId];
+      if (preservaModificati && modelOverrides[modelloId]?.contextWindow !== CONTESTO_GPT_ESTESO) continue;
+      if (
+        modelloPrecedente.overrideExisted
+        && !Object.hasOwn(modelOverrides, modelloId)
+      ) modelOverrides[modelloId] = {};
+      const override = modelOverrides[modelloId];
+      if (!override) continue;
+      if (modelloPrecedente.contextWindowExisted) {
+        override.contextWindow = modelloPrecedente.contextWindow;
+      } else {
+        delete override.contextWindow;
       }
-      if (!precedente.modelOverridesExisted && Object.keys(modelOverrides).length === 0) {
-        delete provider.modelOverrides;
+      if (!modelloPrecedente.overrideExisted && Object.keys(override).length === 0) {
+        delete modelOverrides[modelloId];
       }
     }
-    if (!precedente.providerExisted && Object.keys(provider).length === 0) {
-      delete configurazione.providers[providerId];
+    if (!precedente.modelOverridesExisted && Object.keys(modelOverrides).length === 0) {
+      delete provider.modelOverrides;
     }
+  }
+  if (provider && !precedente.providerExisted && Object.keys(provider).length === 0) {
+    delete configurazione.providers[providerId];
   }
   if (
     !provenienza.providersContainerExisted
@@ -2493,10 +2521,30 @@ function ripristinaContestoGpt(configurazione, provenienza) {
   ) delete configurazione.providers;
 
   const metadati = configurazione[CHIAVE_METADATI_INTERFACCIA_PI];
-  delete metadati[CHIAVE_PROVENIENZA_CONTESTO_GPT];
+  delete provenienza.providers[providerId];
+  if (Object.keys(provenienza.providers).length === 0) delete metadati[CHIAVE_PROVENIENZA_CONTESTO_GPT];
   if (!provenienza.metadataContainerExisted && Object.keys(metadati).length === 0) {
     delete configurazione[CHIAVE_METADATI_INTERFACCIA_PI];
   }
+}
+
+function migraProvenienzaContestoGpt(configurazione) {
+  const provenienza = leggiProvenienzaContestoGpt(configurazione);
+  if (!provenienza || provenienza.version !== 1) return false;
+  // Solo la V1 descrive il vecchio automatismo/interruttore comune ai provider.
+  // Le scelte API V2 restano esplicite e persistono a ogni avvio successivo.
+  ripristinaContestoGpt(configurazione, provenienza, "openai", { preservaModificati: true });
+  provenienza.version = 2;
+  for (const provider of Object.values(provenienza.providers)) provider.source = "account-automatic";
+  return true;
+}
+
+function finestreContestoGpt(configurazione) {
+  return Object.fromEntries(PROVIDER_GPT_CONTESTO_ESTESO.map((provider) => [provider,
+    Object.fromEntries(MODELLI_GPT_CONTESTO_ESTESO.map((id) => [id,
+      configurazione.providers?.[provider]?.modelOverrides?.[id]?.contextWindow ?? CONTESTO_GPT_PREDEFINITO,
+    ])),
+  ]));
 }
 
 function rispostaContestoGpt(configurazione, refreshRequired) {
@@ -2536,7 +2584,7 @@ function erroriCatalogoRilevanti(errors, providerVerificati) {
 function verificaCatalogoContestoGpt(
   dati,
   contextWindowAttesa,
-  { providerCorrente = null, modelloCorrente = null } = {},
+  { providerCorrente = null, modelloCorrente = null, contextWindows = null } = {},
 ) {
   if (
     !dati
@@ -2551,9 +2599,6 @@ function verificaCatalogoContestoGpt(
     const provider = String(modello.provider || "").toLowerCase();
     if (PROVIDER_GPT_CONTESTO_ESTESO.includes(provider)) providerVerificati.add(provider);
   }
-  if (providerVerificati.size === 0) {
-    throw erroreHttp("Il catalogo effettivo di Pi non espone alcun provider GPT-5.6 gestito", 409);
-  }
   const providerCorrenteNormalizzato = String(providerCorrente || "").toLowerCase();
   if (
     modelloGptContestoGestito(providerCorrenteNormalizzato, modelloCorrente)
@@ -2566,6 +2611,7 @@ function verificaCatalogoContestoGpt(
   }
   for (const provider of providerVerificati) {
     for (const id of MODELLI_GPT_CONTESTO_ESTESO) {
+      const attesa = contextWindows?.[provider]?.[id] ?? contextWindowAttesa;
       const corrispondenze = dati.models.filter((modello) =>
         modello
         && typeof modello === "object"
@@ -2573,15 +2619,18 @@ function verificaCatalogoContestoGpt(
         && String(modello.id || "").toLowerCase() === id);
       if (
         corrispondenze.length !== 1
-        || corrispondenze[0].contextWindow !== contextWindowAttesa
+        || corrispondenze[0].contextWindow !== attesa
       ) {
         throw erroreHttp(
-          `Il catalogo effettivo di Pi non conferma ${provider}/${id} a ${contextWindowAttesa} token`,
+          `Il catalogo effettivo di Pi non conferma ${provider}/${id} a ${attesa} token`,
           409,
         );
       }
     }
   }
+  // Un account locale può non avere alcun GPT disponibile. Anche senza rebind,
+  // gli errori del provider corrente non devono essere ignorati.
+  if (providerCorrenteNormalizzato) providerVerificati.add(providerCorrenteNormalizzato);
   return providerVerificati;
 }
 
@@ -2878,6 +2927,43 @@ async function commitConfigurazioneModelliCas(
   }
 }
 
+function haOverrideContestoGptEsplicito(configurazione, providerId = "openai-codex") {
+  return (
+    MODELLI_GPT_CONTESTO_ESTESO.some((modelloId) => {
+      const override = configurazione.providers?.[providerId]?.modelOverrides?.[modelloId];
+      return oggettoJson(override) && Object.hasOwn(override, "contextWindow");
+    }));
+}
+
+export async function configuraCapacitaMassimaGpt56(
+  home,
+  {
+    primaCommit = null,
+    rimuoviBackupConfigurazione = rm,
+  } = {},
+) {
+  const lettura = await leggiConfigurazioneModelli(home);
+  const migrata = migraProvenienzaContestoGpt(lettura.configurazione);
+  const modificata = abilitaContestoGpt(lettura.configurazione, {
+    fileExisted: lettura.esistente,
+    providerId: "openai-codex",
+    automatico: true,
+  }) || migrata;
+  if (modificata) {
+    await commitConfigurazioneModelliCas(lettura.percorso, lettura.configurazione, {
+      improntaAttesa: lettura.impronta,
+      primaCommit,
+      rimuoviBackupConfigurazione,
+    });
+  }
+  return {
+    modificata,
+    protetta: !modificata && haOverrideContestoGptEsplicito(lettura.configurazione)
+      && statoContestoGpt(lettura.configurazione, "openai-codex").conflict,
+    contextWindow: CONTESTO_GPT_ESTESO,
+  };
+}
+
 async function percorsoNonLocaleWindows(percorso, { consentiCacheUnitaScaduta = false } = {}) {
   if (process.platform !== "win32") return false;
   const testo = String(percorso || "");
@@ -2950,6 +3036,19 @@ function erroreHttp(messaggio, stato = 400) {
   const errore = new Error(messaggio);
   errore.statusHttp = stato;
   return errore;
+}
+
+function validaImpostazioniGui(valore) {
+  if (
+    !oggettoJson(valore)
+    || Object.keys(valore).length !== 1
+    || !Number.isInteger(valore.sogliaCompattazionePercento)
+    || valore.sogliaCompattazionePercento < 50
+    || valore.sogliaCompattazionePercento > 95
+  ) {
+    throw erroreHttp("sogliaCompattazionePercento deve essere un intero fra 50 e 95, senza altri campi", 400);
+  }
+  return { sogliaCompattazionePercento: valore.sogliaCompattazionePercento };
 }
 
 function powershellSistemaWindows() {
@@ -3377,6 +3476,8 @@ export class SessionePi {
     attesaAnnullamentoLoginProviderMs = 5000,
     scadenzaRebindModelloMs = 30_000,
     scadenzaAvvioCompattazioneMs = 30_000,
+    timeoutCompattazionePreventivaMs = 6 * 60 * 1000,
+    leggiSogliaCompattazione = () => SOGLIA_COMPATTAZIONE_PREDEFINITA,
     identificaFile = identitaFileSessione,
     elencaDiscendenti = elencaDiscendentiWindows,
     terminaDiscendenti = terminaDiscendentiWindows,
@@ -3434,9 +3535,25 @@ export class SessionePi {
     this.rebindModelloInCorso = null;
     this.sequenzaCatalogoModelliInCorso = null;
     this.comandiCatalogoModelliControllati = new Set();
+    this.cambioModelloSicuroInCorso = null;
+    this.comandiCambioModelloSicuro = new Set();
+    this.compattazionePreventivaInCorso = null;
+    this.compattazionePreventivaInefficace = false;
+    this.revisioneInefficaciaCompattazionePreventiva = 0;
+    this.idUltimaCompattazionePreventiva = null;
+    this.comandiCompattazionePreventiva = new Set();
+    this.timeoutCompattazionePreventivaMs = timeoutCompattazionePreventivaMs;
+    this.leggiSogliaCompattazione = leggiSogliaCompattazione;
+    this.statisticheSessione = null;
+    this.revisioneStatistiche = 0;
+    this.revisioniStatistiche = new Map();
+    this.firmaCatalogoStatistiche = null;
+    this.catalogoModelliStatistiche = [];
+    this.finestraModelloStatistiche = null;
     this.catalogoModelliDaRicaricare = false;
     this.revisioneCatalogoModelliAttesa = 0;
     this.contextWindowCatalogoModelliAttesa = null;
+    this.contextWindowsCatalogoModelliAttese = null;
     this.esportazioneCondivisioneId = null;
     this.loginProviderInCorso = null;
     this.timerLoginProvider = null;
@@ -3462,7 +3579,7 @@ export class SessionePi {
     this.revisioneCatalogoComandi = 0;
   }
 
-  richiediRicaricaCatalogoModelli({ revisione, contextWindow, notifica = true }) {
+  richiediRicaricaCatalogoModelli({ revisione, contextWindow, contextWindows = null, notifica = true }) {
     if (!Number.isSafeInteger(revisione) || revisione < 1) {
       throw new Error("La revisione della configurazione modelli non e valida");
     }
@@ -3470,13 +3587,18 @@ export class SessionePi {
       throw new Error("La finestra di contesto attesa non e valida");
     }
     this.catalogoModelliDaRicaricare = true;
+    this.#invalidaStatistiche();
+    this.azzeraInefficaciaCompattazionePreventiva();
+    this.catalogoModelliStatistiche = [];
     this.revisioneCatalogoModelliAttesa = revisione;
     this.contextWindowCatalogoModelliAttesa = contextWindow;
+    this.contextWindowsCatalogoModelliAttese = contextWindows ? structuredClone(contextWindows) : null;
     if (notifica) {
       this.diffondi({
         type: "gui_catalogo_modelli_da_ricaricare",
         revisioneCatalogoModelliAttesa: revisione,
         contextWindowCatalogoModelliAttesa: contextWindow,
+        contextWindowsCatalogoModelliAttese: this.contextWindowsCatalogoModelliAttese,
       });
     }
   }
@@ -3486,8 +3608,11 @@ export class SessionePi {
       catalogoModelliDaRicaricare: this.catalogoModelliDaRicaricare,
       revisioneCatalogoModelliAttesa: this.revisioneCatalogoModelliAttesa || null,
       contextWindowCatalogoModelliAttesa: this.contextWindowCatalogoModelliAttesa,
+      contextWindowsCatalogoModelliAttese: this.contextWindowsCatalogoModelliAttese,
       rebindModelloInCorso: Boolean(
-        this.rebindModelloInCorso || this.sequenzaCatalogoModelliInCorso,
+        this.rebindModelloInCorso
+        || this.sequenzaCatalogoModelliInCorso
+        || this.cambioModelloSicuroInCorso,
       ),
     };
   }
@@ -3509,6 +3634,8 @@ export class SessionePi {
       || this.esportazioneCondivisioneId
       || this.rebindModelloInCorso
       || this.sequenzaCatalogoModelliInCorso
+      || this.cambioModelloSicuroInCorso
+      || this.compattazionePreventivaInCorso
     ) {
       throw erroreHttp(
         "La conversazione deve essere inattiva prima di verificare il nuovo catalogo modelli",
@@ -3517,7 +3644,8 @@ export class SessionePi {
     }
     const revisione = this.revisioneCatalogoModelliAttesa;
     const contextWindow = this.contextWindowCatalogoModelliAttesa;
-    const sequenza = { revisione, contextWindow };
+    const contextWindows = this.contextWindowsCatalogoModelliAttese;
+    const sequenza = { revisione, contextWindow, contextWindows };
     const provider = this.provider;
     const modello = this.modello;
     this.sequenzaCatalogoModelliInCorso = sequenza;
@@ -3541,6 +3669,7 @@ export class SessionePi {
       const providerVerificati = verificaCatalogoContestoGpt(catalogo, contextWindow, {
         providerCorrente: provider,
         modelloCorrente: modello,
+        contextWindows,
       });
       if (
         erroriCatalogoRilevanti(refresh.errors, providerVerificati).length > 0
@@ -3553,8 +3682,12 @@ export class SessionePi {
       }
       this.#verificaSequenzaCatalogoCorrente(sequenza);
 
-      if (!provider || !modello) {
-        throw erroreHttp("Pi non ha indicato il modello corrente da ricollegare", 409);
+      // Solo i GPT-5.6 gestiti richiedono di confermare la finestra dopo la
+      // riscrittura di models.json. Senza un modello corrente utilizzabile,
+      // la verifica del catalogo deve consentire la successiva scelta dalla GUI.
+      if (!modelloGptContestoGestito(provider, modello)) {
+        this.catalogoModelliDaRicaricare = false;
+        return { aggiornata: true, pendente: false, ...this.statoRicaricaCatalogoModelli() };
       }
       // set_model appende sempre un record model_change al JSONL, anche se il
       // provider/id non cambiano. La sequenza interna non puo quindi saltare
@@ -3578,11 +3711,10 @@ export class SessionePi {
         throw erroreHttp("Pi ha iniziato un'elaborazione durante la verifica del modello", 409);
       }
       if (
-        modelloGptContestoGestito(provider, modello)
-        && stato.model.contextWindow !== contextWindow
+        stato.model.contextWindow !== (contextWindows?.[provider]?.[modello] ?? contextWindow)
       ) {
         throw erroreHttp(
-          `Il modello corrente non espone ancora la finestra attesa di ${contextWindow} token`,
+          `Il modello corrente non espone ancora la finestra attesa di ${contextWindows?.[provider]?.[modello] ?? contextWindow} token`,
           409,
         );
       }
@@ -3598,12 +3730,215 @@ export class SessionePi {
     }
   }
 
+  async cambiaModelloConContesto(
+    { provider, modelId, id },
+    timeout = 6 * 60 * 1000,
+  ) {
+    const providerRichiesto = String(provider || "").trim();
+    const modelloRichiesto = String(modelId || "").trim();
+    const idFinale = idRpcValido(id) || `ponte-modello-${randomUUID()}`;
+    if (!providerRichiesto || !modelloRichiesto) {
+      throw erroreHttp("Provider e modello sono obbligatori", 400);
+    }
+    if (this.compattazioneInCorso) {
+      throw erroreHttp(
+        "Pi sta completando una compattazione. Attendi la fine prima di cambiare modello.",
+        409,
+      );
+    }
+    if (
+      this.inEsecuzione
+      || this.proprietariTurni.length > 0
+      || this.cambioSessioneInCorso
+      || this.configurazioneModelliInCorso
+      || this.inChiusura
+      || this.chiusuraFallita
+      || this.handoffInCorso
+      || this.loginProviderInCorso
+      || this.esportazioneCondivisioneId
+      || this.rebindModelloInCorso
+      || this.sequenzaCatalogoModelliInCorso
+      || this.cambioModelloSicuroInCorso
+      || this.compattazionePreventivaInCorso
+    ) {
+      throw erroreHttp(
+        "La conversazione deve essere inattiva prima di cambiare modello.",
+        409,
+      );
+    }
+    if (this.catalogoModelliDaRicaricare) {
+      throw erroreHttp(
+        "Il catalogo modelli deve essere verificato prima del cambio.",
+        409,
+      );
+    }
+
+    const sequenza = {
+      id: idFinale,
+      provider: providerRichiesto,
+      modelId: modelloRichiesto,
+    };
+    this.cambioModelloSicuroInCorso = sequenza;
+    try {
+      await this.verificaIdentitaFileSessione();
+      this.#verificaCambioModelloCorrente(sequenza);
+      const stato = await this.#inviaCambioModelloControllato(
+        { type: "get_state" },
+        Math.min(timeout, 30_000),
+      );
+      if (stato?.isStreaming === true || stato?.isCompacting === true) {
+        throw erroreHttp("Pi ha iniziato un'elaborazione durante il cambio modello", 409);
+      }
+      this.#verificaCambioModelloCorrente(sequenza);
+      const catalogo = await this.#inviaCambioModelloControllato(
+        { type: "get_available_models" },
+        Math.min(timeout, 30_000),
+      );
+      const corrispondenze = Array.isArray(catalogo?.models)
+        ? catalogo.models.filter((modello) =>
+            modello?.provider === providerRichiesto && modello?.id === modelloRichiesto)
+        : [];
+      if (corrispondenze.length > 1) {
+        throw erroreHttp(
+          "Il modello richiesto è ambiguo nel catalogo effettivo di Pi",
+          409,
+        );
+      }
+      const destinazione = corrispondenze[0];
+      const finestraLetta = destinazione?.contextWindow == null
+        ? NaN : Number(destinazione.contextWindow);
+      const finestraDestinazione = Number.isFinite(finestraLetta) && finestraLetta > 0
+        ? finestraLetta : null;
+      const identitaUguale = stato?.model?.provider === providerRichiesto
+        && stato?.model?.id === modelloRichiesto;
+      const finestraCorrente = Number(stato?.model?.contextWindow);
+      const metadatiUguali = identitaUguale
+        && finestraCorrente === finestraDestinazione;
+      let compattata = false;
+      let tokenPrima = null;
+      let tokenStimatiDopo = null;
+      const budget = finestraDestinazione == null
+        ? null : Math.max(0, finestraDestinazione - RISERVA_CAMBIO_MODELLO);
+
+      // Pi resta la fonte di verità: un catalogo incompleto non autorizza
+      // compattazioni né rifiuti anticipati del comando set_model.
+      if (!metadatiUguali && finestraDestinazione != null) {
+        const statistiche = await this.#inviaCambioModelloControllato(
+          { type: "get_session_stats" },
+          Math.min(timeout, 30_000),
+        );
+        const tokenDichiarati = statistiche?.contextUsage?.tokens;
+        tokenPrima = tokenDichiarati == null ? null : Number(tokenDichiarati);
+        const messaggiPresenti = Number(statistiche?.totalMessages || 0) > 0;
+        if (
+          messaggiPresenti
+          && finestraDestinazione
+            <= RISERVA_CAMBIO_MODELLO + MARGINE_STIMA_DOPO_COMPATTAZIONE
+        ) {
+          throw Object.assign(erroreHttp(
+            "La finestra del modello è troppo piccola per trasferire in sicurezza questa conversazione.",
+            409,
+          ), { metadati: {
+            contextWindow: finestraDestinazione,
+            contextBudget: budget,
+            reserveTokens: RISERVA_CAMBIO_MODELLO,
+            estimateMargin: MARGINE_STIMA_DOPO_COMPATTAZIONE,
+          } });
+        }
+        if (
+          messaggiPresenti
+          && !Number.isFinite(tokenPrima)
+          && (!Number.isFinite(finestraCorrente) || finestraDestinazione < finestraCorrente)
+        ) {
+          throw erroreHttp(
+            "Pi non può ancora stimare il contesto dopo una compattazione precedente. "
+              + "Per sicurezza il modello più piccolo non viene attivato: completa un breve turno "
+              + "con il modello corrente e riprova.",
+            409,
+          );
+        }
+        if (Number.isFinite(tokenPrima) && tokenPrima > budget) {
+          const risultato = await this.#inviaCambioModelloControllato(
+            { type: "compact" },
+            timeout,
+          );
+          compattata = true;
+          const stima = risultato?.estimatedTokensAfter;
+          tokenStimatiDopo = stima == null ? NaN : Number(stima);
+          const stimaVerificabile = Number.isFinite(tokenStimatiDopo) && tokenStimatiDopo > 0;
+          const budgetVerifica = Math.max(
+            0,
+            budget - MARGINE_STIMA_DOPO_COMPATTAZIONE,
+          );
+          if (!stimaVerificabile || tokenStimatiDopo > budgetVerifica) {
+            throw erroreHttp(
+              stimaVerificabile
+                ? `Il riassunto occupa ancora ${tokenStimatiDopo} token e non entra in sicurezza nel modello richiesto (${budgetVerifica} disponibili). Il modello precedente resta attivo.`
+                : "Pi non ha restituito una stima verificabile dopo il riassunto. Il modello precedente resta attivo.",
+              409,
+            );
+          }
+        }
+      }
+
+      this.#verificaCambioModelloCorrente(sequenza);
+      const modello = await this.#inviaCambioModelloControllato({
+        type: "set_model",
+        provider: providerRichiesto,
+        modelId: modelloRichiesto,
+        id: idFinale,
+      }, timeout).catch((errore) => {
+        if (/modello non trovato|model not found/i.test(errore.message)) errore.statusHttp = 404;
+        throw errore;
+      });
+      if (
+        modello?.provider !== providerRichiesto
+        || modello?.id !== modelloRichiesto
+        || (finestraDestinazione != null && Number(modello?.contextWindow) !== finestraDestinazione)
+      ) {
+        throw erroreHttp("Pi non ha confermato il modello e il contesto richiesti", 409);
+      }
+      return {
+        id: idFinale,
+        model: modello,
+        compacted: compattata,
+        tokensBefore: tokenPrima,
+        estimatedTokensAfter: tokenStimatiDopo,
+        contextBudget: budget,
+      };
+    } finally {
+      if (this.cambioModelloSicuroInCorso === sequenza) {
+        this.cambioModelloSicuroInCorso = null;
+      }
+      this.comandiCambioModelloSicuro.clear();
+      this.#liberaRebindModello();
+    }
+  }
+
+  #verificaCambioModelloCorrente(sequenza) {
+    if (this.cambioModelloSicuroInCorso !== sequenza) {
+      throw erroreHttp("Il cambio modello è stato sostituito da un'altra operazione", 409);
+    }
+  }
+
+  async #inviaCambioModelloControllato(comando, timeout) {
+    const id = comando.id || `ponte-cambio-modello-${randomUUID()}`;
+    this.comandiCambioModelloSicuro.add(id);
+    try {
+      return await this.inviaEAttendi({ ...comando, id }, timeout);
+    } finally {
+      this.comandiCambioModelloSicuro.delete(id);
+      this.#liberaRebindModello(id);
+    }
+  }
+
   #verificaSequenzaCatalogoCorrente(sequenza) {
     if (
       this.sequenzaCatalogoModelliInCorso !== sequenza
       || !this.catalogoModelliDaRicaricare
       || this.revisioneCatalogoModelliAttesa !== sequenza.revisione
       || this.contextWindowCatalogoModelliAttesa !== sequenza.contextWindow
+      || this.contextWindowsCatalogoModelliAttese !== sequenza.contextWindows
     ) {
       throw erroreHttp("La configurazione modelli e cambiata durante la verifica", 409);
     }
@@ -3686,9 +4021,15 @@ export class SessionePi {
   }
 
   #annullaSequenzaCatalogoModelli() {
+    this.#annullaCompattazionePreventiva("La preparazione dell'invio è stata annullata: la sessione si sta chiudendo.");
+    this.#invalidaStatistiche();
+    this.azzeraInefficaciaCompattazionePreventiva();
+    this.catalogoModelliStatistiche = [];
     this.#liberaRebindModello();
     this.sequenzaCatalogoModelliInCorso = null;
     this.comandiCatalogoModelliControllati.clear();
+    this.cambioModelloSicuroInCorso = null;
+    this.comandiCambioModelloSicuro.clear();
   }
 
   async avvia({
@@ -3908,6 +4249,22 @@ export class SessionePi {
   }
 
   invia(comando, clientId = null, replayId = null) {
+    const preventiva = this.compattazionePreventivaInCorso;
+    const controllato = this.comandiCompattazionePreventiva.has(comando?.id);
+    if (preventiva && ["abort", "abort_compaction"].includes(comando?.type)) {
+      if (preventiva.clientId && preventiva.clientId !== clientId) {
+        throw erroreHttp("Solo la finestra che sta preparando l'invio può annullarlo.", 403);
+      }
+      // L'annullamento vale anche prima di compact, mentre leggiamo le statistiche.
+      this.#annullaCompattazionePreventiva("Invio annullato durante la compattazione preventiva. Il prompt non è stato inoltrato.");
+    }
+    if (
+      preventiva && !controllato
+      && !String(comando?.type || "").startsWith("get_")
+      && !["abort", "abort_compaction", "extension_ui_response"].includes(comando?.type)
+    ) {
+      throw erroreHttp("Pi sta preparando un invio con compattazione preventiva. Attendi la fine dell'operazione.", 409);
+    }
     if (this.inChiusura || this.chiusuraFallita || this.handoffInCorso) {
       throw new Error("La sessione e riservata perche pi non ha ancora terminato la chiusura");
     }
@@ -3938,10 +4295,22 @@ export class SessionePi {
     const compatta = comando.type === "compact";
     const rebindModello = COMANDI_REBIND_MODELLO.has(comando.type);
     const comandoCatalogoControllato = this.comandiCatalogoModelliControllati.has(id);
+    const comandoCambioModelloControllato = this.comandiCambioModelloSicuro.has(id);
     const cambiaSessione = COMANDI_CAMBIO_SESSIONE.has(comando.type);
     const loginProvider = comando.type === "login_provider";
     const guidaTurno = ["prompt", "steer", "follow_up", "login_provider"].includes(comando.type)
       || cambiaSessione;
+    if (
+      this.cambioModelloSicuroInCorso
+      && !comandoCambioModelloControllato
+      && !String(comando.type || "").startsWith("get_")
+      && !["abort", "abort_compaction", "extension_ui_response"].includes(comando.type)
+    ) {
+      throw erroreHttp(
+        "Pi sta verificando il contesto prima del cambio modello. Attendi la fine dell'operazione.",
+        409,
+      );
+    }
     if (this.configurazioneModelliInCorso && guidaTurno) {
       throw erroreHttp(
         "La configurazione dei modelli e in aggiornamento. Attendi un momento prima di avviare il turno.",
@@ -4080,6 +4449,9 @@ export class SessionePi {
     if (comando.type === "get_state") {
       this.revisioniGetState.set(id, this.revisioneFileSessione);
     }
+    if (rebindModello || cambiaSessione || comando.type === "prompt") this.#invalidaStatistiche();
+    if (rebindModello || cambiaSessione) this.azzeraInefficaciaCompattazionePreventiva();
+    if (comando.type === "get_session_stats") this.revisioniStatistiche.set(id, this.revisioneStatistiche);
     // extension_ui_response e una notifica fire-and-forget nel protocollo PI:
     // non arrivera una response da correlare.
     if (comando.type !== "extension_ui_response") {
@@ -4121,6 +4493,7 @@ export class SessionePi {
       }
       if (comando.type === "get_state") this.revisioniGetState.delete(id);
       this.revisioniComandi.delete(id);
+      this.revisioniStatistiche.delete(id);
       if (rebindModello) this.#liberaRebindModello(id);
       if (compatta) this.#liberaPrenotazioneCompattazione(id);
       throw new Error("Non riesco a comunicare con pi: " + String(errore?.message || errore));
@@ -4171,8 +4544,208 @@ export class SessionePi {
     }
   }
 
+  #invalidaStatistiche() {
+    this.revisioneStatistiche += 1;
+    this.statisticheSessione = null;
+  }
+
+  azzeraInefficaciaCompattazionePreventiva() {
+    this.compattazionePreventivaInefficace = false;
+    // Un risultato ancora in volo non deve ripristinare un segno azzerato,
+    // per esempio dal salvataggio di una nuova soglia.
+    this.revisioneInefficaciaCompattazionePreventiva += 1;
+  }
+
+  #annullaCompattazionePreventiva(messaggio, codice = "COMPATTAZIONE_PREVENTIVA_ANNULLATA") {
+    const sequenza = this.compattazionePreventivaInCorso;
+    if (!sequenza || sequenza.errore) return;
+    const errore = Object.assign(erroreHttp(messaggio, codice === "PI_RPC_TIMEOUT" ? 504 : 409), { code: codice });
+    sequenza.errore = errore;
+    sequenza.annulla(errore);
+    for (const id of this.comandiCompattazionePreventiva) {
+      const attesa = this.atteseInterne.get(id);
+      if (!attesa) continue;
+      clearTimeout(attesa.timer);
+      this.atteseInterne.delete(id);
+      this.revisioniComandi.delete(id);
+      this.revisioniGetState.delete(id);
+      this.revisioniStatistiche.delete(id);
+      attesa.rifiuta(errore);
+    }
+  }
+
+  #verificaCompattazionePreventiva(sequenza) {
+    if (sequenza.errore) throw sequenza.errore;
+    if (
+      this.compattazionePreventivaInCorso !== sequenza
+      || this.generazione !== sequenza.generazione
+      || this.revisioneFileSessione !== sequenza.revisioneFileSessione
+      || this.provider !== sequenza.provider
+      || this.modello !== sequenza.modello
+      || this.inEsecuzione
+      || this.cambioSessioneInCorso
+      || this.catalogoModelliDaRicaricare
+      || this.configurazioneModelliInCorso
+      || this.inChiusura || this.chiusuraFallita || this.handoffInCorso
+    ) {
+      throw erroreHttp("La conversazione è cambiata durante la preparazione. Il prompt non è stato inoltrato.", 409);
+    }
+    if (this.compattazioneInCorso) {
+      throw erroreHttp("Pi sta liberando spazio da solo. Il prompt non è stato inoltrato: riprova a compattazione conclusa.", 409);
+    }
+  }
+
+  async #inviaRpcPreventiva(sequenza, comando) {
+    this.#verificaCompattazionePreventiva(sequenza);
+    const id = `ponte-preventiva-${randomUUID()}`;
+    this.comandiCompattazionePreventiva.add(id);
+    if (comando.type === "compact") {
+      sequenza.compactId = id;
+      this.idUltimaCompattazionePreventiva = id;
+    }
+    try {
+      return await Promise.race([
+        this.inviaEAttendi({ ...comando, id }, comando.type === "compact"
+          ? this.timeoutCompattazionePreventivaMs : Math.min(8_000, this.timeoutCompattazionePreventivaMs)),
+        sequenza.annullamento,
+      ]);
+    } finally {
+      this.comandiCompattazionePreventiva.delete(id);
+    }
+  }
+
+  async #inviaConCompattazionePreventiva(comando, clientId, replayId) {
+    if (this.compattazioneInCorso) {
+      throw erroreHttp("Pi sta liberando spazio e preparando il riassunto. Attendi la fine della compattazione.", 409);
+    }
+    if (this.configurazioneModelliInCorso) {
+      throw erroreHttp("La configurazione dei modelli è in aggiornamento. Attendi prima di avviare il turno.", 409);
+    }
+    if (this.catalogoModelliDaRicaricare || this.rebindModelloInCorso || this.sequenzaCatalogoModelliInCorso) {
+      throw erroreHttp("Il catalogo modelli deve essere verificato dal ponte prima del prossimo invio.", 409);
+    }
+    if (
+      this.compattazionePreventivaInCorso
+      || this.proprietariTurni.length > 0
+      || this.cambioSessioneInCorso
+      || this.cambioModelloSicuroInCorso
+      || this.loginProviderInCorso
+      || this.esportazioneCondivisioneId
+      || this.inChiusura || this.chiusuraFallita || this.handoffInCorso
+    ) {
+      throw erroreHttp("La conversazione è occupata: il nuovo prompt non è stato inoltrato.", 409);
+    }
+    const sequenza = {
+      id: comando.id || `ponte-prompt-${randomUUID()}`,
+      clientId, replayId,
+      generazione: this.generazione,
+      revisioneFileSessione: this.revisioneFileSessione,
+      provider: this.provider, modello: this.modello,
+      revisioneInefficacia: this.revisioneInefficaciaCompattazionePreventiva,
+      errore: null,
+    };
+    sequenza.annullamento = new Promise((_, rifiuta) => { sequenza.annulla = rifiuta; });
+    void sequenza.annullamento.catch(() => {});
+    // Prenotazione e proprietario sono stabiliti nello stesso tick, prima del
+    // primo await. Le richieste concorrenti non possono duplicare compact.
+    this.compattazionePreventivaInCorso = sequenza;
+    const proprietarioPrecedente = this.clientInterazione;
+    const replayPrecedente = this.clientReplayInterazione;
+    if (clientId) {
+      this.clientInterazione = clientId;
+      this.clientReplayInterazione = replayId;
+    }
+    let inoltrato = false;
+    let statoFinale = ["conclusa", "Verifica preventiva conclusa."];
+    const notifica = (fase, messaggio) => this.diffondi({
+      type: "gui_compattazione_preventiva", fase, messaggio, promptId: sequenza.id,
+    });
+    const timer = setTimeout(() => this.#annullaCompattazionePreventiva(
+      "Tempo scaduto durante la compattazione preventiva. Il prompt non è stato inoltrato; attendi Pi o annulla la compattazione.",
+      "PI_RPC_TIMEOUT",
+    ), this.timeoutCompattazionePreventivaMs);
+    try {
+      const soglia = await Promise.race([Promise.resolve(this.leggiSogliaCompattazione()), sequenza.annullamento]);
+      this.#verificaCompattazionePreventiva(sequenza);
+      const cache = this.statisticheSessione;
+      const revisione = this.revisioneStatistiche;
+      const statistiche = cache && cache.revisione === revisione && Date.now() - cache.aggiornataIl <= 30_000
+        ? cache.dati
+        : await this.#inviaRpcPreventiva(sequenza, { type: "get_session_stats" });
+      this.#verificaCompattazionePreventiva(sequenza);
+      const uso = revisione === this.revisioneStatistiche ? statistiche?.contextUsage : null;
+      const percento = uso?.percent == null ? NaN : Number(uso.percent);
+      const token = uso?.tokens == null ? NaN : Number(uso.tokens);
+      if (Number.isFinite(percento) && percento >= 0 && percento < soglia) {
+        this.azzeraInefficaciaCompattazionePreventiva();
+      }
+      if (!Number.isFinite(percento) || percento < 0 || !Number.isFinite(token) || token < 0) {
+        statoFinale = ["saltata", "Compattazione preventiva saltata: statistiche sconosciute."];
+      } else if (percento >= soglia && this.compattazionePreventivaInefficace) {
+        statoFinale = ["saltata", "Compattazione preventiva saltata: l'ultimo riassunto non ha liberato spazio sotto la soglia. Interviene la compattazione automatica di Pi."];
+      } else if (percento >= soglia) {
+        notifica("in_corso", "Compattazione preventiva in corso. Libero spazio prima di inviare...");
+        try {
+          const risultato = await this.#inviaRpcPreventiva(sequenza, { type: "compact" });
+          this.#verificaCompattazionePreventiva(sequenza);
+          if (risultato?.aborted === true) {
+            this.#annullaCompattazionePreventiva("Compattazione preventiva annullata. Il prompt non è stato inoltrato.");
+            this.#verificaCompattazionePreventiva(sequenza);
+          }
+          const stima = risultato?.estimatedTokensAfter;
+          const modelli = this.catalogoModelliStatistiche.filter((modello) =>
+            modello?.provider === this.provider && modello?.id === this.modello);
+          const finestra = modelli.length === 1 ? modelli[0].contextWindow : null;
+          this.compattazionePreventivaInefficace =
+            sequenza.revisioneInefficacia === this.revisioneInefficaciaCompattazionePreventiva
+            && Number.isFinite(stima) && stima > 0
+            && Number.isFinite(finestra) && finestra > 0
+            && stima / finestra * 100 >= soglia;
+          statoFinale = ["conclusa", this.compattazionePreventivaInefficace
+            ? "Compattazione preventiva conclusa, ma lo spazio resta oltre la soglia: ai prossimi invii lascio fare alla compattazione automatica di Pi."
+            : "Compattazione preventiva conclusa."];
+        } catch (errore) {
+          this.#verificaCompattazionePreventiva(sequenza);
+          if (errore.code !== "PI_RPC_REJECTED") throw errore;
+          const stato = await this.#inviaRpcPreventiva(sequenza, { type: "get_state" });
+          this.#verificaCompattazionePreventiva(sequenza);
+          if (stato?.isStreaming !== false || stato?.isCompacting !== false || this.compattazioneInCorso) {
+            throw erroreHttp("La compattazione preventiva è fallita e Pi non risulta libero. Il prompt non è stato inoltrato.", 409);
+          }
+          statoFinale = ["errore", `Compattazione preventiva non riuscita: ${errore.message}. Pi è libero: proseguo con l'invio.`];
+        }
+      }
+      // La verifica iniziale dell'endpoint precede la possibile lunga attesa.
+      // Ricontrolliamo il JSONL senza liberare la prenotazione dell'invio.
+      await Promise.race([this.verificaIdentitaFileSessione(), sequenza.annullamento]);
+      this.#verificaCompattazionePreventiva(sequenza);
+      this.comandiCompattazionePreventiva.add(sequenza.id);
+      const id = this.invia({ ...comando, id: sequenza.id }, clientId, replayId);
+      inoltrato = true;
+      return id;
+    } catch (causa) {
+      const errore = causa.code === "PI_RPC_TIMEOUT"
+        ? Object.assign(erroreHttp("Tempo scaduto durante la compattazione preventiva. Il prompt non è stato inoltrato; attendi Pi o annulla la compattazione.", 504), { code: causa.code })
+        : causa;
+      statoFinale = [errore.code === "COMPATTAZIONE_PREVENTIVA_ANNULLATA" ? "annullata" : "errore", errore.message];
+      throw errore;
+    } finally {
+      clearTimeout(timer);
+      if (this.compattazionePreventivaInCorso === sequenza) this.compattazionePreventivaInCorso = null;
+      this.comandiCompattazionePreventiva.clear();
+      if (!inoltrato && !this.inEsecuzione && this.clientInterazione === clientId) {
+        this.clientInterazione = proprietarioPrecedente;
+        this.clientReplayInterazione = replayPrecedente;
+      }
+      // Il messaggio finale segue il rilascio: anche una pagina riconnessa
+      // durante l'ultimo controllo del JSONL riceve lo stato aggiornato.
+      notifica(...statoFinale);
+    }
+  }
+
   async inviaDopoCambio(comando, clientId = null, replayId = null, timeout = 12000) {
     const prioritario = comando.type === "abort"
+      || comando.type === "abort_compaction"
       || comando.type === "abort_branch_summary"
       || comando.type === "extension_ui_response";
     const scadenza = Date.now() + timeout;
@@ -4180,6 +4753,9 @@ export class SessionePi {
       const rimasto = scadenza - Date.now();
       if (rimasto <= 0) throw new Error("Pi non ha completato in tempo il cambio di conversazione");
       await this.#attendiFineCambio(rimasto);
+    }
+    if (comando.type === "prompt" && !this.inEsecuzione) {
+      return this.#inviaConCompattazionePreventiva(comando, clientId, replayId);
     }
     return this.invia(comando, clientId, replayId);
   }
@@ -4191,8 +4767,9 @@ export class SessionePi {
         this.atteseInterne.delete(id);
         this.revisioniGetState.delete(id);
         this.revisioniComandi.delete(id);
+        this.revisioniStatistiche.delete(id);
         this.#liberaRebindModello(id);
-        rifiuta(new Error("Pi non ha risposto in tempo al controllo iniziale"));
+        rifiuta(Object.assign(new Error("Pi non ha risposto in tempo al controllo iniziale"), { code: "PI_RPC_TIMEOUT" }));
       }, timeout);
       this.atteseInterne.set(id, { risolvi, rifiuta, timer });
       try {
@@ -4220,6 +4797,12 @@ export class SessionePi {
   }
 
   diffondi(evento) {
+    if (["agent_end", "agent_settled", "compaction_end"].includes(evento?.type)) {
+      this.#invalidaStatistiche();
+    }
+    if (evento?.type === "compaction_end" && evento.aborted === true) {
+      this.#annullaCompattazionePreventiva("Compattazione preventiva annullata. Il prompt non è stato inoltrato.");
+    }
     if (evento?.type === "response" && evento.id) {
       this.#liberaRebindModello(evento.id, evento.command);
       if (evento.command === "compact") {
@@ -4236,6 +4819,12 @@ export class SessionePi {
       this.#aggiornaBarrieraCompattazione();
     }
     if (evento?.type === "compaction_end") {
+      // Pi normalmente non correla questi eventi a un id RPC: una manuale
+      // durante il compact controllato è del ponte. Se c'è un id, prevale.
+      const originataDalPonte = evento.id != null
+        ? evento.id === this.idUltimaCompattazionePreventiva
+        : evento.reason === "manual" && Boolean(this.compattazionePreventivaInCorso?.compactId);
+      if (!originataDalPonte) this.azzeraInefficaciaCompattazionePreventiva();
       this.compattazioneAvviata = false;
       if (evento.reason === "manual") {
         this.#liberaPrenotazioneCompattazione();
@@ -4362,8 +4951,9 @@ export class SessionePi {
         this.atteseInterne.delete(evento.id);
         if (rispostaObsoleta) attesa.rifiuta(new Error("La risposta appartiene alla conversazione precedente"));
         else if (evento.success) attesa.risolvi(evento.data || {});
-        else attesa.rifiuta(new Error(evento.error || "Controllo iniziale rifiutato da pi"));
+        else attesa.rifiuta(Object.assign(new Error(evento.error || "Controllo iniziale rifiutato da pi"), { code: "PI_RPC_REJECTED" }));
       }
+      this.revisioniStatistiche.delete(evento.id);
       if (eraCambioSessione) {
         if (evento.success) {
           this.#azzeraUiEstensioni();
@@ -4444,6 +5034,14 @@ export class SessionePi {
         });
       }
     }
+    // Il cambio controllato restituisce già i rifiuti RPC nella risposta HTTP.
+    // Dopo aver aggiornato attese e barriere, non li diffondiamo anche via SSE:
+    // il picker mostrerebbe due volte lo stesso errore.
+    if (
+      evento.type === "response"
+      && evento.success === false
+      && this.comandiCambioModelloSicuro.has(evento.id)
+    ) return;
     // L'oggetto e appena stato creato da JSON.parse: aggiungere il campo sullo
     // stesso record evita una seconda allocazione potenzialmente molto grande.
     evento.guiSessionId = this.id;
@@ -4723,7 +5321,37 @@ export class SessionePi {
 
   #aggiorna(evento, { aggiornaFileSessione = false } = {}) {
     const dati = evento.data || {};
+    if (evento.command === "get_session_stats") {
+      if (this.revisioniStatistiche.get(evento.id) === this.revisioneStatistiche) {
+        this.statisticheSessione = { dati, revisione: this.revisioneStatistiche, aggiornataIl: Date.now() };
+      }
+    }
+    if (evento.command === "get_available_models") {
+      const firma = JSON.stringify(dati.models || null);
+      if (firma !== this.firmaCatalogoStatistiche) {
+        this.#invalidaStatistiche();
+        this.azzeraInefficaciaCompattazionePreventiva();
+      }
+      this.firmaCatalogoStatistiche = firma;
+      this.catalogoModelliStatistiche = Array.isArray(dati.models) ? dati.models : [];
+    }
+    if (COMANDI_REBIND_MODELLO.has(evento.command) || COMANDI_CAMBIO_SESSIONE.has(evento.command) || evento.command === "compact") {
+      this.#invalidaStatistiche();
+    }
+    if (COMANDI_REBIND_MODELLO.has(evento.command) || COMANDI_CAMBIO_SESSIONE.has(evento.command)) {
+      this.azzeraInefficaciaCompattazionePreventiva();
+      if (evento.command === "refresh_models") this.catalogoModelliStatistiche = [];
+    }
     if (evento.command === "get_state") {
+      if (
+        (dati.model?.provider && dati.model.provider !== this.provider)
+        || (dati.model?.id && dati.model.id !== this.modello)
+        || (dati.model?.contextWindow != null && dati.model.contextWindow !== this.finestraModelloStatistiche)
+      ) {
+        this.#invalidaStatistiche();
+        this.azzeraInefficaciaCompattazionePreventiva();
+      }
+      this.finestraModelloStatistiche = dati.model?.contextWindow ?? null;
       this.provider = dati.model?.provider || this.provider;
       this.modello = dati.model?.id || this.modello;
       this.nomeModello = dati.model?.name || this.nomeModello;
@@ -4759,6 +5387,7 @@ export class SessionePi {
     }
     this.revisioniGetState.clear();
     this.revisioniComandi.clear();
+    this.revisioniStatistiche.clear();
   }
 
   #attendiFineCambio(timeout) {
@@ -4811,6 +5440,7 @@ export class SessionePi {
       identitaSessioneIncerta: this.fileSessioneIncerta,
       inEsecuzione: this.inEsecuzione,
       compattazioneInCorso: this.compattazioneInCorso,
+      compattazionePreventivaInCorso: Boolean(this.compattazionePreventivaInCorso),
       compattazionePrenotata: Boolean(this.prenotazioneCompattazione),
       compattazioneAvvioIncerto: Boolean(this.compattazioneAvvioIncertoId),
       ...this.statoRicaricaCatalogoModelli(),
@@ -5237,6 +5867,7 @@ export function creaPonte({
   rinominaFileAllegato = rename,
   rimuoviFileAllegato = rm,
   primaCommitConfigurazioneModelli = null,
+  primaPubblicazioneImpostazioni = null,
   rimuoviBackupConfigurazione = rm,
   scadenzaRebindModelloMs = 30_000,
   timeoutRicaricaCatalogoModelliMs = 25_000,
@@ -5248,6 +5879,20 @@ export function creaPonte({
   const config = join(home, ".pi", "gui");
   const radiceAllegati = join(config, "allegati");
   const fileRecenti = join(config, "recenti.json");
+  const fileImpostazioni = join(config, "impostazioni.json");
+  const serializzaImpostazioni = creaSerializzatore();
+  let impostazioni = { sogliaCompattazionePercento: SOGLIA_COMPATTAZIONE_PREDEFINITA };
+  const impostazioniPronte = (async () => {
+    try {
+      impostazioni = validaImpostazioniGui(JSON.parse(await readFile(fileImpostazioni, "utf8")));
+    } catch (errore) {
+      if (errore.code !== "ENOENT") {
+        console.warn("Non riesco a leggere le impostazioni della GUI: uso la soglia predefinita del 90% e conservo il file.", errore.message);
+      }
+    }
+  })();
+  // La lettura parte all'avvio. Un file non valido resta intatto e può essere
+  // corretto da un successivo salvataggio esplicito nelle impostazioni.
   const fileOperazioniCondivisione = join(config, "share-operations-v1.json");
   const sessioni = new Map();
   const terminali = new Map();
@@ -6564,12 +7209,13 @@ export function creaPonte({
     return [...sessioni.values()].map((sessione) => sessione.riassunto());
   }
 
-  function marcaCataloghiModelliDaRicaricare(contextWindow) {
+  function marcaCataloghiModelliDaRicaricare(contextWindow, configurazione) {
     latchGlobaleCatalogoModelliInizializzato = true;
     revisioneConfigurazioneModelli += 1;
     latchGlobaleCatalogoModelli = {
       revisione: revisioneConfigurazioneModelli,
       contextWindow,
+      contextWindows: finestreContestoGpt(configurazione),
     };
     for (const sessione of sessioni.values()) {
       sessione.richiediRicaricaCatalogoModelli?.({
@@ -6584,8 +7230,8 @@ export function creaPonte({
     latchGlobaleCatalogoModelliInizializzato = true;
     try {
       const { configurazione } = await leggiConfigurazioneModelli(home);
-      if (statoContestoGpt(configurazione).managed) {
-        marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_ESTESO);
+      if (leggiProvenienzaContestoGpt(configurazione)) {
+        marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_ESTESO, configurazione);
       }
     } catch {
       // Un models.json estraneo o malformato conserva il comportamento storico:
@@ -7159,11 +7805,12 @@ $processo.WaitForExit()
         return;
       }
 
-      const metodoAtteso = vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
+      const metodoAtteso = via === "/api/impostazioni"
+        ? "GET, POST" : vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
       if (via.startsWith("/api/") && !metodoAtteso) {
         return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Operazione non trovata" }, 404);
       }
-      if ((metodoAtteso && metodo !== metodoAtteso) || (!metodoAtteso && metodo !== "GET")) {
+      if ((metodoAtteso && !metodoAtteso.split(", ").includes(metodo)) || (!metodoAtteso && metodo !== "GET")) {
         risposta.setHeader("allow", metodoAtteso || "GET");
         return rifiutaPrimaDelCorpo(
           richiesta,
@@ -7505,6 +8152,8 @@ $processo.WaitForExit()
             || sessione.configurazioneModelliInCorso
             || sessione.rebindModelloInCorso
             || sessione.sequenzaCatalogoModelliInCorso
+            || sessione.cambioModelloSicuroInCorso
+            || sessione.compattazionePreventivaInCorso
           ) {
             throw erroreHttp(
               "La conversazione deve essere attiva ma inattiva prima di modificare il contesto dei modelli",
@@ -7512,7 +8161,10 @@ $processo.WaitForExit()
             );
           }
           if ([...sessioni.values()].some((candidata) =>
-            candidata.rebindModelloInCorso || candidata.sequenzaCatalogoModelliInCorso)) {
+            candidata.rebindModelloInCorso
+            || candidata.sequenzaCatalogoModelliInCorso
+            || candidata.cambioModelloSicuroInCorso
+            || candidata.compattazionePreventivaInCorso)) {
             throw erroreHttp(
               "Un'altra conversazione sta ricollegando il catalogo modelli; attendi la fine della verifica",
               409,
@@ -7531,6 +8183,7 @@ $processo.WaitForExit()
             esistente,
             impronta,
           } = await leggiConfigurazioneModelli(home);
+          const migrata = migraProvenienzaContestoGpt(configurazione);
           const statoPrima = statoContestoGpt(configurazione);
           if (statoPrima.conflict) {
             throw erroreHttp(
@@ -7542,22 +8195,22 @@ $processo.WaitForExit()
           }
           const provenienza = leggiProvenienzaContestoGpt(configurazione);
           if (corpo.enabled) {
-            const modificata = abilitaContestoGpt(configurazione, { fileExisted: esistente });
+            const modificata = abilitaContestoGpt(configurazione, { fileExisted: esistente }) || migrata;
             if (modificata) {
               await commitConfigurazioneModelliCas(percorso, configurazione, {
                 improntaAttesa: impronta,
                 primaCommit: primaCommitConfigurazioneModelli,
                 rimuoviBackupConfigurazione,
               });
-              marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_ESTESO);
+              marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_ESTESO, configurazione);
             }
             return json(risposta, rispostaContestoGpt(configurazione, modificata));
           }
-          if (!provenienza) {
+          if (!provenienza?.providers.openai && !migrata) {
             verificaAssenzaOverrideGptEsterni(configurazione);
             return json(risposta, rispostaContestoGpt(configurazione, false));
           }
-          ripristinaContestoGpt(configurazione, provenienza);
+          if (provenienza?.providers.openai) ripristinaContestoGpt(configurazione, provenienza);
           if (!provenienza.fileExisted && Object.keys(configurazione).length === 0) {
             await commitConfigurazioneModelliCas(percorso, null, {
               improntaAttesa: impronta,
@@ -7572,7 +8225,7 @@ $processo.WaitForExit()
               rimuoviBackupConfigurazione,
             });
           }
-          marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_PREDEFINITO);
+          marcaCataloghiModelliDaRicaricare(CONTESTO_GPT_PREDEFINITO, configurazione);
           return json(risposta, rispostaContestoGpt(configurazione, true));
         } finally {
           for (const [candidata, precedente] of sessioniRiservate) {
@@ -7580,6 +8233,25 @@ $processo.WaitForExit()
           }
           liberaMutazione();
         }
+      }
+
+      if (via === "/api/impostazioni") {
+        await impostazioniPronte;
+        if (!post) return json(risposta, { ...impostazioni });
+        const nuove = validaImpostazioniGui(await leggiCorpo(richiesta));
+        const salvate = await serializzaImpostazioni(fileImpostazioni, async () => {
+          if (chiusuraDefinitiva) throw erroreHttp("Il ponte si sta chiudendo", 503);
+          await mkdir(config, { recursive: true });
+          await scriviFileAtomico(fileImpostazioni, JSON.stringify(nuove, null, 2) + "\n", {
+            primaPubblicazione: primaPubblicazioneImpostazioni,
+          });
+          if (impostazioni.sogliaCompattazionePercento !== nuove.sogliaCompattazionePercento) {
+            for (const sessione of sessioni.values()) sessione.azzeraInefficaciaCompattazionePreventiva();
+          }
+          impostazioni = nuove;
+          return { ...impostazioni };
+        });
+        return json(risposta, salvate);
       }
 
       if (via === "/api/ricarica-contesto-gpt" && post) {
@@ -8058,6 +8730,10 @@ $processo.WaitForExit()
           bloccaComandiEstensione,
           estensioniBuiltinConsentite,
           scadenzaRebindModelloMs,
+          leggiSogliaCompattazione: async () => {
+            await impostazioniPronte;
+            return impostazioni.sogliaCompattazionePercento;
+          },
         });
         if (latchGlobaleCatalogoModelli) {
           sessione.richiediRicaricaCatalogoModelli({
@@ -8591,7 +9267,16 @@ $processo.WaitForExit()
                 record.status === "pending" ? 202 : record.httpStatus,
               );
             }
-            const id = await sessione.inviaDopoCambio(comando, clientId, replayId);
+            let id;
+            if (comando.type === "set_model") {
+              operazioniPerRpc.set(
+                chiaveRpcOperazione(sessione.id, record.canonicalId),
+                record,
+              );
+              id = (await sessione.cambiaModelloConContesto(comando)).id;
+            } else {
+              id = await sessione.inviaDopoCambio(comando, clientId, replayId);
+            }
             const esito = { ok: true, mode: "rpc", id, sessionId: sessione.id };
             record.ackBody = esito;
             record.updatedAt = Date.now();
@@ -8601,7 +9286,8 @@ $processo.WaitForExit()
           }
         } catch (errore) {
           const status = errore.statusHttp || 409;
-          const corpoErrore = { errore: String(errore?.message || errore), sessionId: sessione.id };
+          const corpoErrore = { errore: String(errore?.message || errore), sessionId: sessione.id,
+            ...(errore.metadati ? { metadati: errore.metadati } : {}) };
           if (record) {
             completaOperazione(
               record,
@@ -8909,7 +9595,19 @@ $processo.WaitForExit()
             );
             filePreparatiOra = preparazione.transizioni;
           }
-          const id = await sessione.inviaDopoCambio(comando, clientId, replayId);
+          let id;
+          if (comando.type === "set_model") {
+            if (recordOperazione?.status === "pending") {
+              operazioniPerRpc.set(
+                chiaveRpcOperazione(sessione.id, recordOperazione.canonicalId),
+                recordOperazione,
+              );
+            }
+            const cambio = await sessione.cambiaModelloConContesto(comando);
+            id = cambio.id;
+          } else {
+            id = await sessione.inviaDopoCambio(comando, clientId, replayId);
+          }
           promptInoltrato = true;
           let allegatiFinalizzati = true;
           if (riferimentiFilePrompt.length) {
@@ -8947,7 +9645,8 @@ $processo.WaitForExit()
             ).catch(() => {});
           }
           const status = errore.statusHttp || 409;
-          const corpoErrore = { errore: String(errore.message) };
+          const corpoErrore = { errore: String(errore.message),
+            ...(errore.metadati ? { metadati: errore.metadati } : {}) };
           if (recordOperazione) {
             if (!tentativoInoltroOperazione) {
               eliminaOperazione(
@@ -9338,6 +10037,22 @@ if (eseguitoDirettamente) {
       `Questa versione dell'interfaccia e verificata con pi ${VERSIONE_PI_VERIFICATA}; trovato ${versionePi || "nessuno"}. Installa quella versione di @earendil-works/pi-coding-agent oppure aggiorna l'interfaccia.`,
     );
     process.exit(4);
+  }
+  try {
+    const contestoAutomatico = await configuraCapacitaMassimaGpt56(homedir());
+    if (contestoAutomatico.modificata) {
+      console.log("  Contesto GPT-5.6 aggiornato: estensione automatica solo per l'account openai-codex; API a scelta esplicita.");
+    } else if (contestoAutomatico.protetta) {
+      console.warn("  Contesto GPT-5.6: mantengo l'override personale presente in models.json.");
+    }
+  } catch (errore) {
+    // Un file personale malformato o non modificabile non deve impedire
+    // l'accesso alle altre funzioni. Il catalogo effettivo resta visibile nella
+    // GUI e l'errore viene conservato nel log di avvio.
+    console.warn(
+      "  Non ho applicato automaticamente il contesto massimo GPT-5.6:",
+      String(errore?.message || errore),
+    );
   }
   if (PORTA === 4666) {
     const migrazione = await bonificaPonteLegacyWindows();

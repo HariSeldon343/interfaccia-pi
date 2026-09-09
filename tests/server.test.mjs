@@ -48,6 +48,7 @@ import {
   preparaInvocazioneCapacita,
   unificaCatalogoCapacita,
   validaCatalogoBuiltinPi,
+  configuraCapacitaMassimaGpt56,
 } from "../app/server.mjs";
 import { BUILTIN_SLASH_COMMANDS } from "../vendor/pi-runtime/pi/dist/core/slash-commands.js";
 
@@ -62,11 +63,11 @@ function attendi(ms) {
   return new Promise((risolvi) => setTimeout(risolvi, ms));
 }
 
-function catalogoGpt56(contextWindow) {
+function catalogoGpt56(contextWindowApi, contextWindowAccount = 272_000) {
   const models = [];
   for (const provider of ["openai", "openai-codex"]) {
     for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
-      models.push({ provider, id, name: id, contextWindow });
+      models.push({ provider, id, name: id, contextWindow: provider === "openai" ? contextWindowApi : contextWindowAccount });
     }
   }
   return models;
@@ -95,6 +96,200 @@ function intercettaRpcSessione(sessione, gestisci) {
   };
 }
 
+test("politica distinta per provider", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-contesto-auto-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+
+  const primo = await configuraCapacitaMassimaGpt56(home);
+  assert.equal(primo.modificata, true);
+  assert.equal(primo.protetta, false);
+  assert.equal(primo.contextWindow, 1_050_000);
+
+  const percorso = join(home, ".pi", "agent", "models.json");
+  const primaScrittura = await readFile(percorso, "utf8");
+  const configurazione = JSON.parse(primaScrittura);
+  assert.equal(Object.hasOwn(configurazione.providers, "openai"), false);
+  assert.equal(configurazione._interfacciaPi.gptExtendedContextV1.version, 2);
+  for (const provider of ["openai-codex"]) {
+    for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      assert.equal(
+        configurazione.providers[provider].modelOverrides[modello].contextWindow,
+        1_050_000,
+      );
+    }
+  }
+
+  const secondo = await configuraCapacitaMassimaGpt56(home);
+  assert.equal(secondo.modificata, false);
+  assert.equal(secondo.protetta, false);
+  assert.equal(await readFile(percorso, "utf8"), primaScrittura);
+});
+
+test("l'avvio non sovrascrive un contextWindow personale su entrambi i provider", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-contesto-personale-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const cartella = join(home, ".pi", "agent");
+  await mkdir(cartella, { recursive: true });
+  const percorso = join(cartella, "models.json");
+  const originale = '{\n  "providers": {\n    "openai": {\n      "modelOverrides": {\n        "gpt-5.6-sol": { "contextWindow": 777777, "name": "personale" }\n      }\n    }\n  },\n  "datoUtente": true\n}\n';
+  await writeFile(percorso, originale, "utf8");
+
+  const personale = JSON.parse(originale);
+  personale.providers["openai-codex"] = { modelOverrides: {
+    "gpt-5.6-sol": { contextWindow: 272_000, name: "Limite personale" },
+    "gpt-5.6-terra": { contextWindow: 800_000 },
+  } };
+  await writeFile(percorso, JSON.stringify(personale), "utf8");
+  const esito = await configuraCapacitaMassimaGpt56(home);
+  assert.equal(esito.modificata, true);
+  const dopo = JSON.parse(await readFile(percorso, "utf8"));
+  assert.deepEqual(dopo.providers.openai, personale.providers.openai);
+  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra"]) {
+    assert.deepEqual(dopo.providers["openai-codex"].modelOverrides[id], personale.providers["openai-codex"].modelOverrides[id]);
+  }
+  assert.equal(dopo.providers["openai-codex"].modelOverrides["gpt-5.6-luna"].contextWindow, 1_050_000);
+  assert.deepEqual(Object.keys(dopo._interfacciaPi.gptExtendedContextV1.providers["openai-codex"].models), ["gpt-5.6-luna"]);
+  const testo = await readFile(percorso, "utf8");
+  assert.equal((await configuraCapacitaMassimaGpt56(home)).modificata, false);
+  assert.equal(await readFile(percorso, "utf8"), testo);
+});
+
+test("la migrazione rimuove solo gli override automatici su openai e preserva quelli personali", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-migrazione-gpt-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const directory = join(home, ".pi", "agent");
+  await mkdir(directory, { recursive: true });
+  const providers = {};
+  const provenienza = { version: 1, managedBy: "interfaccia-pi", fileExisted: false,
+    providersContainerExisted: false, metadataContainerExisted: false, providers: {} };
+  for (const provider of ["openai", "openai-codex"]) {
+    providers[provider] = { modelOverrides: {} };
+    provenienza.providers[provider] = { providerExisted: false, modelOverridesExisted: false, models: {} };
+    for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      providers[provider].modelOverrides[id] = { contextWindow: 1_050_000 };
+      provenienza.providers[provider].models[id] = { overrideExisted: false, contextWindowExisted: false };
+    }
+  }
+  providers.openai.modelOverrides["gpt-5.6-sol"].name = "Nome personale";
+  providers.openai.modelOverrides["gpt-5.6-terra"].contextWindow = 777_777;
+  providers["openai-codex"].modelOverrides["gpt-5.6-luna"].contextWindow = 600_000;
+  provenienza.fileExisted = true;
+  provenienza.providersContainerExisted = true;
+  provenienza.providers.openai.providerExisted = true;
+  provenienza.providers.openai.modelOverridesExisted = true;
+  provenienza.providers.openai.models["gpt-5.6-luna"] = {
+    overrideExisted: true, contextWindowExisted: true, contextWindow: 272_000,
+  };
+  const precedente = { providers, _interfacciaPi: { gptExtendedContextV1: provenienza }, datoUtente: true };
+  const percorso = join(directory, "models.json");
+  await writeFile(percorso, JSON.stringify(precedente), "utf8");
+  const concorrente = '{"modificaUtente":"conserva"}\n';
+  await assert.rejects(configuraCapacitaMassimaGpt56(home, {
+    primaCommit: async ({ fase }) => {
+      if (fase === "prima-riserva") await writeFile(percorso, concorrente, "utf8");
+    },
+  }), (errore) => errore.statusHttp === 409);
+  assert.equal(await readFile(percorso, "utf8"), concorrente);
+  await writeFile(percorso, JSON.stringify(precedente), "utf8");
+  assert.equal((await configuraCapacitaMassimaGpt56(home, {
+    rimuoviBackupConfigurazione: async () => { throw new Error("Backup occupato"); },
+  })).modificata, true);
+  const backup = (await readdir(directory)).filter((nome) => nome.endsWith(".cas-backup"));
+  assert.equal(backup.length, 1);
+  assert.deepEqual(JSON.parse(await readFile(join(directory, backup[0]), "utf8")), precedente);
+  const dopo = JSON.parse(await readFile(percorso, "utf8"));
+  assert.deepEqual(dopo.providers.openai.modelOverrides, {
+    "gpt-5.6-sol": { name: "Nome personale" },
+    "gpt-5.6-terra": { contextWindow: 777_777 },
+    "gpt-5.6-luna": { contextWindow: 272_000 },
+  });
+  assert.deepEqual(dopo.providers["openai-codex"], providers["openai-codex"]);
+  assert.equal(dopo.datoUtente, true);
+  assert.equal(dopo._interfacciaPi.gptExtendedContextV1.version, 2);
+  assert.equal(Object.hasOwn(dopo._interfacciaPi.gptExtendedContextV1.providers, "openai"), false);
+  const testo = await readFile(percorso, "utf8");
+  assert.equal((await configuraCapacitaMassimaGpt56(home)).modificata, false);
+  assert.equal(await readFile(percorso, "utf8"), testo);
+});
+
+test("riavvio idempotente", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  await configuraCapacitaMassimaGpt56(ambiente.home);
+  const percorso = join(ambiente.home, ".pi", "agent", "models.json");
+  const account = JSON.parse(await readFile(percorso, "utf8")).providers["openai-codex"];
+  const cartella = join(ambiente.home, "scelta-api-persistente");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const richiesta = (enabled) => ({ enabled, sessionId: avvio.dati.id });
+  assert.equal((await ambiente.post("/api/contesto-esteso-gpt", richiesta(true), null)).risposta.status, 403);
+  assert.equal((await ambiente.post("/api/contesto-esteso-gpt", richiesta(true))).risposta.status, 200);
+  const attiva = await readFile(percorso, "utf8");
+  assert.equal(JSON.parse(attiva)._interfacciaPi.gptExtendedContextV1.providers.openai.source, "api-explicit");
+  assert.equal((await configuraCapacitaMassimaGpt56(ambiente.home)).modificata, false);
+  assert.equal(await readFile(percorso, "utf8"), attiva);
+  assert.equal((await ambiente.post("/api/contesto-esteso-gpt", richiesta(false))).risposta.status, 200);
+  const disattiva = await readFile(percorso, "utf8");
+  assert.equal(Object.hasOwn(JSON.parse(disattiva).providers, "openai"), false);
+  assert.deepEqual(JSON.parse(disattiva).providers["openai-codex"], account);
+  assert.equal((await configuraCapacitaMassimaGpt56(ambiente.home)).modificata, false);
+  assert.equal(await readFile(percorso, "utf8"), disattiva);
+});
+
+test("un catalogo locale senza GPT rilascia il latch automatico e consente il prompt", async (t) => {
+  const ambiente = await avviaPonteTest({
+    preparaHome: (home) => configuraCapacitaMassimaGpt56(home),
+    verificaProvider: async () => ({ controllato: true, disponibile: true }),
+  });
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "catalogo-solo-locale");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  assert.equal(sessione.catalogoModelliDaRicaricare, true);
+  sessione.provider = "lmstudio";
+  sessione.modello = "gemma-4-31b-it";
+  const modello = { provider: sessione.provider, id: sessione.modello, contextWindow: 32_000 };
+  const tipi = [];
+  let errors = [];
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    tipi.push(comando.type);
+    if (comando.type === "refresh_models") return { data: { aborted: false, timedOut: false, errors } };
+    if (comando.type === "get_available_models") return { data: { models: [modello], errors: [] } };
+    if (comando.type === "set_model") return { data: modello };
+    if (comando.type === "get_state") return { data: {
+      model: modello, sessionFile: sessione.fileSessione, isStreaming: false, isCompacting: false,
+    } };
+    if (comando.type === "get_session_stats") return { data: { contextUsage: { tokens: 1, percent: 0.01, contextWindow: 32_000 } } };
+    if (comando.type === "prompt") return { data: {} };
+    return { success: false, error: "Comando inatteso" };
+  });
+  try {
+    for (const providerId of ["lmstudio", "*"]) {
+      errors = [{ providerId, message: "Errore del catalogo" }];
+      const errore = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+      assert.equal(errore.risposta.status, 409, JSON.stringify(errore.dati));
+      assert.equal(sessione.catalogoModelliDaRicaricare, true);
+      assert.equal(tipi.includes("set_model"), false);
+      assert.equal(sessione.sequenzaCatalogoModelliInCorso, null);
+      tipi.length = 0;
+    }
+    errors = [];
+    const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+    assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+    assert.deepEqual(tipi, ["refresh_models", "get_available_models"]);
+    assert.equal(sessione.catalogoModelliDaRicaricare, false);
+    const prompt = await ambiente.post("/api/comando", {
+      sessionId: sessione.id, type: "prompt", id: "prompt-locale-simulato", message: "Messaggio simulato",
+    });
+    assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
+    assert.equal(tipi.filter((tipo) => tipo === "prompt").length, 1);
+  } finally {
+    ripristina();
+  }
+});
+
 test("l'avviso previsto di creazione sessione non viene presentato come errore", () => {
   const id = "gui-sessione-123";
   assert.equal(avvisoCreazioneSessionePi(
@@ -118,6 +313,72 @@ test("il confronto percorsi Windows normalizza solo namespace estesi equivalenti
   assert.equal(stessoPercorso(unc, "\\\\?\\UNC\\server\\condivisione\\allegati\\documento.txt"), true);
   assert.equal(stessoPercorso(file, "\\\\.\\C:\\profilo\\allegati\\sessione\\documento.txt"), false);
 });
+
+for (const { nome, corrente } of [
+  {
+    nome: "un modello corrente sconosciuto non blocca il catalogo",
+    corrente: { provider: "unknown", id: "unknown" },
+  },
+  {
+    nome: "un modello corrente locale rilascia il latch senza rebind",
+    corrente: { provider: "lmstudio", id: "gemma-4-31b-it", contextWindow: 32_000 },
+  },
+]) {
+  test(nome, async (t) => {
+    const ambiente = await avviaPonteTest({
+      preparaHome: (home) => configuraCapacitaMassimaGpt56(home),
+    });
+    t.after(ambiente.chiudi);
+    const cartella = join(ambiente.home, "catalogo-senza-rebind");
+    await mkdir(cartella);
+    const avvio = await ambiente.post("/api/avvia", { cartella });
+    assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+    const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+    assert.equal(sessione.catalogoModelliDaRicaricare, true);
+    const disponibile = { provider: "lmstudio", id: "gemma-4-31b-it", contextWindow: 32_000 };
+    const comandi = [];
+    const ripristina = intercettaRpcSessione(sessione, (comando) => {
+      comandi.push(comando);
+      if (comando.type === "get_state") return { data: {
+        model: corrente, sessionFile: sessione.fileSessione, isStreaming: false, isCompacting: false,
+      } };
+      if (comando.type === "refresh_models") return { data: { aborted: false, timedOut: false, errors: [] } };
+      if (comando.type === "get_available_models") return { data: { models: [disponibile], errors: [] } };
+      if (comando.type === "get_session_stats") return { data: { totalMessages: 0, contextUsage: { tokens: 0 } } };
+      if (comando.type === "set_model") return comando.provider === disponibile.provider && comando.modelId === disponibile.id
+        ? { data: disponibile }
+        : { success: false, error: `Model not found: ${comando.provider}/${comando.modelId}` };
+      return { success: false, error: "Comando inatteso" };
+    });
+    try {
+      await sessione.inviaEAttendi({ type: "get_state" });
+      assert.equal(sessione.provider, corrente.provider);
+      assert.equal(sessione.modello, corrente.id);
+      comandi.length = 0;
+      const esito = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
+      assert.equal(esito.risposta.status, 200, JSON.stringify(esito.dati));
+      assert.deepEqual(comandi.map((comando) => comando.type), ["refresh_models", "get_available_models"]);
+      assert.equal(esito.dati.catalogoModelliDaRicaricare, false);
+      assert.equal(sessione.catalogoModelliDaRicaricare, false);
+      assert.equal(sessione.sequenzaCatalogoModelliInCorso, null);
+      assert.equal(sessione.rebindModelloInCorso, null);
+
+      const cambio = await ambiente.post("/api/comando", {
+        sessionId: sessione.id, type: "set_model", id: "modello-scelto-dopo-verifica",
+        provider: disponibile.provider, modelId: disponibile.id,
+      });
+      assert.equal(cambio.risposta.status, 200, JSON.stringify(cambio.dati));
+      const inoltrati = comandi.filter((comando) => comando.type === "set_model");
+      assert.equal(inoltrati.length, 1);
+      assert.equal(inoltrati[0].provider, disponibile.provider);
+      assert.equal(inoltrati[0].modelId, disponibile.id);
+      assert.equal(sessione.provider, disponibile.provider);
+      assert.equal(sessione.modello, disponibile.id);
+    } finally {
+      ripristina();
+    }
+  });
+}
 
 async function avviaPonteTest({
   maxSessioni = 4,
@@ -186,6 +447,104 @@ async function avviaPonteTest({
   };
   return { home, ponte, base, stato, post, chiudi };
 }
+
+test("default 90 quando il file manca", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const risposta = await fetch(ambiente.base + "/api/impostazioni");
+  assert.equal(risposta.status, 200);
+  assert.deepEqual(await risposta.json(), { sogliaCompattazionePercento: 90 });
+  await assert.rejects(stat(join(ambiente.home, ".pi", "gui", "impostazioni.json")), { code: "ENOENT" });
+});
+
+test("rifiuta valori fuori 50-95 e non numerici", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  for (const sogliaCompattazionePercento of [49, 96, 90.5, "90", null, true, {}, []]) {
+    const esito = await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento });
+    assert.equal(esito.risposta.status, 400, JSON.stringify(sogliaCompattazionePercento));
+    assert.match(esito.dati.errore, /intero fra 50 e 95/);
+  }
+  assert.equal((await ambiente.post("/api/impostazioni", {})).risposta.status, 400);
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 90, extra: 1 })).risposta.status, 400);
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 85 }, null)).risposta.status, 403);
+  const metodo = await fetch(ambiente.base + "/api/impostazioni", { method: "PUT" });
+  assert.equal(metodo.status, 405);
+  assert.equal(metodo.headers.get("allow"), "GET, POST");
+  await metodo.text();
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90 });
+  for (const sogliaCompattazionePercento of [50, 95]) {
+    const esito = await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento });
+    assert.equal(esito.risposta.status, 200);
+    assert.deepEqual(esito.dati, { sogliaCompattazionePercento });
+  }
+});
+
+test("persistenza al riavvio del ponte", async (t) => {
+  const primo = await avviaPonteTest({ conservaHome: true });
+  t.after(() => rm(primo.home, { recursive: true, force: true }));
+  t.after(primo.chiudi);
+  const scrittura = await primo.post("/api/impostazioni", { sogliaCompattazionePercento: 87 });
+  assert.equal(scrittura.risposta.status, 200);
+  assert.deepEqual(JSON.parse(await readFile(join(primo.home, ".pi", "gui", "impostazioni.json"), "utf8")), { sogliaCompattazionePercento: 87 });
+  await primo.chiudi();
+  const secondo = await avviaPonteTest({ home: primo.home, conservaHome: true });
+  t.after(secondo.chiudi);
+  assert.deepEqual(await (await fetch(secondo.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87 });
+});
+
+test("un file impostazioni non valido resta intatto e può essere corretto dalla GUI", async (t) => {
+  const avviso = t.mock.method(console, "warn", () => {});
+  const ambiente = await avviaPonteTest({ preparaHome: async (home) => {
+    await mkdir(join(home, ".pi", "gui"), { recursive: true });
+    await writeFile(join(home, ".pi", "gui", "impostazioni.json"), "{non valido", "utf8");
+  } });
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "gui", "impostazioni.json");
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90 });
+  assert.equal(await readFile(percorso, "utf8"), "{non valido");
+  assert.equal(avviso.mock.callCount(), 1);
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 87 })).risposta.status, 200);
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87 });
+  assert.deepEqual(JSON.parse(await readFile(percorso, "utf8")), { sogliaCompattazionePercento: 87 });
+});
+
+test("scrittura fallita conserva file e valore precedenti", async (t) => {
+  let fallisci = false;
+  let pubblicazioni = 0;
+  let sblocca;
+  let segnala;
+  const arrivata = new Promise((risolvi) => { segnala = risolvi; });
+  const blocco = new Promise((risolvi) => { sblocca = risolvi; });
+  const ambiente = await avviaPonteTest({
+    primaPubblicazioneImpostazioni: async () => {
+      if (fallisci && ++pubblicazioni === 2) {
+        segnala();
+        await blocco;
+        throw new Error("Scrittura delle impostazioni simulata non riuscita");
+      }
+    },
+  });
+  t.after(ambiente.chiudi);
+  const percorso = join(ambiente.home, ".pi", "gui", "impostazioni.json");
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 80 })).risposta.status, 200);
+  const originale = await readFile(percorso, "utf8");
+  fallisci = true;
+  const scrittura = ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 95 });
+  await arrivata;
+  try {
+    assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80 });
+    assert.equal(await readFile(percorso, "utf8"), originale);
+  } finally {
+    sblocca();
+  }
+  const esito = await scrittura;
+  assert.equal(esito.risposta.status, 500);
+  assert.match(esito.dati.errore, /Scrittura delle impostazioni simulata/);
+  assert.equal(await readFile(percorso, "utf8"), originale);
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80 });
+  assert.deepEqual((await readdir(dirname(percorso))).filter((nome) => nome.startsWith("impostazioni.json")), ["impostazioni.json"]);
+});
 
 test("/sistema usa il proxy same-origin anche senza cartella e chiude il singleton con il bridge", async (t) => {
   const inoltri = [];
@@ -1089,6 +1448,812 @@ test("compaction_start blocca atomicamente i comandi incompatibili fino a compac
   assert.equal(scritte.at(-1).type, "set_model");
 });
 
+test("il cambio verso una finestra minore compatta prima di impostare il target", async () => {
+  const sessione = new SessionePi({ id: "switch-protetto", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true },
+  };
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-sol";
+  sessione.verificaIdentitaFileSessione = async () => true;
+  const ordine = [];
+  intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_state") {
+      return { data: { model: { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 1_050_000 }, isStreaming: false, isCompacting: false } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: [{ provider: "anthropic", id: "piccolo", contextWindow: 200_000 }] } };
+    }
+    if (comando.type === "get_session_stats") {
+      return { data: { totalMessages: 30, contextUsage: { tokens: 500_000, contextWindow: 1_050_000 } } };
+    }
+    if (comando.type === "compact") {
+      return { data: { estimatedTokensAfter: 32_000, tokensBefore: 500_000 } };
+    }
+    if (comando.type === "set_model") {
+      return { data: { provider: "anthropic", id: "piccolo", contextWindow: 200_000 } };
+    }
+    throw new Error(`Comando inatteso: ${comando.type}`);
+  });
+
+  const esito = await sessione.cambiaModelloConContesto({
+    type: "set_model",
+    id: "switch-finale",
+    provider: "anthropic",
+    modelId: "piccolo",
+  });
+  assert.deepEqual(ordine, [
+    "get_state",
+    "get_available_models",
+    "get_session_stats",
+    "compact",
+    "set_model",
+  ]);
+  assert.equal(esito.compacted, true);
+  assert.equal(esito.estimatedTokensAfter, 32_000);
+});
+
+test("gli errori del cambio modello arrivano solo via HTTP senza duplicare il toast", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "cambio-modello-errore-unico");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200, JSON.stringify(avvio.dati));
+  const sessione = ambiente.ponte.sessioni.get(avvio.dati.id);
+  const eventi = [];
+  const emetti = sessione.emettiGlobale;
+  t.mock.method(sessione, "emettiGlobale", (...args) => {
+    eventi.push(args[0]);
+    return emetti(...args);
+  });
+  const ordine = [];
+  let messaggio = "Nothing to compact";
+  let rifiutaCompact = true;
+  const ripristina = intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_state") return { data: {
+      model: { provider: "fake", id: "grande", contextWindow: 272_000 },
+      sessionFile: sessione.fileSessione, isStreaming: false, isCompacting: false,
+    } };
+    if (comando.type === "get_available_models") return { data: {
+      models: [{ provider: "fake", id: "piccolo", contextWindow: 32_000 }],
+    } };
+    if (comando.type === "get_session_stats") return { data: {
+      totalMessages: 20, contextUsage: { tokens: 200_000 },
+    } };
+    if (comando.type === "compact") return rifiutaCompact
+      ? { success: false, error: messaggio }
+      : { data: { estimatedTokensAfter: 1_000 } };
+    if (comando.type === "set_model") return { success: false, error: messaggio };
+    return { success: false, error: "Comando inatteso" };
+  });
+  try {
+    const richiesta = {
+      sessionId: sessione.id, type: "set_model", id: "ui-cambio-errore-unico",
+      operationId: "op-cambio-errore-unico", provider: "fake", modelId: "piccolo",
+    };
+    const esito = await ambiente.post("/api/comando", richiesta, ambiente.stato.tokenApi, "client-cambio");
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(esito.dati.errore, messaggio);
+    assert.deepEqual(ordine, ["get_state", "get_available_models", "get_session_stats", "compact"]);
+    assert.deepEqual(eventi.filter((evento) => evento.type === "gui_errore"
+      || (evento.type === "response" && evento.success === false)), []);
+    assert.equal(sessione.provider, "fake");
+    assert.equal(sessione.modello, "grande");
+    assert.equal(sessione.cambioModelloSicuroInCorso, null);
+    assert.equal(sessione.comandiCambioModelloSicuro.size, 0);
+    assert.equal(sessione.atteseInterne.size, 0);
+    assert.equal(sessione.compattazioneInCorso, false);
+    assert.equal(sessione.rebindModelloInCorso, null);
+
+    // Anche la riconciliazione dell'operazione conserva l'errore senza ripetere compact.
+    const ripetuto = await ambiente.post("/api/comando", richiesta, ambiente.stato.tokenApi, "client-cambio");
+    assert.equal(ripetuto.risposta.status, 409, JSON.stringify(ripetuto.dati));
+    assert.equal(ripetuto.dati.errore, messaggio);
+    assert.equal(ordine.filter((tipo) => tipo === "compact").length, 1);
+
+    // Un RPC manuale conserva invece la sua normale risposta SSE di errore.
+    const manuale = sessione.inviaEAttendi({ type: "compact", id: "ui-compact-manuale" });
+    await assert.rejects(manuale, { message: messaggio });
+    assert.equal(eventi.filter((evento) => evento.type === "response"
+      && evento.id === "ui-compact-manuale" && evento.success === false).length, 1);
+
+    // Il rifiuto del set_model finale resta riconciliabile anche senza SSE.
+    rifiutaCompact = false;
+    messaggio = "Model not found: fake/piccolo";
+    eventi.length = 0;
+    ordine.length = 0;
+    const modelloRifiutato = { ...richiesta, id: "ui-modello-rifiutato", operationId: "op-modello-rifiutato" };
+    for (let tentativo = 0; tentativo < 2; tentativo += 1) {
+      const rifiuto = await ambiente.post("/api/comando", modelloRifiutato, ambiente.stato.tokenApi, "client-cambio");
+      assert.equal(rifiuto.risposta.status, 404, JSON.stringify(rifiuto.dati));
+      assert.equal(rifiuto.dati.errore, messaggio);
+      assert.deepEqual(ordine, ["get_state", "get_available_models", "get_session_stats", "compact", "set_model"]);
+      assert.deepEqual(eventi.filter((evento) => evento.type === "gui_errore"
+        || (evento.type === "response" && evento.success === false)), []);
+    }
+    assert.equal(sessione.modello, "grande");
+    assert.equal(sessione.cambioModelloSicuroInCorso, null);
+    assert.equal(sessione.atteseInterne.size, 0);
+    assert.equal(sessione.rebindModelloInCorso, null);
+  } finally {
+    ripristina();
+  }
+});
+
+test("un riassunto ancora troppo grande non cambia modello", async () => {
+  const sessione = new SessionePi({ id: "switch-rifiutato", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true },
+  };
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-sol";
+  sessione.verificaIdentitaFileSessione = async () => true;
+  const ordine = [];
+  intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_state") {
+      return { data: { model: { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 1_050_000 } } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: [{ provider: "test", id: "stretto", contextWindow: 50_000 }] } };
+    }
+    if (comando.type === "get_session_stats") {
+      return { data: { totalMessages: 20, contextUsage: { tokens: 80_000 } } };
+    }
+    if (comando.type === "compact") {
+      return { data: { estimatedTokensAfter: 31_000 } };
+    }
+    if (comando.type === "set_model") throw new Error("non deve cambiare modello");
+    return { data: {} };
+  });
+
+  await assert.rejects(
+    sessione.cambiaModelloConContesto({
+      id: "switch-non-sicuro",
+      provider: "test",
+      modelId: "stretto",
+    }),
+    /non entra in sicurezza/i,
+  );
+  assert.deepEqual(ordine, ["get_state", "get_available_models", "get_session_stats", "compact"]);
+  assert.equal(sessione.provider, "openai-codex");
+  assert.equal(sessione.modello, "gpt-5.6-sol");
+});
+
+test("statistiche ignote non autorizzano il passaggio a una finestra minore", async () => {
+  const sessione = new SessionePi({ id: "switch-stima-ignota", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = {
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true },
+  };
+  sessione.provider = "openai-codex";
+  sessione.modello = "gpt-5.6-sol";
+  sessione.verificaIdentitaFileSessione = async () => true;
+  const ordine = [];
+  intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_state") {
+      return { data: { model: { provider: "openai-codex", id: "gpt-5.6-sol", contextWindow: 1_050_000 } } };
+    }
+    if (comando.type === "get_available_models") {
+      return { data: { models: [{ provider: "anthropic", id: "stima-ignota", contextWindow: 200_000 }] } };
+    }
+    if (comando.type === "get_session_stats") {
+      return { data: { totalMessages: 10, contextUsage: { tokens: null, contextWindow: 1_050_000 } } };
+    }
+    if (comando.type === "set_model") throw new Error("non deve cambiare modello");
+    return { data: {} };
+  });
+
+  await assert.rejects(
+    sessione.cambiaModelloConContesto({
+      id: "switch-stima-ignota-finale",
+      provider: "anthropic",
+      modelId: "stima-ignota",
+    }),
+    /non può ancora stimare il contesto/i,
+  );
+  assert.deepEqual(ordine, ["get_state", "get_available_models", "get_session_stats"]);
+});
+
+function preparaCambioModelloSimulato({ models = [], stima = 1_000, rifiutaModello = false } = {}) {
+  const sessione = new SessionePi({ id: "cambio-limiti", cliPi: FAKE_PI, emetti: () => {} });
+  sessione.proc = { killed: false, exitCode: null, signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true } };
+  sessione.provider = "origine";
+  sessione.modello = "grande";
+  sessione.verificaIdentitaFileSessione = async () => true;
+  const ordine = [];
+  intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_state") return { data: { model: {
+      provider: "origine", id: "grande", contextWindow: 1_050_000,
+    } } };
+    if (comando.type === "get_available_models") return { data: { models } };
+    if (comando.type === "get_session_stats") return { data: {
+      totalMessages: 20, contextUsage: { tokens: 500_000 },
+    } };
+    if (comando.type === "compact") return { data: { estimatedTokensAfter: stima } };
+    if (comando.type === "set_model") return rifiutaModello
+      ? { success: false, error: "Modello non trovato: test/destinazione" }
+      : { data: { provider: "test", id: "destinazione", contextWindow: 200_000 } };
+    return { data: {} };
+  });
+  const cambia = () => sessione.cambiaModelloConContesto({ provider: "test", modelId: "destinazione" });
+  const verificaRilascio = () => {
+    assert.equal(sessione.cambioModelloSicuroInCorso, null);
+    assert.equal(sessione.comandiCambioModelloSicuro.size, 0);
+    assert.equal(sessione.rebindModelloInCorso, null);
+    assert.equal(sessione.compattazioneInCorso, false);
+    assert.equal(sessione.atteseInterne.size, 0);
+    assert.equal(sessione.revisioniComandi.size, 0);
+    assert.equal(sessione.provider, "origine");
+    assert.equal(sessione.modello, "grande");
+    assert.doesNotThrow(() => sessione.invia({ type: "set_thinking_level", level: "off" }));
+  };
+  return { sessione, ordine, cambia, verificaRilascio };
+}
+
+test("modello assente restituisce l'errore Modello non trovato soltanto se Pi lo rifiuta", async () => {
+  const caso = preparaCambioModelloSimulato({ rifiutaModello: true });
+  await assert.rejects(caso.cambia(), { message: "Modello non trovato: test/destinazione", statusHttp: 404 });
+  assert.deepEqual(caso.ordine, ["get_state", "get_available_models", "set_model"]);
+  caso.verificaRilascio();
+});
+
+test("modello assente o finestra sconosciuta inoltra set_model senza compattazione preventiva", async () => {
+  for (const models of [[], [{ provider: "test", id: "destinazione", contextWindow: null }]]) {
+    const caso = preparaCambioModelloSimulato({ models });
+    const esito = await caso.cambia();
+    assert.deepEqual(caso.ordine, ["get_state", "get_available_models", "set_model"]);
+    assert.equal(esito.compacted, false);
+    assert.equal(esito.contextBudget, null);
+    assert.equal(caso.sessione.modello, "destinazione");
+    assert.equal(caso.sessione.cambioModelloSicuroInCorso, null);
+  }
+});
+
+test("modello ambiguo nel catalogo restituisce l'errore dedicato", async () => {
+  const modello = { provider: "test", id: "destinazione", contextWindow: 200_000 };
+  const caso = preparaCambioModelloSimulato({ models: [modello, modello] });
+  await assert.rejects(caso.cambia(), { message: "Il modello richiesto è ambiguo nel catalogo effettivo di Pi", statusHttp: 409 });
+  assert.deepEqual(caso.ordine, ["get_state", "get_available_models"]);
+  caso.verificaRilascio();
+});
+
+test("finestra di destinazione insufficiente rifiuta con messaggio e metadati previsti", async () => {
+  for (const contextWindow of [20_480, 16_384]) {
+    const caso = preparaCambioModelloSimulato({ models: [{ provider: "test", id: "destinazione", contextWindow }] });
+    await assert.rejects(caso.cambia(), {
+      message: "La finestra del modello è troppo piccola per trasferire in sicurezza questa conversazione.",
+      statusHttp: 409,
+      metadati: { contextWindow, contextBudget: Math.max(0, contextWindow - 16_384), reserveTokens: 16_384, estimateMargin: 4_096 },
+    });
+    assert.deepEqual(caso.ordine, ["get_state", "get_available_models", "get_session_stats"]);
+    caso.verificaRilascio();
+  }
+});
+
+test("stima dopo compattazione nulla o negativa vieta set_model", async () => {
+  for (const stima of [null, NaN, -1, 0, ""]) {
+    const caso = preparaCambioModelloSimulato({ models: [{ provider: "test", id: "destinazione", contextWindow: 200_000 }], stima });
+    await assert.rejects(caso.cambia(), /stima verificabile/);
+    assert.deepEqual(caso.ordine, ["get_state", "get_available_models", "get_session_stats", "compact"]);
+    caso.verificaRilascio();
+  }
+});
+
+function preparaCompattazionePreventivaSimulata(t, {
+  percent = 90,
+  tokens = 90_000,
+  models = [{ provider: "fake", id: "modello-test", contextWindow: 100_000 }],
+  leggiSogliaCompattazione = () => 90,
+  timeoutCompattazionePreventivaMs = 1_000,
+  gestisci = () => undefined,
+} = {}) {
+  const ordine = [];
+  const comandi = [];
+  const eventi = [];
+  const sessione = new SessionePi({
+    id: "preventiva-simulata", cliPi: FAKE_PI,
+    emetti: (evento) => eventi.push(evento),
+    leggiSogliaCompattazione,
+    timeoutCompattazionePreventivaMs,
+  });
+  sessione.proc = { killed: false, exitCode: null, signalCode: null,
+    stdin: { writable: true, destroyed: false, write: () => true } };
+  sessione.provider = "fake";
+  sessione.modello = "modello-test";
+  sessione.verificaIdentitaFileSessione = async () => true;
+  sessione.confermaIdentitaFileSessione = async () => true;
+  sessione.diffondi({ type: "response", command: "get_state", success: true, data: {
+    model: { provider: "fake", id: "modello-test", contextWindow: 100_000 },
+    isStreaming: false, isCompacting: false,
+  } });
+  sessione.diffondi({ type: "response", command: "get_available_models", success: true, data: { models } });
+  t.after(async () => {
+    sessione.proc = null;
+    await sessione.ferma({ notifica: false });
+  });
+  intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    comandi.push(comando);
+    const personalizzato = gestisci(comando);
+    if (personalizzato !== undefined) return personalizzato;
+    if (comando.type === "get_session_stats") return { data: {
+      totalMessages: 2, contextUsage: { percent, tokens, contextWindow: 100_000 },
+    } };
+    if (comando.type === "get_state") return { data: {
+      model: { provider: sessione.provider, id: sessione.modello, contextWindow: 100_000 },
+      isStreaming: false, isCompacting: false,
+    } };
+    if (comando.type === "get_available_models") return { data: { models } };
+    if (comando.type === "set_model") return { data: {
+      provider: comando.provider, id: comando.modelId, contextWindow: 200_000,
+    } };
+    if (comando.type === "compact") return { data: { estimatedTokensAfter: 5_000, aborted: false } };
+    return { data: {} };
+  });
+  const rispondi = (comando, data = {}, success = true) => sessione.diffondi({
+    type: "response", id: comando.id, command: comando.type, success,
+    ...(success ? { data } : { error: String(data) }),
+  });
+  const invia = (id = "prompt-preventivo") => sessione.inviaDopoCambio({
+    type: "prompt", id, message: "Una richiesta di prova con accenti: città e perché.",
+  }, "finestra-a", "pagina-a");
+  const concludiTurno = async () => {
+    sessione.diffondi({ type: "agent_start" });
+    sessione.diffondi({ type: "agent_end" });
+    sessione.diffondi({ type: "agent_settled" });
+    await attendi(0);
+    assert.equal(sessione.inEsecuzione, false);
+    assert.equal(sessione.proprietariTurni.length, 0);
+    assert.equal(sessione.atteseInterne.size, 0);
+  };
+  return { sessione, ordine, comandi, eventi, rispondi, invia, concludiTurno };
+}
+
+async function attendiComandoPreventivo(caso, tipo) {
+  for (let tentativo = 0; tentativo < 100; tentativo += 1) {
+    const comando = caso.comandi.find((voce) => voce.type === tipo);
+    if (comando) return comando;
+    await attendi(2);
+  }
+  assert.fail(`Pi non ha ricevuto il comando atteso: ${tipo}`);
+}
+
+test("89,99 per cento non compatta, 90 compatta", async (t) => {
+  for (const percent of [89.99, 90]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, { percent });
+    assert.equal(await caso.invia(), "prompt-preventivo");
+    assert.deepEqual(caso.ordine, percent < 90
+      ? ["get_session_stats", "prompt"]
+      : ["get_session_stats", "compact", "prompt"]);
+    assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+    assert.equal(caso.ordine.includes("set_auto_compaction"), false);
+    if (percent === 90) {
+      assert.deepEqual(caso.eventi.filter((evento) => evento.type === "gui_compattazione_preventiva")
+        .map((evento) => evento.fase), ["in_corso", "conclusa"]);
+    }
+  }
+});
+
+test("un riassunto preventivo che resta sopra soglia non viene ripetuto al turno seguente", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    percent: 95,
+    gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+  });
+  assert.equal(await caso.invia("primo-prompt"), "primo-prompt");
+  assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+    && evento.fase === "conclusa" && /resta oltre la soglia/.test(evento.messaggio)));
+  await caso.concludiTurno();
+  assert.equal(await caso.invia("secondo-prompt"), "secondo-prompt");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 1);
+  assert.equal(caso.ordine.filter((tipo) => tipo === "get_session_stats").length, 2);
+  assert.deepEqual(caso.comandi.filter((comando) => comando.type === "prompt").map((comando) => comando.id),
+    ["primo-prompt", "secondo-prompt"]);
+  assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+    && evento.fase === "saltata" && evento.promptId === "secondo-prompt"
+    && evento.messaggio === "Compattazione preventiva saltata: l'ultimo riassunto non ha liberato spazio sotto la soglia. Interviene la compattazione automatica di Pi."));
+  assert.equal(caso.ordine.includes("set_auto_compaction"), false);
+});
+
+test("quando l'uso torna sotto soglia la compattazione preventiva riparte", async (t) => {
+  let percent = 95;
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci(comando) {
+      if (comando.type === "get_session_stats") return { data: {
+        contextUsage: { percent, tokens: percent * 1_000, contextWindow: 100_000 },
+      } };
+      if (comando.type === "compact") return { data: { estimatedTokensAfter: 95_000 } };
+      return undefined;
+    },
+  });
+  await caso.invia("prima-compattazione");
+  await caso.concludiTurno();
+  await caso.invia("ancora-sopra-soglia");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 1);
+  await caso.concludiTurno();
+  percent = 10;
+  await caso.invia("sotto-soglia");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 1);
+  await caso.concludiTurno();
+  percent = 95;
+  await caso.invia("di-nuovo-sopra-soglia");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2);
+  assert.equal(caso.ordine.filter((tipo) => tipo === "get_session_stats").length, 4);
+  assert.equal(caso.ordine.filter((tipo) => tipo === "prompt").length, 4);
+});
+
+test("una compattazione nativa di Pi azzera il segno di inefficacia", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    percent: 95,
+    gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+  });
+  await caso.invia("prima-compattazione");
+  await caso.concludiTurno();
+  await caso.invia("salto-prima-della-nativa");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 1);
+  await caso.concludiTurno();
+  caso.sessione.diffondi({ type: "compaction_start", id: "compact-nativo-di-pi", reason: "threshold" });
+  caso.sessione.diffondi({ type: "compaction_end", id: "compact-nativo-di-pi", reason: "threshold", aborted: false });
+  await caso.invia("dopo-la-compattazione-nativa");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2);
+  assert.equal(caso.comandi.at(-1).id, "dopo-la-compattazione-nativa");
+});
+
+test("un catalogo invariato e un compaction_end del ponte conservano il segno di inefficacia", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    percent: 95,
+    gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+  });
+  await caso.invia("prima-compattazione");
+  const compact = await attendiComandoPreventivo(caso, "compact");
+  await caso.concludiTurno();
+  await caso.sessione.inviaEAttendi({ type: "get_available_models" });
+  caso.sessione.diffondi({ type: "compaction_end", id: compact.id, reason: "manual", aborted: false });
+  await caso.invia("secondo-prompt");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 1);
+  assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+    && evento.fase === "saltata" && evento.promptId === "secondo-prompt"));
+});
+
+test("il cambio modello o conversazione azzera il segno di inefficacia", async (t) => {
+  for (const comando of [
+    { type: "set_model", provider: "fake", modelId: "altro-modello" },
+    { type: "new_session" },
+    { type: "switch_session", sessionPath: join(QUI, "conversazione-simulata.jsonl") },
+  ]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, {
+      percent: 95,
+      gestisci: (voce) => voce.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+    });
+    await caso.invia();
+    await caso.concludiTurno();
+    assert.equal(caso.sessione.compattazionePreventivaInefficace, true, comando.type);
+    await caso.sessione.inviaEAttendi(comando);
+    assert.equal(caso.sessione.compattazionePreventivaInefficace, false, comando.type);
+  }
+});
+
+test("un cambio nel catalogo effettivo azzera il segno di inefficacia", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    percent: 95,
+    gestisci(comando) {
+      if (comando.type === "compact") return { data: { estimatedTokensAfter: 95_000 } };
+      if (comando.type === "get_available_models") return { data: { models: [
+        { provider: "fake", id: "modello-test", contextWindow: 110_000 },
+      ] } };
+      return undefined;
+    },
+  });
+  await caso.invia("prima-compattazione");
+  await caso.concludiTurno();
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, true);
+  await caso.sessione.inviaEAttendi({ type: "get_available_models" });
+  await caso.invia("dopo-il-cambio-catalogo");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2);
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, false,
+    "95.000 token sono sotto soglia nella nuova finestra di 110.000 token");
+});
+
+test("solo un cambio soglia salvato azzera il segno di inefficacia", async (t) => {
+  let fallisci = false;
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    percent: 95,
+    gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+  });
+  const home = await mkdtemp(join(RADICE, ".tmp-soglia-preventiva-"));
+  const ambiente = await avviaPonteTest({
+    home,
+    primaPubblicazioneImpostazioni: async () => {
+      if (fallisci) throw new Error("Scrittura della soglia simulata non riuscita");
+    },
+  });
+  ambiente.ponte.sessioni.set(caso.sessione.id, caso.sessione);
+  t.after(async () => {
+    ambiente.ponte.sessioni.delete(caso.sessione.id);
+    await ambiente.chiudi();
+  });
+  await caso.invia("prima-compattazione");
+  await caso.concludiTurno();
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, true);
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 90 })).risposta.status, 200);
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, true,
+    "salvare la stessa soglia conserva il segno");
+  fallisci = true;
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 85 })).risposta.status, 500);
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, true,
+    "una scrittura fallita conserva il segno");
+  fallisci = false;
+  assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 85 })).risposta.status, 200);
+  assert.equal(caso.sessione.compattazionePreventivaInefficace, false);
+  await caso.invia("dopo-il-cambio-soglia");
+  assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2);
+});
+
+test("stima assente o non valida non giudica inefficace la compattazione preventiva", async (t) => {
+  for (const estimatedTokensAfter of [undefined, null, NaN, Infinity, 0, -1, "95000"]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, {
+      percent: 95,
+      gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter } } : undefined,
+    });
+    await caso.invia("primo-prompt");
+    await caso.concludiTurno();
+    await caso.invia("secondo-prompt");
+    assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2, String(estimatedTokensAfter));
+    assert.equal(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+      && evento.fase === "saltata"), false);
+  }
+});
+
+test("finestra del catalogo sconosciuta o ambigua non giudica inefficace la compattazione preventiva", async (t) => {
+  const modello = { provider: "fake", id: "modello-test", contextWindow: 100_000 };
+  for (const models of [[], [{ ...modello, contextWindow: null }], [modello, modello]]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, {
+      percent: 95, models,
+      gestisci: (comando) => comando.type === "compact" ? { data: { estimatedTokensAfter: 95_000 } } : undefined,
+    });
+    await caso.invia("primo-prompt");
+    await caso.concludiTurno();
+    await caso.invia("secondo-prompt");
+    assert.equal(caso.ordine.filter((tipo) => tipo === "compact").length, 2, JSON.stringify(models));
+    assert.equal(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+      && evento.fase === "saltata"), false);
+  }
+});
+
+test("cache invalidata al cambio modello", async (t) => {
+  let letture = 0;
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci(comando) {
+      if (comando.type !== "get_session_stats") return undefined;
+      letture += 1;
+      return { data: { totalMessages: 2, contextUsage: {
+        tokens: letture === 1 ? 10_000 : 90_000, percent: letture === 1 ? 10 : 90, contextWindow: 100_000,
+      } } };
+    },
+  });
+  await caso.sessione.inviaEAttendi({ type: "get_session_stats" });
+  await caso.sessione.inviaEAttendi({ type: "set_model", provider: "fake", modelId: "altro-modello" });
+  await caso.invia();
+  assert.equal(letture, 2);
+  assert.deepEqual(caso.ordine, ["get_session_stats", "set_model", "get_session_stats", "compact", "prompt"]);
+});
+
+test("due invii ravvicinati non duplicano compact", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.type === "compact" ? null : undefined,
+  });
+  const primo = caso.invia("primo-prompt");
+  assert.ok(caso.sessione.compattazionePreventivaInCorso,
+    "la prenotazione deve esistere prima della lettura asincrona della soglia");
+  await assert.rejects(caso.invia("secondo-prompt"), { statusHttp: 409 });
+  const compact = await attendiComandoPreventivo(caso, "compact");
+  assert.equal(caso.sessione.clientInterazione, "finestra-a");
+  assert.throws(() => caso.sessione.invia({ type: "set_model", provider: "fake", modelId: "altro" }), { statusHttp: 409 });
+  caso.rispondi(compact, { estimatedTokensAfter: 5_000 });
+  assert.equal(await primo, "primo-prompt");
+  assert.deepEqual(caso.ordine, ["get_session_stats", "compact", "prompt"]);
+  assert.equal(caso.comandi.at(-1).id, "primo-prompt");
+});
+
+test("timeout e annullamento non inoltrano il prompt", async (t) => {
+  const scaduta = preparaCompattazionePreventivaSimulata(t, {
+    timeoutCompattazionePreventivaMs: 40,
+    gestisci: (comando) => comando.type === "compact" ? null : undefined,
+  });
+  await assert.rejects(scaduta.invia(), (errore) => {
+    assert.equal(errore.code, "PI_RPC_TIMEOUT");
+    assert.match(errore.message, /tempo|scadut/i);
+    return true;
+  });
+  assert.equal(scaduta.ordine.includes("prompt"), false);
+  assert.equal(scaduta.sessione.compattazionePreventivaInCorso, null);
+
+  for (const tipoAbort of ["abort", "abort_compaction"]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, {
+      gestisci: (comando) => comando.type === "compact" ? null : undefined,
+    });
+    const invio = caso.invia();
+    const rifiuto = assert.rejects(invio, /annullat|interrott/i);
+    const compact = await attendiComandoPreventivo(caso, "compact");
+    assert.throws(() => caso.sessione.invia({ type: tipoAbort }, "finestra-b"), { statusHttp: 403 });
+    await caso.sessione.inviaDopoCambio({ type: tipoAbort }, "finestra-a");
+    caso.sessione.diffondi({ type: "compaction_end", reason: "manual", aborted: true });
+    caso.rispondi(compact, { estimatedTokensAfter: 5_000 });
+    await rifiuto;
+    assert.equal(caso.ordine.includes("prompt"), false);
+    assert.equal(caso.ordine.filter((tipo) => tipo === tipoAbort).length, 1);
+    assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+  }
+});
+
+test("l'annullamento durante le statistiche impedisce anche l'avvio di compact", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.type === "get_session_stats" ? null : undefined,
+  });
+  const invio = caso.invia();
+  const rifiuto = assert.rejects(invio, /annullat|interrott/i);
+  const statistiche = await attendiComandoPreventivo(caso, "get_session_stats");
+  await caso.sessione.inviaDopoCambio({ type: "abort" }, "finestra-a");
+  caso.rispondi(statistiche, { contextUsage: { tokens: 90_000, percent: 90 } });
+  await rifiuto;
+  assert.deepEqual(caso.ordine, ["get_session_stats", "abort"]);
+  assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+});
+
+test("un turno avviato durante l'attesa delle statistiche impedisce la compattazione preventiva", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.type === "get_session_stats" ? null : undefined,
+  });
+  const invio = caso.invia();
+  const rifiuto = assert.rejects(invio, {
+    statusHttp: 409,
+    message: "La conversazione è cambiata durante la preparazione. Il prompt non è stato inoltrato.",
+  });
+  const statistiche = await attendiComandoPreventivo(caso, "get_session_stats");
+  caso.sessione.inEsecuzione = true;
+  caso.rispondi(statistiche, { contextUsage: { tokens: 95_000, percent: 95 } });
+  await rifiuto;
+  assert.deepEqual(caso.ordine, ["get_session_stats"]);
+  assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+});
+
+test("una compattazione nativa avviata durante l'attesa delle statistiche impedisce la compattazione preventiva", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.type === "get_session_stats" ? null : undefined,
+  });
+  const invio = caso.invia();
+  const messaggio = "Pi sta liberando spazio da solo. Il prompt non è stato inoltrato: riprova a compattazione conclusa.";
+  const rifiuto = assert.rejects(invio, { statusHttp: 409, message: messaggio });
+  const statistiche = await attendiComandoPreventivo(caso, "get_session_stats");
+  caso.sessione.diffondi({ type: "compaction_start", id: "compattazione-nativa", reason: "threshold" });
+  caso.rispondi(statistiche, { contextUsage: { tokens: 95_000, percent: 95 } });
+  await rifiuto;
+  assert.deepEqual(caso.ordine, ["get_session_stats"]);
+  assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+  assert.equal(caso.sessione.compattazioneInCorso, true);
+  assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+    && evento.fase === "errore" && evento.messaggio === messaggio));
+});
+
+test("steer durante lo streaming resta operativo", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t);
+  caso.sessione.inEsecuzione = true;
+  caso.sessione.clientInterazione = "finestra-a";
+  await caso.sessione.inviaDopoCambio({ type: "steer", message: "Correggi la città indicata" }, "finestra-a");
+  await caso.sessione.inviaDopoCambio({ type: "follow_up", message: "Continua più tardi" }, "finestra-a");
+  await caso.sessione.inviaDopoCambio({ type: "prompt", message: "Seguito durante il turno", streamingBehavior: "followUp" }, "finestra-a");
+  assert.deepEqual(caso.ordine, ["steer", "follow_up", "prompt"]);
+  assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+});
+
+test("statistiche null non compattano", async (t) => {
+  for (const [tokens, percent] of [[null, 95], [95_000, null], [null, null]]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, { tokens, percent });
+    await caso.invia();
+    assert.deepEqual(caso.ordine, ["get_session_stats", "prompt"]);
+    assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva"
+      && evento.fase === "saltata"));
+  }
+});
+
+test("compaction_end non inoltra il prompt prima della response compact correlata", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.type === "compact" ? null : undefined,
+  });
+  const invio = caso.invia();
+  const compact = await attendiComandoPreventivo(caso, "compact");
+  caso.sessione.diffondi({ type: "compaction_start", reason: "manual" });
+  caso.sessione.diffondi({ type: "compaction_end", reason: "manual", aborted: false });
+  caso.rispondi({ type: "compact", id: "compact-di-un-altro-comando" }, { estimatedTokensAfter: 5_000 });
+  await Promise.resolve();
+  assert.equal(caso.ordine.includes("prompt"), false);
+  assert.ok(caso.sessione.compattazionePreventivaInCorso);
+  caso.rispondi(compact, { estimatedTokensAfter: 5_000 });
+  await invio;
+  assert.deepEqual(caso.ordine, ["get_session_stats", "compact", "prompt"]);
+});
+
+test("una risposta tardiva delle statistiche non ripopola la cache dopo il cambio modello", async (t) => {
+  const caso = preparaCompattazionePreventivaSimulata(t, {
+    gestisci: (comando) => comando.id === "statistiche-vecchie" ? null : undefined,
+  });
+  caso.sessione.invia({ type: "get_session_stats", id: "statistiche-vecchie" });
+  await caso.sessione.inviaEAttendi({ type: "set_model", provider: "fake", modelId: "modello-nuovo" });
+  caso.rispondi(caso.comandi[0], { totalMessages: 2, contextUsage: { tokens: 1_000, percent: 1 } });
+  await caso.invia();
+  assert.deepEqual(caso.ordine, ["get_session_stats", "set_model", "get_session_stats", "compact", "prompt"]);
+});
+
+test("un errore definitivo di compact inoltra il prompt soltanto con stato confermato libero", async (t) => {
+  for (const isCompacting of [false, true, undefined]) {
+    const caso = preparaCompattazionePreventivaSimulata(t, {
+      gestisci(comando) {
+        if (comando.type === "compact") return { success: false, error: "Riassunto non disponibile" };
+        if (comando.type === "get_state") return { data: { isStreaming: false, isCompacting } };
+        return undefined;
+      },
+    });
+    if (isCompacting === false) {
+      await caso.invia();
+      assert.deepEqual(caso.ordine, ["get_session_stats", "compact", "get_state", "prompt"]);
+      assert.ok(caso.eventi.some((evento) => evento.type === "gui_compattazione_preventiva" && evento.fase === "errore"));
+    } else {
+      await assert.rejects(caso.invia());
+      assert.deepEqual(caso.ordine, ["get_session_stats", "compact", "get_state"]);
+    }
+    assert.equal(caso.sessione.compattazionePreventivaInCorso, null);
+  }
+});
+
+test("la soglia salvata è usata dall'invio API dopo il riavvio del ponte", async (t) => {
+  const primo = await avviaPonteTest({ conservaHome: true });
+  let secondo;
+  let ripristinaRpc;
+  t.after(async () => {
+    ripristinaRpc?.();
+    await primo.chiudi();
+    await secondo?.chiudi();
+    await rm(primo.home, { recursive: true, force: true });
+  });
+  const salvataggio = await primo.post("/api/impostazioni", { sogliaCompattazionePercento: 75 });
+  assert.equal(salvataggio.risposta.status, 200);
+  await primo.chiudi();
+  secondo = await avviaPonteTest({ home: primo.home, conservaHome: true });
+  const cartella = join(primo.home, "soglia-dopo-riavvio");
+  await mkdir(cartella);
+  const avvio = await secondo.post("/api/avvia", { cartella });
+  assert.equal(avvio.risposta.status, 200);
+  const sessione = secondo.ponte.sessioni.get(avvio.dati.id);
+  const ordine = [];
+  ripristinaRpc = intercettaRpcSessione(sessione, (comando) => {
+    ordine.push(comando.type);
+    if (comando.type === "get_session_stats") return { data: {
+      totalMessages: 2, contextUsage: { tokens: 80_000, percent: 80, contextWindow: 100_000 },
+    } };
+    if (comando.type === "compact") return { data: { estimatedTokensAfter: 5_000 } };
+    return { data: {} };
+  });
+  const invio = await secondo.post("/api/comando", {
+    sessionId: sessione.id, type: "prompt", id: "soglia-persistita", message: "Verifica la soglia salvata",
+  });
+  assert.equal(invio.risposta.status, 200, JSON.stringify(invio.dati));
+  assert.deepEqual(ordine, ["get_session_stats", "compact", "prompt"]);
+});
+
 test("compact prenota atomicamente il canale prima di compaction_start", () => {
   const scritte = [];
   const sessione = new SessionePi({
@@ -1560,7 +2725,14 @@ test("due cambi e un prompt vengono serializzati fino al get_state corrente", as
     stdin: {
       writable: true,
       destroyed: false,
-      write: (riga) => { scritte.push(JSON.parse(riga)); },
+      write: (riga) => {
+        const comando = JSON.parse(riga);
+        scritte.push(comando);
+        if (comando.type === "get_session_stats") queueMicrotask(() => sessione.diffondi({
+          type: "response", command: comando.type, id: comando.id, success: true,
+          data: { contextUsage: { tokens: 10, percent: 1, contextWindow: 1_000 } },
+        }));
+      },
     },
   };
   sessione.fileSessione = "C:\\iniziale.jsonl";
@@ -1597,7 +2769,7 @@ test("due cambi e un prompt vengono serializzati fino al get_state corrente", as
   await prompt;
   assert.deepEqual(
     scritte.map((voce) => voce.type),
-    ["new_session", "get_state", "clone", "get_state", "prompt"],
+    ["new_session", "get_state", "clone", "get_state", "get_session_stats", "prompt"],
   );
 });
 
@@ -2025,7 +3197,7 @@ test("la migrazione riconosce solo lo schema del ponte 1.x", () => {
 });
 
 test("un ponte corrente resta riconoscibile mentre sta chiudendo", () => {
-  assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 7, stato: "chiusura" }), true);
+  assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 8, stato: "chiusura" }), true);
   assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: "5" }), false);
   assert.equal(sembraPonteCorrente({ servizio: "pi-gui-bridge", versione: 3 }), false);
 });
@@ -2038,7 +3210,7 @@ test("la migrazione legacy e fail-closed e non termina mai la versione precedent
     inEsecuzione: false,
     preferite: [],
   };
-  assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 7 }, null), {
+  assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 8 }, null), {
     azione: "riusa",
   });
   assert.deepEqual(decisioneBonificaLegacy({ servizio: "pi-gui-bridge", versione: 3 }, null), {
@@ -2117,10 +3289,10 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
     readFile(join(RADICE, "src-tauri", "tauri.conf.json"), "utf8"),
   ]);
   assert.match(server, /predefinita = 4666/);
-  assert.match(server, /VERSIONE_PONTE = 7/);
+  assert.match(server, /VERSIONE_PONTE = 8/);
   assert.match(launcher, /predefinita = 4666/);
-  assert.match(launcher, /dati\.versione === 7/);
-  assert.match(frontend, /stato\.versione !== 7/);
+  assert.match(launcher, /dati\.versione === 8/);
+  assert.match(frontend, /stato\.versione !== 8/);
   assert.match(launcher, /x-pi-gui-client["']:\s*["']launcher-node/);
   assert.match(launcher, /Date\.now\(\) \+ 30_000/);
   assert.match(launcher, /processo\.signalCode !== null/);
@@ -2185,7 +3357,7 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(frontend, /sessione\.chiusuraInCorso = true/);
   assert.match(frontend, /La bozza e cambiata: la chiusura e stata annullata/);
   assert.match(rust, /const PORTA: u16 = 4666/);
-  assert.match(rust, /versione.*== 7/);
+  assert.match(rust, /versione.*== 8/);
   assert.match(rust, /X-Pi-Gui-Client: launcher-tauri/);
   assert.match(rust, /finestra\.navigate\(url\)/);
   assert.match(rust, /if !pronto && ponte_attivo\(\)/);
@@ -2261,7 +3433,7 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
         apiKey: "segreto-da-preservare",
         headers: { "x-config": "immutata" },
         modelOverrides: {
-          "gpt-5.6-sol": { contextWindow: 272_000, maxTokens: 77_000 },
+          "gpt-5.6-sol": { maxTokens: 77_000 },
           "gpt-5.6-terra": { reasoning: true },
           "modello-personale": { contextWindow: 99_000 },
         },
@@ -2303,24 +3475,23 @@ test("il contesto GPT esteso esegue un round-trip esatto e preserva campi e cont
   const testoAttivo = await readFile(percorso, "utf8");
   const configurazioneAttiva = JSON.parse(testoAttivo);
   const provenienza = configurazioneAttiva._interfacciaPi.gptExtendedContextV1;
-  assert.equal(provenienza.version, 1);
+  assert.equal(provenienza.version, 2);
   assert.equal(provenienza.managedBy, "interfaccia-pi");
   assert.equal(provenienza.fileExisted, true);
   assert.equal(provenienza.providersContainerExisted, true);
   assert.equal(provenienza.metadataContainerExisted, true);
   assert.deepEqual(provenienza.providers.openai.models["gpt-5.6-sol"], {
     overrideExisted: true,
-    contextWindowExisted: true,
-    contextWindow: 272_000,
+    contextWindowExisted: false,
   });
   assert.deepEqual(provenienza.providers.openai.models["gpt-5.6-terra"], {
     overrideExisted: true,
     contextWindowExisted: false,
   });
   assert.equal(provenienza.providers.openai.models["gpt-5.6-luna"].overrideExisted, false);
-  assert.equal(provenienza.providers["openai-codex"].providerExisted, true);
-  assert.equal(provenienza.providers["openai-codex"].modelOverridesExisted, false);
-  for (const providerId of ["openai", "openai-codex"]) {
+  assert.equal(Object.hasOwn(provenienza.providers, "openai-codex"), false);
+  assert.deepEqual(configurazioneAttiva.providers["openai-codex"], originale.providers["openai-codex"]);
+  for (const providerId of ["openai"]) {
     for (const modelloId of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       assert.equal(
         configurazioneAttiva.providers[providerId].modelOverrides[modelloId].contextWindow,
@@ -2373,7 +3544,9 @@ test("il contesto GPT esteso rimuove file e contenitori creati soltanto dalla GU
   assert.equal(provenienza.fileExisted, false);
   assert.equal(provenienza.providersContainerExisted, false);
   assert.equal(provenienza.metadataContainerExisted, false);
-  for (const providerId of ["openai", "openai-codex"]) {
+  assert.equal(Object.hasOwn(provenienza.providers, "openai-codex"), false);
+  assert.equal(Object.hasOwn(configurazione.providers, "openai-codex"), false);
+  for (const providerId of ["openai"]) {
     assert.equal(provenienza.providers[providerId].providerExisted, false);
     assert.equal(provenienza.providers[providerId].modelOverridesExisted, false);
   }
@@ -2437,6 +3610,33 @@ test("il contesto GPT esteso classifica custom e mixed e non sovrascrive overrid
   assert.equal(statoUniforme.dati.mode, "custom");
   assert.equal(statoUniforme.dati.contextWindow, 500_000);
   assert.equal(statoUniforme.dati.conflict, true);
+});
+
+test("l'interruttore API preserva anche un override personale pari al default", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const cartella = join(ambiente.home, "override-api-default");
+  await mkdir(cartella);
+  const avvio = await ambiente.post("/api/avvia", { cartella });
+  const configurazione = { providers: { openai: { modelOverrides: {
+    "gpt-5.6-sol": { contextWindow: 272_000 },
+  } } } };
+  const directory = join(ambiente.home, ".pi", "agent");
+  await mkdir(directory, { recursive: true });
+  const percorso = join(directory, "models.json");
+  const originale = JSON.stringify(configurazione);
+  await writeFile(percorso, originale, "utf8");
+  const lettura = await ambiente.post("/api/contesto-esteso-gpt", {});
+  assert.equal(lettura.dati.mode, "short");
+  assert.equal(lettura.dati.managed, false);
+  assert.equal(lettura.dati.mutable, false);
+  assert.equal(lettura.dati.conflict, true);
+  for (const enabled of [true, false]) {
+    const esito = await ambiente.post("/api/contesto-esteso-gpt", { enabled, sessionId: avvio.dati.id });
+    assert.equal(esito.risposta.status, 409, JSON.stringify(esito.dati));
+    assert.equal(await readFile(percorso, "utf8"), originale);
+    assert.equal(ambiente.ponte.sessioni.get(avvio.dati.id).configurazioneModelliInCorso, false);
+  }
 });
 
 test("il contesto GPT esteso fallisce chiuso se un override gestito cambia esternamente", async (t) => {
@@ -2672,7 +3872,8 @@ test("un errore di cleanup del backup non annulla il commit ne il latch", async 
   assert.equal(esito.dati.refreshRequired, true);
   const percorso = join(ambiente.home, ".pi", "agent", "models.json");
   const configurazione = JSON.parse(await readFile(percorso, "utf8"));
-  for (const provider of ["openai", "openai-codex"]) {
+  assert.equal(Object.hasOwn(configurazione.providers, "openai-codex"), false);
+  for (const provider of ["openai"]) {
     for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       assert.equal(
         configurazione.providers[provider].modelOverrides[modello].contextWindow,
@@ -2787,8 +3988,8 @@ test("il latch del catalogo e server-side, sopravvive a nuovi client e resta dir
     preparaHome: async (home) => {
       const cartella = join(home, ".pi", "agent");
       await mkdir(cartella, { recursive: true });
-      // Il bridge preserva provider estranei; se PI rigetta il loro schema e
-      // ripiega sul catalogo builtin, la verifica dei sei target deve fallire.
+      // Il bridge preserva provider estranei; il fallback non deve aggirare
+      // la verifica dei GPT gestiti quando uno di essi è il modello corrente.
       await writeFile(join(cartella, "models.json"), JSON.stringify({
         providers: { altro: { models: "schema-estraneo-invalido" } },
       }), "utf8");
@@ -2859,8 +4060,9 @@ test("il latch del catalogo e server-side, sopravvive a nuovi client e resta dir
   assert.equal((await snapshot()).sessioni.find((voce) => voce.id === sessione.id)
     .catalogoModelliDaRicaricare, true);
 
-  // Simuliamo un refresh RPC formalmente riuscito seguito dal fallback
-  // builtin senza i sei GPT-5.6: la verifica esatta resta fail-closed.
+  // Un modello GPT gestito assente dal fallback resta un errore di catalogo.
+  sessione.provider = "openai";
+  sessione.modello = "gpt-5.6-sol";
   const ripristinaFallback = intercettaRpcSessione(sessione, (comando) => {
     if (comando.type === "refresh_models") {
       return { data: { aborted: false, timedOut: false, errors: [] } };
@@ -2875,6 +4077,7 @@ test("il latch del catalogo e server-side, sopravvive a nuovi client e resta dir
   });
   ripristinaFallback();
   assert.equal(fallback.risposta.status, 409, JSON.stringify(fallback.dati));
+  assert.match(fallback.dati.errore, /provider corrente openai/);
   assert.equal((await snapshot()).sessioni.find((voce) => voce.id === sessione.id)
     .catalogoModelliDaRicaricare, true);
 });
@@ -2992,7 +4195,7 @@ test("OAuth openai-codex verifica solo i provider disponibili e sempre quello co
           provider: "openai-codex",
           id: "gpt-5.6-sol",
           name: "GPT-5.6 Sol",
-          contextWindow: 1_050_000,
+          contextWindow: 272_000,
         },
         sessionFile: sessione.fileSessione,
         isStreaming: false,
@@ -3013,7 +4216,8 @@ test("OAuth openai-codex verifica solo i provider disponibili e sempre quello co
     join(ambiente.home, ".pi", "agent", "models.json"),
     "utf8",
   ));
-  for (const provider of ["openai", "openai-codex"]) {
+  assert.equal(Object.hasOwn(configurazione.providers, "openai-codex"), false);
+  for (const provider of ["openai"]) {
     for (const modello of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       assert.equal(
         configurazione.providers[provider].modelOverrides[modello].contextWindow,
@@ -3023,7 +4227,7 @@ test("OAuth openai-codex verifica solo i provider disponibili e sempre quello co
   }
 });
 
-test("solo la sequenza server verificata chiude il latch e conferma la finestra GPT effettiva", async (t) => {
+test("un modello GPT-5.6 gestito pretende ancora il rebind e la finestra attesa", async (t) => {
   const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
   t.after(ambiente.chiudi);
   const workspace = join(ambiente.home, "latch-successo");
@@ -3102,7 +4306,7 @@ test("solo la sequenza server verificata chiude il latch e conferma la finestra 
   assert.equal(prompt.risposta.status, 200, JSON.stringify(prompt.dati));
 });
 
-test("refresh abortito e target duplicati restano dirty, mentre un modello non GPT completa il rebind", async (t) => {
+test("refresh abortito e target duplicati restano dirty, mentre un modello non GPT assente dal catalogo rilascia il latch senza rebind", async (t) => {
   const ambiente = await avviaPonteTest({ timeoutRicaricaCatalogoModelliMs: 500 });
   t.after(ambiente.chiudi);
   const workspace = join(ambiente.home, "latch-casi-limite");
@@ -3143,34 +4347,21 @@ test("refresh abortito e target duplicati restano dirty, mentre un modello non G
   sessione.provider = "anthropic";
   sessione.modello = "claude-opus-5";
   sessione.nomeModello = "Claude Opus 5";
+  const tipi = [];
   ripristina = intercettaRpcSessione(sessione, (comando) => {
+    tipi.push(comando.type);
     if (comando.type === "refresh_models") {
       return { data: { aborted: false, timedOut: false, errors: [] } };
     }
     if (comando.type === "get_available_models") {
       return { data: { models: catalogoGpt56(1_050_000), errors: [] } };
     }
-    if (comando.type === "set_model") {
-      return { data: { provider: comando.provider, id: comando.modelId } };
-    }
-    if (comando.type === "get_state") {
-      return { data: {
-        model: {
-          provider: "anthropic",
-          id: "claude-opus-5",
-          name: "Claude Opus 5",
-          contextWindow: 1_000_000,
-        },
-        sessionFile: sessione.fileSessione,
-        isStreaming: false,
-        isCompacting: false,
-      } };
-    }
-    return null;
+    return { success: false, error: "Comando inatteso" };
   });
   const nonGpt = await ambiente.post("/api/ricarica-contesto-gpt", { sessionId: sessione.id });
   ripristina();
   assert.equal(nonGpt.risposta.status, 200, JSON.stringify(nonGpt.dati));
+  assert.deepEqual(tipi, ["refresh_models", "get_available_models"]);
   assert.equal(nonGpt.dati.catalogoModelliDaRicaricare, false);
   assert.equal(sessione.riassunto().rebindModelloInCorso, false);
 });
@@ -3235,7 +4426,7 @@ test("catalogo esatto ma get_state GPT con finestra errata non puo chiudere il l
     }
     if (comando.type === "get_state") {
       return { data: {
-        model: { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 272_000 },
+        model: { provider: "openai-codex", id: "gpt-5.6-luna", contextWindow: 1_050_000 },
         sessionFile: sessione.fileSessione,
         isStreaming: false,
       } };
@@ -5084,9 +6275,9 @@ test("il ponte rifiuta richieste web forgiate e serve una CSP restrittiva", asyn
   assert.equal(statoPut.headers.get("allow"), "GET");
   const sfogliaSenzaToken = await ambiente.post("/api/sfoglia", { percorso: ambiente.home }, null);
   assert.equal(sfogliaSenzaToken.risposta.status, 403);
-  assert.equal(ambiente.stato.versione, 7);
+  assert.equal(ambiente.stato.versione, 8);
   const salute = await (await fetch(ambiente.base + "/api/salute")).json();
-  assert.deepEqual(salute, { servizio: "pi-gui-bridge", versione: 7 });
+  assert.deepEqual(salute, { servizio: "pi-gui-bridge", versione: 8 });
 });
 
 test("i body rifiutati non tengono socket aperti e gli errori JSON hanno status precisi", async (t) => {
@@ -6031,7 +7222,7 @@ test("la chiusura definitiva rifiuta nuove sessioni concorrenti", async (t) => {
   assert.equal(saluteInChiusura.status, 503);
   assert.deepEqual(await saluteInChiusura.json(), {
     servizio: "pi-gui-bridge",
-    versione: 7,
+    versione: 8,
     stato: "chiusura",
     errore: "Il ponte si sta chiudendo",
   });

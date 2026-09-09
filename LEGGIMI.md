@@ -35,10 +35,28 @@ a sei sessioni complessive.
   all'altra tramite le schede;
 - scegliere e cercare i modelli, distinguendo quelli locali da quelli cloud e
   vedendo subito se LM Studio, Ollama o llama.cpp sono realmente in esecuzione;
-- vedere la finestra di contesto del modello effettivamente selezionato e, per
-  GPT-5.6 Sol, Terra e Luna, scegliere consapevolmente fra 272.000 e 1.050.000
-  token dopo l'avviso sulla tariffazione API long-context; con OAuth la stima
-  non viene presentata come una fattura;
+- vedere la finestra di contesto effettiva e cambiare modello con un riassunto
+  preventivo, eseguito con il modello corrente quando lo spazio non basta;
+- usare automaticamente 1.050.000 token con GPT-5.6 Sol, Terra e Luna e account
+  ChatGPT (`openai-codex`): il consumo pesa sui limiti del piano, senza fattura
+  per token. Con chiave API (`openai`) resta il default di catalogo a 272.000;
+  nel pannello **Finestra di contesto** si può attivare o disattivare il contesto
+  esteso dopo aver letto le tariffe del modello. Oltre la soglia indicata la
+  tariffa lunga si applica all'intera richiesta. Gli override personali vengono
+  conservati e restano protetti;
+- scegliere la soglia di compattazione preventiva in **Controlli avanzati >
+  Comportamento automatico e coda > Impostazioni della GUI**, oppure da
+  `/settings > Impostazioni della GUI`: il valore iniziale è 90%, regolabile da
+  50 a 95 e conservato ai prossimi avvii. Prima di un nuovo turno il ponte può
+  liberare spazio; durante il lavoro steer e follow-up restano disponibili.
+  Con la riserva predefinita di Pi di 16.384 token, sulle finestre fino a circa
+  164.000 token Pi riassume da solo prima della soglia iniziale della GUI;
+  la soglia conta sulle finestre più grandi. Se dopo il riassunto preventivo
+  l'uso stimato resta almeno alla soglia, la GUI evita di ripeterlo a ogni invio
+  e lascia intervenire la compattazione automatica di Pi. La relativa
+  impostazione resta separata: disattivandola resta solo la soglia preventiva
+  della GUI, applicata prima di un nuovo invio; steer, follow-up e turni lunghi
+  non sono protetti e il contesto può esaurirsi;
 - scegliere quanto il modello deve ragionare;
 - iniziare, rinominare, clonare, ramificare, comprimere ed esportare una
   conversazione;

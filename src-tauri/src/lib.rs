@@ -74,7 +74,7 @@ fn risposta_ponte_valida(risposta: &[u8]) -> bool {
         Err(_) => return false,
     };
     dati.get("servizio").and_then(|v| v.as_str()) == Some("pi-gui-bridge")
-        && dati.get("versione").and_then(|v| v.as_u64()).unwrap_or(0) == 7
+        && dati.get("versione").and_then(|v| v.as_u64()).unwrap_or(0) == 8
 }
 
 fn leggi_risposta_ponte(stream: &mut TcpStream, limite: Duration) -> bool {
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn valida_status_firma_e_versione_del_ponte() {
-        let valida = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"servizio\":\"pi-gui-bridge\",\"versione\":7}";
+        let valida = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"servizio\":\"pi-gui-bridge\",\"versione\":8}";
         let vecchia = b"HTTP/1.1 200 OK\r\n\r\n{\"servizio\":\"pi-gui-bridge\",\"versione\":3}";
         let falsa = b"HTTP/1.1 500 Errore\r\n\r\n{\"servizio\":\"pi-gui-bridge\",\"versione\":99}";
         assert!(risposta_ponte_valida(valida));

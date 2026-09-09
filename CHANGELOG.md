@@ -2,6 +2,31 @@
 
 ## Non rilasciato
 
+- rende sicuro il cambio modello: se necessario riassume con il modello
+  corrente e verifica lo spazio prima di attivare la destinazione; un catalogo
+  incompleto lascia a Pi la decisione sul modello, senza compattazioni preventive;
+- estende automaticamente GPT-5.6 Sol, Terra e Luna a 1.050.000 token solo con
+  account ChatGPT (`openai-codex`); in API (`openai`) resta il catalogo a 272.000,
+  con interruttore esplicito e tariffe lunghe lette dal catalogo del modello;
+  migra i vecchi override API della GUI e conserva quelli personali;
+- aggiunge la compattazione preventiva nel ponte prima dei nuovi turni, dalla
+  soglia predefinita del 90%, configurabile fra 50 e 95 nelle **Impostazioni della
+  GUI** e persistente in `~/.pi/gui/impostazioni.json`; non cambia l'impostazione
+  di compattazione automatica di Pi e lascia disponibili steer e follow-up;
+- evita di ripetere la compattazione preventiva quando la stima dopo l'ultimo
+  riassunto resta almeno alla soglia, con un avviso esplicito; riprende quando
+  l'uso scende sotto soglia o cambiano modello, conversazione, catalogo o soglia,
+  e dopo una compattazione manuale o nativa di Pi;
+- chiarisce nel pannello e nella documentazione che, con la riserva predefinita
+  di Pi di 16.384 token, sulle finestre fino a circa 164.000 token Pi riassume
+  da solo prima della soglia iniziale del 90% della GUI;
+- avvisa quando la compattazione automatica di Pi è disattivata: resta solo la
+  soglia preventiva prima di un nuovo invio, mentre steer, follow-up e turni
+  lunghi non sono protetti e il contesto può esaurirsi; l'interruttore resta
+  sotto il controllo dell'utente;
+- aggiorna il protocollo del ponte alla versione 8, con stato della compattazione
+  preventiva, annullamento, protezione degli invii concorrenti e statistiche
+  sconosciute indicate come non disponibili; la versione del prodotto resta 2.6.2;
 - aggiunge trascinamento HTML5 di file e cartelle e **＋ > Allega cartella**;
   prima di leggere i contenuti chiede una sola volta se indicizzare tutti i
   documenti, scegliere con caselle di spunta oppure usarli soltanto nella chat;

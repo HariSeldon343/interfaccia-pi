@@ -1105,64 +1105,705 @@ test("settings, modelli, tree e resume mantengono la parita operativa di Pi", ()
   assert.match(resume, /operationId/);
 });
 
-test("GPT-5.6 espone il contesto ufficiale esteso come scelta consapevole, non automatica", () => {
-  const riconosci = corpoFunzione("modelloGpt56Configurabile");
-  assert.match(riconosci, /PROVIDER_GPT_56/);
-  assert.match(riconosci, /ID_GPT_56/);
-  const gestione = corpoFunzione("creaGestioneContestoEstesoGpt");
-  assert.match(gestione, /chiedi\(["']\/api\/contesto-esteso-gpt["'],\s*\{\s*corpo:\s*\{\s*\}\s*\}\)/,
-    "aprire il picker deve soltanto leggere la configurazione");
-  assert.match(gestione, /corpo:\s*\{\s*enabled,\s*sessionId:\s*sessione\.id\s*\}/,
-    "la scrittura deve avvenire solo dopo l'azione esplicita dell'utente");
-  assert.match(gestione, /confermaRichiesta\s*=\s*obiettivo/);
-  assert.match(gestione, /Conferma 1,05M/);
-  assert.match(gestione, /2× input e 1,5× output/,
-    "il costo long-context API deve essere spiegato prima della conferma");
-  assert.match(gestione, /Con OAuth questa GUI non presenta tale stima come una fattura/);
-  assert.match(gestione, /sessione\.inEsecuzione/,
-    "la configurazione non deve cambiare durante un'elaborazione");
-  assert.match(gestione, /sessione\.compattazioneInCorso/,
-    "la configurazione non deve cambiare durante una compattazione");
-  assert.match(gestione, /corpo:\s*\{\s*enabled,\s*sessionId:\s*sessione\.id\s*\}/,
-    "il bridge deve ricontrollare atomicamente che la conversazione sia inattiva");
-  assert.match(gestione, /\["mixed",\s*"custom"\]/,
-    "una configurazione esterna o mista deve essere riconosciuta senza sovrascriverla");
-  assert.match(gestione, /stato\.conflict/,
-    "anche il drift esterno dopo un'attivazione GUI deve bloccare nuove sovrascritture");
-  assert.match(gestione, /Configurazione esterna protetta/);
-  const ricarica = corpoFunzione("aggiornaCatalogoContestoGptSessione");
-  assert.match(ricarica, /chiedi\(["']\/api\/ricarica-contesto-gpt["']/,
-    "refresh, catalogo, rebind e verifica devono essere orchestrati dal server");
-  assert.match(ricarica, /esito\.catalogoModelliDaRicaricare\s*===\s*true/,
-    "la UI deve conservare il latch autorevole restituito dal server");
-  assert.doesNotMatch(ricarica, /sessione\.contestoGptDaRicaricare\s*=\s*false/,
-    "una semplice get_state lato client non deve poter azzerare il latch");
-  assert.match(ricarica, /contestoGptDaRicaricare\s*=\s*true/);
-  const tutte = corpoFunzione("aggiornaCataloghiContestoGptAperti");
-  assert.match(tutte, /\[\.\.\.APP\.sessioni\.values\(\)\]/,
-    "models.json e globale: tutte le schede aperte devono essere considerate");
-  assert.match(tutte, /Promise\.allSettled/,
-    "una scheda occupata non deve bloccare l'aggiornamento delle altre");
-  assert.match(gestione,
-    /if \(dati\.refreshRequired\)\s*\{\s*const esiti = await aggiornaCataloghiContestoGptAperti\(\)/,
-    "dopo il salvataggio globale tutte le schede vanno marcate pending, anche se quella corrente inizia a lavorare");
-  assert.match(frontend, /agent_settled[\s\S]*?contestoGptDaRicaricare[\s\S]*?aggiornaCatalogoContestoGptSessione/,
-    "una scheda in lavoro deve applicare la configurazione quando torna inattiva");
-  const riprova = corpoFunzione("programmaRiprovaContestoGpt");
-  assert.match(riprova, /\[1_000,\s*3_000,\s*10_000\]/,
-    "un errore transitorio su una scheda gia idle deve avere retry limitati e progressivi");
-  assert.match(ricarica, /programmaRiprovaContestoGpt\(sessione\)/,
-    "un refresh fallito non deve restare pending indefinitamente senza un nuovo agent_settled");
-  assert.match(gestione, /1,05M configurato/,
-    "lo stato globale non deve fingere che ogni sessione abbia gia adottato la finestra");
-  assert.match(stile, /\.contesto-esteso-gpt\s*\{/);
-  assert.match(stile, /\.azioni-contesto-esteso\s*\{/);
+test("il contesto dei modelli è dinamico e il cambio sotto pressione resta sicuro", () => {
   const snapshot = corpoFunzione("applicaSnapshot");
-  const unioneSnapshot = corpoFunzione("unisciSessione");
-  assert.match(unioneSnapshot, /catalogoModelliDaRicaricare/,
-    "dopo F5 il latch deve essere ripreso dal riassunto server-side");
-  assert.match(snapshot, /aggiornaCatalogoContestoGptSessione/,
-    "una nuova finestra deve riprendere automaticamente la verifica rimasta dirty");
+  assert.match(corpoFunzione("unisciSessione"), /catalogoModelliDaRicaricare/,
+    "dopo F5 la guardia deve essere recuperata dallo stato del ponte");
+  assert.match(snapshot, /contestoGptDaRicaricare[\s\S]*?aggiornaCatalogoContestoGptSessione/,
+    "lo snapshot deve riprendere la verifica del catalogo ancora pendente");
+  assert.doesNotMatch(frontend, /function\s+(?:modelloGpt56Configurabile|creaGestioneContestoEstesoGpt)\s*\(/,
+    "la GUI non deve ripristinare il vecchio selettore universale di GPT-5.6");
+  for (const nome of ["apriSceltaModello", "preparaCatalogoModelliDinamico", "dettaglioModello", "pressioneContestoCambioModello"]) {
+    assert.doesNotMatch(corpoFunzione(nome), /gpt-5\.6|GPT-5\.6|\/api\/contesto-esteso-gpt|cost\??\.tiers|1[._]050[._]000|272[._]000/,
+      `il picker generico non deve contenere una politica dedicata a GPT-5.6: ${nome}`);
+  }
+  assert.doesNotMatch(frontend, /Conferma 1,05M|Usa 1\.050\.000 token/,
+    "il vecchio interruttore universale 272k/1,05M deve restare assente");
+  assert.doesNotMatch(frontend, /\b(?:272_000|1_050_000)\b/,
+    "il frontend non deve imporre finestre di contesto codificate");
+
+  const informazione = corpoFunzione("creaInformazioneContestoModelli");
+  assert.match(informazione, /finestraModelloSessione\(sessione\)/,
+    "il pannello deve mostrare la finestra effettiva della sessione");
+  assert.match(informazione, /Number\.isFinite\(finestra\)[\s\S]*?`\$\{numero\(finestra\)\} token`/,
+    "una finestra valida deve essere resa dinamicamente");
+  assert.match(informazione, /finestra restituita dal catalogo effettivo di Pi/);
+  assert.match(informazione, /Il limite segue il catalogo effettivo del modello/);
+  assert.match(informazione, /modello attuale prima di effettuare il cambio/,
+    "il pannello deve spiegare la compattazione preventiva");
+  assert.match(informazione, /conserva il modello precedente/,
+    "il pannello deve descrivere il fallimento atomico dello switch");
+  assert.match(informazione, /modello\?\.provider !== "openai"[\s\S]*?!\["gpt-5\.6-sol", "gpt-5\.6-terra", "gpt-5\.6-luna"\]\.includes\(modello\.id\)[\s\S]*?\) return;/,
+    "l'unico interruttore del pannello deve riguardare GPT-5.6 sul provider API");
+  assert.match(informazione, /Usa il contesto esteso di GPT-5\.6 in API \(1\.050\.000 token\)/);
+  assert.match(informazione, /cost[\s\S]*?\.tiers[\s\S]*?inputTokensAbove/,
+    "soglia e prezzi lunghi devono provenire dal catalogo");
+  assert.match(informazione, /l'intera richiesta usa la tariffa lunga/);
+  assert.match(informazione, /corpo: \{ enabled, sessionId: sessione\.id \}/,
+    "la GUI deve chiedere una scelta API, senza inventare una finestra numerica");
+  assert.match(informazione, /await aggiornaCataloghiContestoGptAperti\(\)[\s\S]*?if \(esiti\.errori \|\| sessione\.contestoGptDaRicaricare\)/,
+    "la scelta scritta richiede ancora la conferma effettiva del catalogo");
+  const cataloghiAperti = corpoFunzione("aggiornaCataloghiContestoGptAperti");
+  assert.match(cataloghiAperti, /APP\.sessioni\.values\(\)[\s\S]*?sessione\.attiva/);
+  assert.match(cataloghiAperti, /for \(const sessione of aperte\) sessione\.contestoGptDaRicaricare = true/);
+  assert.match(cataloghiAperti, /Promise\.allSettled[\s\S]*?aggiornaCatalogoContestoGptSessione\(sessione\)/,
+    "un errore in una scheda non deve interrompere l'aggiornamento delle altre");
+  assert.match(cataloghiAperti, /esito\.value\?\.pendente/);
+  assert.match(informazione, /La scelta API è salvata, ma Pi deve ancora confermare il catalogo/,
+    "un errore di refresh non deve essere presentato come fallimento della scrittura");
+  assert.match(stile, /\.contesto-esteso-gpt\s*\{/);
+
+  const pressione = corpoFunzione("pressioneContestoCambioModello");
+  assert.match(pressione, /VISTA_CORE\.pianoCambioModello\(\{/,
+    "la decisione deve provenire dall'helper puro condiviso");
+  assert.match(pressione, /modelloCorrente:\s*modelloCorrenteSessione\(sessione\)/);
+  assert.match(pressione, /modelloDestinazione:\s*modello/);
+  assert.match(pressione, /riservaToken:\s*RISERVA_CAMBIO_MODELLO/);
+  assert.match(pressione, /chiaveModello\(sessione\?\.modelloStatistiche\)[\s\S]*?chiaveModello\(modelloCorrenteSessione\(sessione\)\)/,
+    "statistiche appartenenti a un altro modello non devono guidare il cambio");
+  assert.match(pressione, /if \(!piano\.compatta\) return null/);
+  assert.match(viewCore, /function pianoCambioModello\s*\(/);
+  assert.match(viewCore, /const budget\s*=\s*finestra == null\s*\?\s*null\s*:\s*Math\.max\(0, finestra - riservaValida\)/);
+  assert.match(viewCore, /!stessaIdentita[\s\S]*?usati > budget/,
+    "lo stesso modello non deve compattare e il budget deve includere la riserva");
+  assert.match(viewCore, /pianoCambioModello,/,
+    "l'helper deve essere parte dell'API di view-core");
+
+  const scelta = corpoFunzione("apriSceltaModello");
+  assert.match(scelta, /creaInformazioneContestoModelli\(sessione/);
+  assert.match(scelta, /preparazione\.onAggiorna\s*=\s*\(\)\s*=>\s*\{[\s\S]*?informazioneContesto\.aggiorna\(\)/,
+    "il pannello deve seguire gli aggiornamenti del catalogo");
+  assert.match(scelta, /informazioneContesto\.onCatalogoAggiornato = \(\) => preparazione\.onAggiorna\?\.\(\)/,
+    "il refresh della scelta API deve ridisegnare anche la lista dei modelli");
+  assert.match(scelta, /const pressioneAggiornata\s*=\s*pressioneContestoCambioModello\(sessione, modello\)/,
+    "la pressione va ricontrollata al click, non congelata al rendering");
+  assert.match(scelta, /type:\s*["']set_model["'][\s\S]*?timeout:\s*6 \* 60 \* 1000/,
+    "il cambio sicuro può includere una compattazione e necessita di un timeout adeguato");
+  assert.doesNotMatch(scelta, /type:\s*["']compact["']/,
+    "la UI deve delegare al ponte lo switch atomico senza compattazioni separate");
+  assert.ok(scelta.indexOf('type: "set_model"') < scelta.indexOf("ricordaModello(modello)"),
+    "il modello recente va memorizzato soltanto dopo lo switch confermato");
+  assert.ok(scelta.indexOf("ricordaModello(modello)") < scelta.indexOf("chiudiModale({ annulla: false })"),
+    "la modale deve chiudersi soltanto dopo il successo");
+  assert.match(scelta, /catch \(errore\)[\s\S]*?bottone\.disabled\s*=\s*false/,
+    "un errore deve lasciare il picker aperto e nuovamente utilizzabile");
+  assert.match(scelta, /Contesto riassunto con il modello precedente/);
+});
+
+test("il picker mostra un solo toast quando il cambio modello fallisce via HTTP dopo gli eventi SSE intermedi", async () => {
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], classList: { add() {} },
+    setAttribute(nome, valore) { this[nome] = valore; },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    replaceChildren(...nodi) { this.children = nodi; },
+    focus() {},
+  });
+  const precedente = { provider: "fake", id: "grande", contextWindow: 272000 };
+  const destinazione = { provider: "fake", id: "piccolo", contextWindow: 32000 };
+  const sessione = {
+    id: "s1", provider: precedente.provider, modello: precedente.id,
+    modelli: [destinazione], statoRpc: {}, inviiPendenti: [],
+  };
+  const app = { attivaId: sessione.id, sessioni: new Map([[sessione.id, sessione]]), attese: new Map() };
+  const corpo = creaNodo("section");
+  const notifiche = [];
+  const richieste = [];
+  const eventiElaborati = [];
+  const vistaCore = new Function("module", `${viewCore}; return module.exports;`)({ exports: {} });
+  let interfaccia;
+  const ambiente = {
+    APP: app, VISTA_CORE: vistaCore, COMANDI_CAMBIO_SESSIONE: new Set(),
+    sessioneAttiva: () => sessione,
+    preparaCatalogoModelliDinamico: () => ({ corpo, statiProvider: {} }),
+    creaInformazioneContestoModelli: () => ({ elemento: creaNodo("section"), aggiorna() {} }),
+    crea: creaNodo, localStorage: { getItem: () => null },
+    modelloLocale: () => false, nomeModello: (modello) => modello.id, dettaglioModello: () => "",
+    pressioneContestoCambioModello: () => ({ testo: "È necessario riassumere prima del cambio." }),
+    avvisa() {}, requestAnimationFrame: (callback) => callback(),
+    toast: (testo, tipo) => notifiche.push({ testo, tipo }),
+    ricordaModello: () => assert.fail("un cambio rifiutato non deve essere memorizzato"),
+    chiudiModale: () => assert.fail("un cambio rifiutato deve lasciare aperto il picker"),
+    idRpc: () => "scelta1", chiaveAttesa: (id, comandoId) => `${id}:${comandoId}`,
+    programmaTimeoutAttesa() {},
+    confermaRipresaDopoCompattazione() {},
+    applicaModelloSessione: (corrente, modello) => {
+      corrente.provider = modello.provider;
+      corrente.modello = modello.id;
+    },
+    aggiornaIdentitaBozza() {}, disegnaSchede() {}, aggiornaInterfacciaAttiva() {},
+    chiedi: async (via, opzioni) => {
+      richieste.push({ via, comando: opzioni.corpo });
+      // Le risposte riuscite restano pubbliche; l'errore del compact interno
+      // viene restituito soltanto dalla richiesta HTTP del cambio controllato.
+      for (const [command, data] of [
+        ["get_state", { model: precedente, sessionName: "Conversazione precedente" }],
+        ["get_available_models", { models: [precedente, destinazione] }],
+        ["get_available_thinking_levels", { levels: ["low", "high"] }],
+      ]) {
+        interfaccia.gestisciEvento({
+          type: "response", id: `interno-${command}`, guiSessionId: sessione.id,
+          command, success: true, data,
+        });
+        eventiElaborati.push(command);
+      }
+      assert.equal(app.attese.size, 1, "le risposte interne non devono completare l'attesa del picker");
+      assert.deepEqual(notifiche, [], "le risposte intermedie riuscite non devono generare toast");
+      throw Object.assign(new Error("Nothing to compact"), { statusHttp: 409 });
+    },
+  };
+  interfaccia = new Function("ambiente", `
+    const { ${Object.keys(ambiente).join(", ")} } = ambiente;
+    function testoErrore(errore) { ${corpoFunzione("testoErrore")} }
+    function spiegaErrorePi(errore, sessione) { ${corpoFunzione("spiegaErrorePi")} }
+    function completaAttesa(evento) { ${corpoFunzione("completaAttesa")} }
+    function aggiornaDaRisposta(sessione, evento) { ${corpoFunzione("aggiornaDaRisposta")} }
+    function gestisciEvento(evento) { ${corpoFunzione("gestisciEvento")} }
+    async function rpc(comando, { sessionId = APP.attivaId, timeout = 30000 } = {}) { ${corpoFunzione("rpc")} }
+    async function apriSceltaModello(filtroIniziale = "", operazione = null, sessioneRichiesta = null) { ${corpoFunzione("apriSceltaModello")} }
+    return { apriSceltaModello, gestisciEvento };
+  `)(ambiente);
+  await interfaccia.apriSceltaModello();
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const bottone = nodi(corpo).find((nodo) => nodo.tag === "button");
+  await bottone.onclick();
+  assert.deepEqual(richieste, [{
+    via: "/api/comando",
+    comando: { type: "set_model", provider: "fake", modelId: "piccolo", id: "scelta1", sessionId: "s1" },
+  }]);
+  assert.deepEqual(eventiElaborati, ["get_state", "get_available_models", "get_available_thinking_levels"]);
+  assert.equal(sessione.nomeSessione, "Conversazione precedente");
+  assert.deepEqual(sessione.modelli, [precedente, destinazione]);
+  assert.deepEqual(sessione.livelli, ["low", "high"]);
+  assert.deepEqual(notifiche, [{ testo: "La conversazione è ancora troppo breve per essere riassunta.", tipo: "errore" }]);
+  assert.equal(bottone.disabled, false);
+  assert.equal(sessione.modello, precedente.id);
+  assert.equal(app.attese.size, 0, "il rifiuto HTTP deve chiudere l'attesa del cambio");
+});
+
+test("il pannello API usa le tariffe del modello e conserva la scelta salvata se il catalogo fallisce", async () => {
+  const richieste = [];
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [],
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    replaceChildren(...nodi) { this.children = nodi; },
+  });
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const testo = (pannello) => nodi(pannello.elemento).map((nodo) => nodo.textContent).join(" ");
+  const sessione = {
+    id: "sessione-api", contestoGptDaRicaricare: false,
+    modello: {
+      provider: "openai", id: "gpt-5.6-terra", contextWindow: 272000,
+      cost: { input: 2, output: 12, tiers: [{ inputTokensAbove: 272000, input: 4, output: 18 }] },
+    },
+  };
+  let erroreRefresh = false;
+  const creaPannello = new Function(
+    "crea", "APP", "modelloCorrenteSessione", "finestraModelloSessione", "numero", "chiedi",
+    "contestoGptSessioneOccupata", "aggiornaCataloghiContestoGptAperti", "testoErrore", "bottoneAzione",
+    `return function(sessione, { nascosto = false } = {}) { ${corpoFunzione("creaInformazioneContestoModelli")} };`,
+  )(
+    creaNodo, { modale: {} }, (corrente) => corrente.modello, (corrente) => corrente.modello.contextWindow,
+    (valore) => valore.toLocaleString("it-IT"),
+    async (via, { corpo }) => {
+      richieste.push({ via, corpo });
+      return { enabled: corpo.enabled === true, mutable: true, conflict: false, refreshRequired: Object.hasOwn(corpo, "enabled") };
+    },
+    () => false,
+    async () => {
+      sessione.contestoGptDaRicaricare = erroreRefresh;
+      return { errori: erroreRefresh ? 1 : 0, pendenti: 0, aggiornate: erroreRefresh ? 0 : 1 };
+    },
+    (errore) => errore.message,
+    (etichetta, onclick) => ({ ...creaNodo("button", "", etichetta), onclick }),
+  );
+  const pannello = creaPannello(sessione);
+  let aggiornamentiLista = 0;
+  pannello.onCatalogoAggiornato = () => { aggiornamentiLista += 1; };
+  pannello.aggiorna();
+  await Promise.resolve();
+  assert.match(testo(pannello), /Oltre 272\.000 token in ingresso l'intera richiesta/);
+  assert.match(testo(pannello), /input 2 -> 4, output 12 -> 18 USD per milione/,
+    "Terra deve mostrare le proprie tariffe, senza ereditare quelle di Sol");
+  let interruttore = nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox");
+  assert.equal(interruttore.checked, false);
+  assert.equal(interruttore.disabled, false);
+  interruttore.checked = true;
+  erroreRefresh = true;
+  await interruttore.onchange();
+  assert.deepEqual(richieste, [
+    { via: "/api/contesto-esteso-gpt", corpo: {} },
+    { via: "/api/contesto-esteso-gpt", corpo: { enabled: true, sessionId: sessione.id } },
+  ]);
+  interruttore = nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox");
+  assert.equal(interruttore.checked, true, "la scelta è stata scritta anche se il catalogo non è confermato");
+  assert.equal(interruttore.disabled, true, "il catalogo pendente continua a bloccare nuove mutazioni");
+  assert.match(testo(pannello), /La scelta API è salvata, ma Pi deve ancora confermare il catalogo/);
+  assert.equal(sessione.contestoGptDaRicaricare, true);
+  assert.equal(aggiornamentiLista, 1);
+
+  erroreRefresh = false;
+  sessione.contestoGptDaRicaricare = false;
+  pannello.aggiorna();
+  interruttore = nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox");
+  interruttore.checked = false;
+  await interruttore.onchange();
+  assert.deepEqual(richieste.at(-1).corpo, { enabled: false, sessionId: sessione.id });
+  assert.equal(nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox").checked, false);
+  assert.match(testo(pannello), /Scelta API salvata e cataloghi verificati/);
+  assert.equal(aggiornamentiLista, 2);
+
+  for (const modello of [
+    { ...sessione.modello, provider: "openai-codex" },
+    { ...sessione.modello, id: "altro-modello" },
+  ]) {
+    const senzaScelta = creaPannello({ ...sessione, modello });
+    senzaScelta.aggiorna();
+    assert.equal(nodi(senzaScelta.elemento).some((nodo) => nodo.type === "checkbox"), false);
+    if (modello.provider === "openai-codex") {
+      assert.match(testo(senzaScelta), /non viene emessa una fattura per token/);
+      assert.match(testo(senzaScelta), /il consumo pesa sui limiti del piano/);
+    }
+  }
+  assert.equal(richieste.length, 3, "account ChatGPT e altri modelli non devono interrogare la scelta API");
+});
+
+test("due verifiche API ravvicinate producono una sola richiesta", async () => {
+  const richieste = [];
+  let completaVerifica;
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [],
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    replaceChildren(...nodi) { this.children = nodi; },
+  });
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const creaPannello = new Function(
+    "crea", "APP", "modelloCorrenteSessione", "finestraModelloSessione", "numero", "chiedi",
+    "contestoGptSessioneOccupata", "aggiornaCataloghiContestoGptAperti", "testoErrore", "bottoneAzione",
+    `return function(sessione, { nascosto = false } = {}) { ${corpoFunzione("creaInformazioneContestoModelli")} };`,
+  )(
+    creaNodo, { modale: {} }, (sessione) => sessione.modello, () => 272000, String,
+    async (via, opzioni) => {
+      richieste.push({ via, opzioni });
+      if (richieste.length === 1) throw new Error("Verifica temporaneamente non disponibile");
+      return new Promise((risolvi) => { completaVerifica = risolvi; });
+    },
+    () => false, async () => {}, (errore) => errore.message,
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+  );
+  const pannello = creaPannello({
+    id: "s1", invioInCorso: false, contestoGptDaRicaricare: false,
+    modello: { provider: "openai", id: "gpt-5.6-terra" },
+  });
+  const bottoneRiprova = () => nodi(pannello.elemento).find((nodo) => nodo.textContent === "Riprova la verifica API");
+  pannello.aggiorna();
+  await Promise.resolve();
+  assert.equal(richieste.length, 1);
+  const riprova = bottoneRiprova();
+  assert.equal(riprova.disabled, false);
+  const primo = riprova.onclick();
+  const secondo = riprova.onclick();
+  assert.equal(richieste.length, 2, "dopo il primo errore i due clic devono avviare una sola nuova richiesta");
+  assert.equal(bottoneRiprova().disabled, true, "il bottone deve restare disabilitato durante la verifica");
+  await secondo;
+  completaVerifica({ enabled: false, mutable: true, conflict: false });
+  await primo;
+  assert.equal(bottoneRiprova(), undefined);
+  assert.equal(nodi(pannello.elemento).find((nodo) => nodo.type === "checkbox").disabled, false);
+  assert.ok(richieste.every(({ via }) => via === "/api/contesto-esteso-gpt"));
+});
+
+test("le schede aperte aggiornano il catalogo API anche se una verifica fallisce", async () => {
+  const sessioni = [
+    { id: "pronta", attiva: true },
+    { id: "occupata", attiva: true },
+    { id: "errore", attiva: true },
+    { id: "chiusa", attiva: false },
+  ];
+  const chiamate = [];
+  const aggiorna = new Function("APP", "aggiornaCatalogoContestoGptSessione",
+    `return async function() { ${corpoFunzione("aggiornaCataloghiContestoGptAperti")} };`,
+  )(
+    { sessioni: new Map(sessioni.map((sessione) => [sessione.id, sessione])) },
+    async (sessione) => {
+      assert.ok(sessioni.filter((corrente) => corrente.attiva).every((corrente) => corrente.contestoGptDaRicaricare),
+        "tutte le guardie devono essere impostate prima di avviare gli aggiornamenti");
+      chiamate.push(sessione.id);
+      if (sessione.id === "errore") throw new Error("Catalogo temporaneamente non disponibile");
+      return sessione.id === "occupata" ? { pendente: true } : { aggiornata: true };
+    },
+  );
+  assert.deepEqual(await aggiorna(), { aggiornate: 1, pendenti: 1, errori: 1 });
+  assert.deepEqual(chiamate, ["pronta", "occupata", "errore"]);
+  assert.equal(sessioni[3].contestoGptDaRicaricare, undefined);
+});
+
+test("il bottone dei controlli avanzati apre tutte le sezioni anche ricevendo l'evento del clic", () => {
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], style: {},
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    cloneNode() { return creaNodo(this.tag, this.className, this.textContent); },
+  });
+  const attiva = { id: "s1", statoRpc: {} };
+  const evento = { type: "click", target: { id: "btn-controlli" } };
+  let corpo;
+  const apri = new Function("sessioneAttiva", "apriModale", "crea", "sezioneAvanzata", "bottoneAzione",
+    `return function(sessioneRichiesta = null) { ${corpoFunzione("apriControlliAvanzati")} };`,
+  )(
+    () => attiva, () => { corpo = creaNodo("section"); return corpo; }, creaNodo,
+    (titolo) => creaNodo("section", "", titolo),
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+  );
+  apri(evento);
+  assert.deepEqual(corpo.children.filter((nodo) => nodo.tag === "section").map((nodo) => nodo.textContent), [
+    "Sessione", "Comportamento automatico e coda", "Shell diretta", "Protocollo RPC completo",
+  ]);
+  assert.ok(attiva.bashUi, "il pannello deve usare la sessione attiva");
+  const richiesta = { id: "s2", statoRpc: {} };
+  apri(richiesta);
+  assert.ok(richiesta.bashUi, "una sessione richiesta esplicitamente deve essere rispettata");
+
+  const collegamento = frontend.match(/DOM\.btnControlli\.onclick = [^\r\n]+;/)?.[0];
+  assert.ok(collegamento, "manca il collegamento del bottone dei controlli avanzati");
+  const dom = { btnControlli: {} };
+  let argomenti;
+  new Function("DOM", "apriControlliAvanzati", collegamento)(dom, (...ricevuti) => { argomenti = ricevuti; });
+  dom.btnControlli.onclick(evento);
+  assert.deepEqual(argomenti, [], "il bottone non deve inoltrare l'evento come sessione");
+});
+
+test("l'etichetta della soglia mantiene l'ultimo valore salvato con 89.5 e 49", async () => {
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], style: {},
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    focus() {},
+  });
+  const app = { modale: {} };
+  const piede = creaNodo("footer");
+  let corpo;
+  let valoreSalvato = 87;
+  const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi",
+    `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
+  )(
+    app, { modalePiede: piede },
+    () => { corpo = creaNodo("section"); return corpo; }, creaNodo,
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+    async (_via, opzioni) => {
+      if (opzioni?.corpo) valoreSalvato = opzioni.corpo.sogliaCompattazionePercento;
+      return { sogliaCompattazionePercento: valoreSalvato };
+    },
+  );
+  await apri();
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const campo = nodi(corpo).find((nodo) => nodo.type === "number");
+  const etichetta = nodi(corpo).find((nodo) => nodo.tag === "strong");
+  const salva = piede.children.find((nodo) => nodo.textContent === "Salva impostazioni GUI");
+  const testoEtichetta = (valore) => `Compatta prima di inviare oltre il ${valore}% della finestra`;
+  assert.equal(etichetta.textContent, testoEtichetta(87));
+  for (const valoreConfermato of [87, 91]) {
+    for (const valoreInvalido of ["89.5", "49"]) {
+      campo.value = "92";
+      campo.oninput();
+      assert.equal(etichetta.textContent, testoEtichetta(92), "un intero valido può essere mostrato durante la modifica");
+      campo.value = valoreInvalido;
+      campo.oninput();
+      await salva.onclick();
+      assert.equal(etichetta.textContent, testoEtichetta(valoreConfermato), "un valore invalido deve ripristinare l'ultima soglia salvata");
+      assert.equal(valoreSalvato, valoreConfermato);
+      assert.match(nodi(corpo).map((nodo) => nodo.textContent).join(" "), /numero intero da 50 a 95/);
+    }
+    campo.value = "91";
+    campo.oninput();
+    await salva.onclick();
+    assert.equal(etichetta.textContent, testoEtichetta(91));
+  }
+});
+
+test("le impostazioni della GUI leggono la soglia salvata e mantengono il valore confermato dopo un errore", async () => {
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], style: {},
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    focus() {},
+  });
+  const app = { modale: {} };
+  const piede = creaNodo("footer");
+  let corpo;
+  const richieste = [];
+  let salvata = 87;
+  let fallisce = false;
+  const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi", "testoErrore", "chiudiModale",
+    `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
+  )(
+    app, { modalePiede: piede },
+    () => { corpo = creaNodo("section"); piede.children = []; app.modale = {}; return corpo; },
+    creaNodo,
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+    async (via, opzioni) => {
+      richieste.push({ via, opzioni });
+      if (opzioni?.corpo) {
+        if (fallisce) throw new Error("Scrittura non riuscita");
+        salvata = opzioni.corpo.sogliaCompattazionePercento;
+      }
+      return { sogliaCompattazionePercento: salvata };
+    },
+    (errore) => errore.message, () => {},
+  );
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const testo = () => nodi(corpo).map((nodo) => nodo.textContent).join(" ");
+  await apri();
+  let campo = nodi(corpo).find((nodo) => nodo.type === "number");
+  let salva = piede.children.find((nodo) => nodo.textContent === "Salva impostazioni GUI");
+  assert.deepEqual([campo.min, campo.max, campo.step, campo.value], ["50", "95", "1", "87"]);
+  assert.deepEqual(richieste[0], { via: "/api/impostazioni", opzioni: undefined });
+  for (const valore of ["49", "96", "89.5", "testo", ""]) {
+    campo.value = valore;
+    await salva.onclick();
+    assert.match(testo(), /numero intero da 50 a 95/);
+  }
+  assert.equal(richieste.length, 1, "i valori invalidi non devono essere inviati al ponte");
+  campo.value = "92";
+  await salva.onclick();
+  assert.deepEqual(richieste[1], { via: "/api/impostazioni", opzioni: { corpo: { sogliaCompattazionePercento: 92 } } });
+  assert.match(testo(), /Soglia salvata: 92%/);
+  fallisce = true;
+  campo.value = "95";
+  await salva.onclick();
+  assert.equal(salvata, 92);
+  assert.match(testo(), /Ultima soglia confermata: 92%/);
+  assert.equal(salva.disabled, false);
+  await apri();
+  campo = nodi(corpo).find((nodo) => nodo.type === "number");
+  assert.equal(campo.value, "92", "la riapertura deve rileggere la preferenza dal ponte");
+  for (const nome of ["apriImpostazioniPi", "apriControlliAvanzati"]) {
+    assert.match(corpoFunzione(nome), /Impostazioni della GUI[\s\S]*?apriImpostazioniGui\(\)/);
+  }
+  assert.doesNotMatch(corpoFunzione("apriImpostazioniGui"), /set_auto_compaction|set_rpc_setting|autoCompaction/,
+    "salvare la soglia GUI non deve modificare l'interruttore automatico di Pi");
+  assert.match(corpoFunzione("apriImpostazioniGui"), /Con finestre fino a circa 164\.000 token Pi riassume da solo prima di questa soglia \(riserva predefinita di Pi: 16\.384 token\)\. La soglia conta sulle finestre più grandi\./);
+  assert.match(testo(), /164\.000[\s\S]*?16\.384/,
+    "la riserva nativa di Pi deve essere spiegata nel pannello visibile");
+});
+
+test("con la compattazione automatica di Pi disattivata il pannello mostra l'avviso sulla soglia preventiva", async () => {
+  const testoAvviso = "Attenzione: con lo spazio automatico disattivato resta solo la soglia preventiva della GUI, applicata prima di un nuovo invio. Steer, follow-up e turni lunghi non sono protetti e il contesto può esaurirsi.";
+  const dichiarazioneAvviso = frontend.match(/const AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO = ("[^"\r\n]+");/);
+  assert.ok(dichiarazioneAvviso);
+  const avvisoCondiviso = JSON.parse(dichiarazioneAvviso[1]);
+  assert.equal(avvisoCondiviso, testoAvviso);
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [],
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    replaceChildren(...nodi) { this.children = nodi; },
+  });
+  const app = { modale: {} };
+  const piede = creaNodo("footer");
+  const richieste = [];
+  let corpo;
+  let autoCompaction = false;
+  const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "rpc", "AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO",
+    `return async function(sessione, operazione = null) { ${corpoFunzione("apriImpostazioniPi")} };`,
+  )(
+    app, { modalePiede: piede },
+    () => { corpo = creaNodo("section"); piede.children = []; app.modale = {}; return corpo; },
+    creaNodo, (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+    async (comando) => {
+      richieste.push(comando);
+      return { settings: { autoCompaction } };
+    },
+    avvisoCondiviso,
+  );
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const testoVisibile = () => nodi(corpo).filter((nodo) => !nodo.hidden).map((nodo) => nodo.textContent).join(" ");
+  const selezioneSpazio = () => nodi(corpo).find((nodo) => nodo.tag === "select" && nodo["aria-label"] === "Libera spazio automaticamente");
+  for (autoCompaction of [false, true]) {
+    await apri({ id: "s1" });
+    const avviso = nodi(corpo).find((nodo) => nodo.textContent === testoAvviso);
+    assert.equal(avviso.hidden, autoCompaction, "all'apertura l'avviso deve seguire il valore effettivo di Pi");
+    assert.equal(testoVisibile().includes(testoAvviso), !autoCompaction);
+    assert.equal(avviso["aria-live"], "polite");
+    const selezione = selezioneSpazio();
+    const riga = corpo.children.findIndex((nodo) => nodo.children.includes(selezione));
+    assert.equal(corpo.children[riga + 1], avviso, "l'avviso deve comparire subito sotto la riga dello spazio automatico");
+    selezione.value = "false";
+    selezione.onchange();
+    assert.equal(avviso.hidden, false);
+    assert.ok(testoVisibile().includes(testoAvviso));
+    selezione.value = "true";
+    selezione.onchange();
+    assert.equal(avviso.hidden, true);
+    assert.equal(testoVisibile().includes(testoAvviso), false);
+  }
+  assert.deepEqual(richieste, [{ type: "get_rpc_settings" }, { type: "get_rpc_settings" }],
+    "mostrare l'avviso e cambiare selezione non deve riattivare né salvare automaticamente lo spazio di Pi");
+});
+
+test("il comando rapido di disattivazione avvisa solo dopo la conferma di Pi", async () => {
+  const avvisoCondiviso = JSON.parse(frontend.match(/const AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO = ("[^"\r\n]+");/)[1]);
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], style: {},
+    setAttribute(nome, valore) { this[nome] = valore; },
+    append(...nodi) { this.children.push(...nodi); },
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+    cloneNode() { return creaNodo(this.tag, this.className, this.textContent); },
+  });
+  const richieste = [];
+  const avvisi = [];
+  let completaComando;
+  let corpo;
+  const comandoBreve = new Function("rpc", "toast", "testoErrore",
+    `return async function(sessione, comando) { ${corpoFunzione("comandoBreve")} };`,
+  )(
+    async (comando) => {
+      richieste.push(comando);
+      return new Promise((risolvi, rifiuta) => { completaComando = { risolvi, rifiuta }; });
+    },
+    () => {}, (errore) => errore.message,
+  );
+  const apri = new Function("apriModale", "crea", "sezioneAvanzata", "bottoneAzione", "comandoBreve", "avvisa", "AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO",
+    `return function(sessioneRichiesta = null) { ${corpoFunzione("apriControlliAvanzati")} };`,
+  )(
+    () => { corpo = creaNodo("section"); return corpo; }, creaNodo, (titolo) => creaNodo("section", "", titolo),
+    (titolo, onclick) => ({ ...creaNodo("button", "", titolo), onclick }),
+    comandoBreve, (messaggio) => avvisi.push(messaggio), avvisoCondiviso,
+  );
+  apri({ id: "s1", statoRpc: {} });
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  const disattiva = nodi(corpo).find((nodo) => nodo.textContent === "Spazio automatico: disattiva");
+  const invio = disattiva.onclick();
+  assert.deepEqual(richieste, [{ type: "set_auto_compaction", enabled: false }]);
+  assert.deepEqual(avvisi, [], "l'avviso deve attendere l'esito del comando");
+  completaComando.risolvi({});
+  await invio;
+  assert.deepEqual(avvisi, [avvisoCondiviso]);
+  const fallimento = disattiva.onclick();
+  completaComando.rifiuta(new Error("Impostazione non applicata"));
+  await fallimento;
+  assert.deepEqual(avvisi, [avvisoCondiviso], "un errore RPC non deve annunciare una disattivazione non confermata");
+});
+
+test("le statistiche sconosciute mostrano non disponibile senza una barra a zero", () => {
+  const creaNodo = (tag, classe = "", textContent = "") => ({
+    tag, className: classe, textContent, children: [], style: {},
+    appendChild(nodo) { this.children.push(nodo); return nodo; },
+  });
+  let corpo;
+  const mostra = new Function("apriModale", "crea", "VISTA_CORE", "numero",
+    `return function(dati, sessione) { ${corpoFunzione("mostraStatistiche")} };`,
+  )(() => { corpo = creaNodo("section"); return corpo; }, creaNodo, { presentaCosto: () => null }, String);
+  const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
+  mostra({ contextUsage: { percent: null, tokens: null, contextWindow: 272000 } }, null);
+  const testo = nodi(corpo).map((nodo) => nodo.textContent).join(" ");
+  assert.match(testo, /Percentuale di contesto non disponibile/);
+  assert.match(testo, /non disponibile di 272000 token/);
+  assert.doesNotMatch(testo, /0\.0%/);
+  assert.equal(nodi(corpo).some((nodo) => nodo.className === "barra-contesto"), false);
+  mostra({ contextUsage: { percent: 0, tokens: 0, contextWindow: 272000 } }, null);
+  assert.match(nodi(corpo).map((nodo) => nodo.textContent).join(" "), /0\.0% del contesto usato/);
+  assert.equal(nodi(corpo).some((nodo) => nodo.className === "barra-contesto"), true,
+    "uno zero effettivamente misurato resta distinto dal valore sconosciuto");
+});
+
+test("la compattazione preventiva mantiene la guardia fino all'evento finale correlato", () => {
+  const sessione = { id: "s1" };
+  const avvisi = [];
+  const messaggi = [];
+  let sospensioni = 0;
+  let riprese = 0;
+  const aggiorna = new Function("APP", "sospendiTimeoutPromptPerCompattazione", "aggiornaEventoCompattazione", "avvisa", "riprendiTimeoutPromptDopoCompattazione",
+    `return function(sessione, evento) { ${corpoFunzione("aggiornaCompattazionePreventiva")} };`,
+  )(
+    { attivaId: sessione.id }, () => { sospensioni += 1; },
+    (_sessione, messaggio) => messaggi.push(messaggio), (testo) => avvisi.push(testo), () => { riprese += 1; },
+  );
+  aggiorna(sessione, { fase: "conclusa", promptId: "sotto-soglia", messaggio: "Verifica preventiva conclusa." });
+  assert.equal(sessione.compattazionePreventivaInCorso, false);
+  assert.equal(messaggi.length, 0, "il controllo sotto soglia non deve inventare una compattazione");
+  aggiorna(sessione, { fase: "in_corso", promptId: "prompt1" });
+  assert.equal(sessione.compattazionePreventivaInCorso, true);
+  assert.equal(sospensioni, 1);
+  assert.match(avvisi.at(-1), /Libero spazio prima di inviare\.\.\./);
+  aggiorna(sessione, { fase: "conclusa", promptId: "vecchio-prompt" });
+  assert.equal(sessione.compattazionePreventivaInCorso, true, "un finale tardivo non può sbloccare un'altra richiesta");
+  aggiorna(sessione, { fase: "errore", promptId: "prompt1", messaggio: "Tempo scaduto; il prompt non è stato inoltrato." });
+  assert.equal(sessione.compattazionePreventivaInCorso, false);
+  assert.equal(sessione.promptCompattazionePreventiva, null);
+  assert.equal(riprese, 2);
+  assert.match(avvisi.at(-1), /il prompt non è stato inoltrato/);
+  const messaggioSaltata = "Compattazione preventiva saltata: l'ultimo riassunto non ha liberato spazio sotto la soglia. Interviene la compattazione automatica di Pi.";
+  aggiorna(sessione, { fase: "saltata", promptId: "riassunto-inefficace", messaggio: messaggioSaltata });
+  assert.equal(avvisi.at(-1), messaggioSaltata, "la fase saltata deve mostrare il messaggio del ponte senza sostituirlo con un testo generico");
+  assert.equal(sessione.compattazionePreventivaInCorso, false);
+  aggiorna(sessione, { fase: "in_corso", promptId: "riassunto-annunciato" });
+  aggiorna(sessione, { fase: "saltata", promptId: "riassunto-annunciato", messaggio: messaggioSaltata });
+  assert.equal(messaggi.at(-1).nota, messaggioSaltata, "anche lo stato già annunciato deve conservare il messaggio del ponte");
+  assert.equal(avvisi.at(-1), messaggioSaltata);
+  const eventi = corpoFunzione("gestisciEvento");
+  const fineCompatta = eventi.slice(eventi.indexOf('evento.type === "compaction_end"'), eventi.indexOf('evento.type === "auto_retry_start"'));
+  assert.doesNotMatch(fineCompatta, /compattazionePreventivaInCorso\s*=\s*false/);
+  assert.match(fineCompatta, /if \(!sessione\.compattazionePreventivaInCorso\)\s*\{\s*riprendiTimeoutPromptDopoCompattazione/);
+  assert.match(corpoFunzione("creaSessione"), /compattazionePreventivaInCorso:\s*Boolean\(meta\.compattazionePreventivaInCorso\)/);
+  assert.match(corpoFunzione("unisciSessione"), /"compattazionePreventivaInCorso"/);
+  assert.match(corpoFunzione("applicaSnapshot"), /compattazionePreventivaInCorso[\s\S]*?sospendiTimeoutPromptPerCompattazione/);
+  for (const nome of ["contestoGptSessioneOccupata", "ricaricaRisorsePi", "aggiornaInterfacciaAttiva", "invia"]) {
+    assert.match(corpoFunzione(nome), /compattazionePreventivaInCorso/, `${nome} deve rispettare la prenotazione preventiva`);
+  }
+  const interfaccia = corpoFunzione("aggiornaInterfacciaAttiva");
+  assert.match(interfaccia, /const interrompibile[\s\S]*?sessione\.compattazionePreventivaInCorso/);
+  assert.match(interfaccia, /fermaLaterale\.disabled = !interrompibile/);
+  assert.match(interfaccia, /DOM\.btnFermaTop\.hidden = !interrompibile/);
+  assert.doesNotMatch(corpoFunzione("aggiornaCompattazionePreventiva"), /\brpc\(|\binvia\(|setTimeout/,
+    "un evento finale non deve reinviare il prompt né programmare retry");
+});
+
+test("il latch impedisce due invii ravvicinati e il timeout conserva un esito da verificare", async () => {
+  let liberaCoda;
+  const sessione = {
+    id: "s1", bozza: "Richiesta conservata", chiaveBozza: "bozza1",
+    codaIngressiLibreria: new Promise((risolvi) => { liberaCoda = risolvi; }),
+  };
+  let aggiornamenti = 0;
+  const invia = new Function("sessioneAttiva", "aggiornaInterfacciaAttiva", "APP", "DOM",
+    `return async function() { ${corpoFunzione("invia")} };`,
+  )(() => sessione, () => { aggiornamenti += 1; }, { attivaId: "s1" }, { input: { focus() {} } });
+  const primo = invia();
+  assert.equal(sessione.invioInCorso, true);
+  await invia();
+  assert.equal(aggiornamenti, 1, "il secondo invio deve fermarsi prima di attraversare gli await");
+  sessione.chiusuraInCorso = true;
+  liberaCoda();
+  await primo;
+  assert.equal(sessione.invioInCorso, false);
+  assert.equal(sessione.bozza, "Richiesta conservata");
+  const corpoInvio = corpoFunzione("invia");
+  assert.equal([...corpoInvio.matchAll(/await rpc\(comando,/g)].length, 1);
+  assert.ok(corpoInvio.indexOf("sessione.invioInCorso = true") < corpoInvio.indexOf("await "));
+  assert.ok(corpoInvio.indexOf("await rpc(comando") < corpoInvio.indexOf('sessione.bozza = ""'));
+  assert.match(corpoInvio, /errore\?\.esitoIgnoto[\s\S]*?Non reinviare subito/);
+
+  let scadenza;
+  let erroreRicevuto;
+  const pendente = { tipoComando: "prompt", mutante: true, timeoutMs: 30000, rifiuta: (errore) => { erroreRicevuto = errore; } };
+  const attese = new Map([["s1:p1", pendente]]);
+  const programma = new Function("APP", "setTimeout", "clearTimeout",
+    `return function(chiave, pendente, durata = pendente.timeoutMs) { ${corpoFunzione("programmaTimeoutAttesa")} };`,
+  )({ attese }, (callback) => { scadenza = callback; return 1; }, () => {});
+  programma("s1:p1", pendente);
+  scadenza();
+  assert.equal(attese.size, 0);
+  assert.equal(erroreRicevuto.esitoIgnoto, true);
+  assert.match(erroreRicevuto.message, /non ha risposto in tempo/);
+  assert.doesNotMatch(corpoFunzione("programmaTimeoutAttesa"), /\brpc\(|\binvia\(/);
 });
 
 test("l'albero della conversazione e raggiungibile direttamente dalla barra laterale", () => {
@@ -1371,6 +2012,9 @@ test("l'etichetta di ricalcolo si spegne appena PI riprende davvero il lavoro", 
 });
 
 test("durante la compattazione la bozza resta scrivibile ma non viene inviata", () => {
+  assert.match(corpoFunzione("invia"),
+    /if \(sessione\.contestoGptDaRicaricare\)[\s\S]*?await aggiornaCatalogoContestoGptSessione\(sessione\)[\s\S]*?if \(sessione\.contestoGptDaRicaricare\)/,
+    "il primo prompt deve attendere il catalogo e ricontrollare la guardia dopo la verifica");
   assert.match(corpoFunzione("creaSessione"),
     /compattazioneInCorso:\s*Boolean\(meta\.compattazioneInCorso\)/,
     "un reload deve ereditare la barriera autorevole del server");
@@ -1408,9 +2052,6 @@ test("durante la compattazione la bozza resta scrivibile ma non viene inviata", 
   assert.doesNotMatch(azioniLaterali,
     /\[[^\]]*["']nuova["'][^\]]*\]\.includes/,
     "Nuova conversazione non deve piu essere una deroga incondizionata");
-  assert.match(invio,
-    /if \(sessione\.contestoGptDaRicaricare\)[\s\S]*?await aggiornaCatalogoContestoGptSessione\(sessione\)[\s\S]*?if \(sessione\.contestoGptDaRicaricare\)/,
-    "il primo prompt non deve partire con il vecchio limite se il refresh automatico e fallito");
 });
 
 test("lo stato locale non devia Pi e steer resta una scelta esplicita one-shot", () => {

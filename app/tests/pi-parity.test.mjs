@@ -159,8 +159,25 @@ test("un retry della stessa bozza non crea un secondo invio ambiguo", () => {
 
 test("la compattazione e uno stato GUI esplicito e sospende il timeout del prompt", async () => {
   const sorgente = await readFile(join(QUI, "../public/app.js"), "utf8");
-  assert.match(sorgente, /sessione\.compattazioneInCorso = true;[\s\S]{0,180}sospendiTimeoutPromptPerCompattazione/);
-  assert.match(sorgente, /sessione\.compattazioneInCorso = false;[\s\S]{0,180}riprendiTimeoutPromptDopoCompattazione/);
+  const inizio = sorgente.indexOf('evento.type === "compaction_start"');
+  const fine = sorgente.indexOf('evento.type === "compaction_end"', inizio);
+  const successivo = sorgente.indexOf('evento.type === "auto_retry_start"', fine);
+  assert.ok(inizio >= 0 && fine > inizio && successivo > fine);
+  const avvioCompattazione = sorgente.slice(inizio, fine);
+  const fineCompattazione = sorgente.slice(fine, successivo);
+  assert.match(avvioCompattazione, /sessione\.compattazioneInCorso = true;[\s\S]*?sospendiTimeoutPromptPerCompattazione\(sessione\.id\)/);
+  assert.match(fineCompattazione, /sessione\.compattazioneInCorso = false;/);
+  assert.match(fineCompattazione, /if \(!sessione\.compattazionePreventivaInCorso\)\s*\{\s*riprendiTimeoutPromptDopoCompattazione\(sessione\.id\);\s*\}/,
+    "compaction_end riprende il timeout solo quando non attende la risposta RPC della verifica preventiva");
+  assert.doesNotMatch(fineCompattazione, /sessione\.compattazionePreventivaInCorso\s*=\s*false/,
+    "compaction_end non deve rilasciare la prenotazione preventiva");
+  const preventiva = sorgente.slice(sorgente.indexOf("function aggiornaCompattazionePreventiva("), sorgente.indexOf("function dimensioneFile("));
+  assert.match(preventiva, /evento\.fase === "in_corso"[\s\S]*?sessione\.compattazionePreventivaInCorso = true;[\s\S]*?sospendiTimeoutPromptPerCompattazione\(sessione\.id\)/);
+  assert.match(preventiva, /evento\.promptId !== sessione\.promptCompattazionePreventiva[\s\S]*?\) return;/,
+    "un finale tardivo di un altro prompt non deve sbloccare l'invio corrente");
+  assert.match(preventiva, /sessione\.compattazionePreventivaInCorso = false;[\s\S]*?if \(!sessione\.compattazioneInCorso\) riprendiTimeoutPromptDopoCompattazione\(sessione\.id\)/);
+  assert.match(sorgente, /evento\.type === "gui_compattazione_preventiva"\)\s*\{\s*aggiornaCompattazionePreventiva\(sessione, evento\)/);
+  assert.match(sorgente, /Libero spazio prima di inviare\.\.\./);
   assert.match(sorgente, /sta liberando spazio…/);
   assert.match(sorgente, /Contesto · riassunto in corso…/);
   assert.match(sorgente, /pressioneContestoCambioModello\(sessione, modello\)/);

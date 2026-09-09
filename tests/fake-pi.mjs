@@ -80,6 +80,14 @@ function gestisci(comando) {
       models: [{ provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 }],
     });
   }
+  if (comando.type === "set_model") {
+    return risposta(comando, {
+      provider: comando.provider,
+      id: comando.modelId,
+      name: "Modello test",
+      contextWindow: 32000,
+    });
+  }
   if (comando.type === "get_available_thinking_levels") return risposta(comando, { levels: ["off", "medium"] });
   if (comando.type === "get_commands") {
     if (process.cwd().includes("comandi-muti")) return;

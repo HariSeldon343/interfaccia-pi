@@ -287,10 +287,7 @@ const INTERVALLO_RINNOVO_FILE_BOZZA_MS = 6 * 60 * 60 * 1000;
 const LIMITE_IMMAGINI_CRONOLOGIA_BASE64 = 16 * 1024 * 1024;
 const LIMITE_TESTO_RICHIESTA = 2 * 1024 * 1024;
 const LIMITE_RECORD_CRONOLOGIA = 22 * 1024 * 1024;
-const PROVIDER_GPT_56 = new Set(["openai", "openai-codex"]);
-const ID_GPT_56 = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
-const CONTESTO_GPT_56_BREVE = 272_000;
-const CONTESTO_GPT_56_ESTESO = 1_050_000;
+const { RISERVA_CAMBIO_MODELLO } = VISTA_CORE;
 const EVENTI_RIPRESA_DOPO_COMPATTAZIONE = new Set([
   "agent_start",
   "agent_settled",
@@ -2034,23 +2031,36 @@ function finestraModelloSessione(sessione) {
 }
 
 function pressioneContestoCambioModello(sessione, modello) {
-  const finestra = Number(modello?.contextWindow);
-  const usatiLive = Number(sessione?.ultimoUso?.totalTokens);
-  const usatiStatistici = Number(sessione?.statisticheSessione?.contextUsage?.tokens);
-  const usati = Number.isFinite(usatiLive) && usatiLive > 0
-    ? usatiLive
-    : usatiStatistici;
-  if (!Number.isFinite(finestra) || finestra <= 0 || !Number.isFinite(usati) || usati <= finestra) {
-    return null;
-  }
+  const usatiLive = sessione?.ultimoUso?.totalTokens == null
+    ? NaN
+    : Number(sessione.ultimoUso.totalTokens);
+  const statisticheCoerenti = VISTA_CORE.chiaveModello(sessione?.modelloStatistiche)
+    === VISTA_CORE.chiaveModello(modelloCorrenteSessione(sessione));
+  const valoreStatistiche = statisticheCoerenti
+    ? sessione?.statisticheSessione?.contextUsage?.tokens
+    : null;
+  const usatiStatistici = valoreStatistiche == null ? NaN : Number(valoreStatistiche);
+  const piano = VISTA_CORE.pianoCambioModello({
+    modelloCorrente: modelloCorrenteSessione(sessione),
+    modelloDestinazione: modello,
+    tokenContesto: Number.isFinite(usatiLive) && usatiLive > 0
+      ? usatiLive
+      : Number.isFinite(usatiStatistici)
+        ? usatiStatistici
+        : null,
+    riservaToken: RISERVA_CAMBIO_MODELLO,
+  });
+  if (!piano.compatta) return null;
   return {
-    usati,
-    finestra,
-    testo: `Il contesto corrente (${numero(usati)} token) supera quello del modello (${numero(finestra)}): al prossimo invio Pi lo riassumera prima di rispondere.`,
+    usati: piano.usati,
+    finestra: piano.finestra,
+    budget: piano.budget,
+    testo: `Il contesto corrente (${numero(piano.usati)} token) supera lo spazio operativo del modello (${numero(piano.budget)} su ${numero(piano.finestra)}): verrà riassunto con il modello attuale prima del cambio.`,
   };
 }
 
 function testoContestoSessione(sessione) {
+  if (sessione?.compattazionePreventivaInCorso) return "Contesto · verifica prima dell'invio...";
   if (sessione?.compattazioneInCorso) return "Contesto · riassunto in corso…";
   if (sessione?.contestoDaRicalcolare) return "Contesto · ricalcolo dopo il riassunto…";
   const contesto = sessione?.statisticheSessione?.contextUsage || null;
@@ -2919,6 +2929,8 @@ function creaSessione(meta) {
     inEsecuzione: Boolean(meta.inEsecuzione),
     avvioTurnoIl: meta.inEsecuzione ? Date.now() : null,
     compattazioneInCorso: Boolean(meta.compattazioneInCorso),
+    compattazionePreventivaInCorso: Boolean(meta.compattazionePreventivaInCorso),
+    promptCompattazionePreventiva: null,
     avvisoCompattazione: null,
     contestoDaRicalcolare: false,
     sincronizzazione: true,
@@ -3028,6 +3040,7 @@ function unisciSessione(meta) {
     "nomeSessione",
     "inEsecuzione",
     "compattazioneInCorso",
+    "compattazionePreventivaInCorso",
     "attiva",
     "avvioCompletato",
     "riservata",
@@ -3074,10 +3087,17 @@ function applicaSnapshot(sessioni, { sostituisci = false } = {}) {
   // tentare la sequenza, ma soltanto il server la chiude dopo aver verificato
   // le response reali di refresh, catalogo, rebind e get_state.
   for (const sessione of APP.sessioni.values()) {
+    if (sessione.compattazionePreventivaInCorso) {
+      sospendiTimeoutPromptPerCompattazione(sessione.id);
+    } else {
+      sessione.promptCompattazionePreventiva = null;
+      if (!sessione.compattazioneInCorso) riprendiTimeoutPromptDopoCompattazione(sessione.id);
+    }
     if (sessione.attiva && sessione.contestoGptDaRicaricare) {
       setTimeout(() => void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {}), 0);
     }
   }
+  if (APP.attivaId) aggiornaInterfacciaAttiva();
 }
 
 function sessioneAttiva() {
@@ -3472,7 +3492,7 @@ function finalizzaGruppoAttivita(gruppo) {
 }
 
 function alberoTemporaneamenteOccupato(sessione) {
-  return Boolean(sessione?.inEsecuzione || sessione?.compattazioneInCorso);
+  return Boolean(sessione?.inEsecuzione || sessione?.compattazioneInCorso || sessione?.compattazionePreventivaInCorso);
 }
 
 function apriAlberoOppureSpiega(sessione) {
@@ -3545,6 +3565,33 @@ function aggiornaEventoCompattazione(sessione, { completato = false, errore = ""
       ? "Spazio liberato. La sintesi resta chiusa e i rami precedenti sono conservati."
       : "Sto liberando spazio senza cancellare la cronologia…");
   inFondo(sessione);
+}
+
+function aggiornaCompattazionePreventiva(sessione, evento) {
+  if (evento.fase === "in_corso") {
+    sessione.compattazionePreventivaInCorso = true;
+    sessione.promptCompattazionePreventiva = evento.promptId || null;
+    sospendiTimeoutPromptPerCompattazione(sessione.id);
+    aggiornaEventoCompattazione(sessione, { nota: "Libero spazio prima di inviare..." });
+    if (sessione.id === APP.attivaId) avvisa("Libero spazio prima di inviare...");
+    return;
+  }
+  if (!["conclusa", "saltata", "errore", "annullata"].includes(evento.fase)) return;
+  if (
+    sessione.promptCompattazionePreventiva
+    && evento.promptId !== sessione.promptCompattazionePreventiva
+  ) return;
+  const annunciata = Boolean(sessione.promptCompattazionePreventiva);
+  sessione.compattazionePreventivaInCorso = false;
+  sessione.promptCompattazionePreventiva = null;
+  if (!sessione.compattazioneInCorso) riprendiTimeoutPromptDopoCompattazione(sessione.id);
+  const messaggio = evento.messaggio || (evento.fase === "conclusa"
+    ? "Verifica preventiva conclusa."
+    : "Verifica preventiva terminata.");
+  if (annunciata) aggiornaEventoCompattazione(sessione, { nota: messaggio });
+  if (sessione.id === APP.attivaId) {
+    avvisa(evento.fase === "conclusa" && !annunciata ? "" : messaggio);
+  }
 }
 
 function dimensioneFile(dimensione) {
@@ -4622,6 +4669,8 @@ function gestisciEvento(evento) {
     if (!contestoGptSessioneOccupata(sessione)) {
       setTimeout(() => void aggiornaCatalogoContestoGptSessione(sessione).catch(() => {}), 0);
     }
+  } else if (evento.type === "gui_compattazione_preventiva") {
+    aggiornaCompattazionePreventiva(sessione, evento);
   } else if (evento.type === "agent_start") {
     sessione.inEsecuzione = true;
     sessione.avvioTurnoIl = Date.now();
@@ -4717,10 +4766,16 @@ function gestisciEvento(evento) {
     sessione.compattazioneInCorso = true;
     sessione.contestoDaRicalcolare = false;
     sospendiTimeoutPromptPerCompattazione(sessione.id);
-    aggiornaEventoCompattazione(sessione);
+    aggiornaEventoCompattazione(sessione, sessione.compattazionePreventivaInCorso
+      ? { nota: "Libero spazio prima di inviare..." }
+      : {});
   } else if (evento.type === "compaction_end") {
     sessione.compattazioneInCorso = false;
-    riprendiTimeoutPromptDopoCompattazione(sessione.id);
+    // Pi emette compaction_end prima della risposta RPC compact: il ponte
+    // conferma separatamente quando la verifica preventiva è conclusa.
+    if (!sessione.compattazionePreventivaInCorso) {
+      riprendiTimeoutPromptDopoCompattazione(sessione.id);
+    }
     if (evento.aborted || evento.errorMessage) {
       const compattazione = VISTA_CORE.presentaErroreCompattazione(evento.errorMessage);
       aggiornaEventoCompattazione(sessione, compattazione.nonNecessaria
@@ -4730,8 +4785,12 @@ function gestisciEvento(evento) {
       sessione.statisticheSessione = null;
       sessione.ultimoUso = null;
       sessione.contestoDaRicalcolare = true;
-      aggiornaEventoCompattazione(sessione, { completato: true });
-      sincronizzaMessaggiFinali(sessione);
+      if (sessione.compattazionePreventivaInCorso) {
+        aggiornaEventoCompattazione(sessione, { nota: "Libero spazio prima di inviare..." });
+      } else {
+        aggiornaEventoCompattazione(sessione, { completato: true });
+        sincronizzaMessaggiFinali(sessione);
+      }
       // /compact manuale non apre un turno agente e quindi non emette
       // agent_settled: aggiorniamo qui le statistiche quando non c'e un prompt
       // in preflight. Nel caso automatico se ne occupa agent_settled.
@@ -4741,6 +4800,7 @@ function gestisciEvento(evento) {
           && !sessione.invioInCorso
           && !sessione.inEsecuzione
           && !sessione.compattazioneInCorso
+          && !sessione.compattazionePreventivaInCorso
         ) void aggiornaStatisticheSessione(sessione);
       }, 250);
     }
@@ -4804,7 +4864,8 @@ function abilitaAzioni(attiva) {
   const sessione = sessioneAttiva();
   document.querySelectorAll("[data-azione]").forEach((bottone) => {
     const azione = bottone.dataset.azione;
-    const nuovaConsentita = azione === "nuova" && !sessione?.compattazioneInCorso;
+    const nuovaConsentita = azione === "nuova" && !sessione?.compattazioneInCorso
+      && !sessione?.compattazionePreventivaInCorso;
     const sempre = APP.bridgeOnline
       && (nuovaConsentita || ["cartella", "conversazioni", "sistema", "aggiornamenti"].includes(azione));
     bottone.disabled = !attiva && !sempre;
@@ -4830,7 +4891,8 @@ function aggiornaInterfacciaAttiva() {
       && !sessione.importazioniLibreriaInCorso
       && !sessione.erroreAllegatiBozza,
   );
-  const utilizzabile = composerScrivibile && !sessione?.compattazioneInCorso;
+  const utilizzabile = composerScrivibile && !sessione?.compattazioneInCorso
+    && !sessione?.compattazionePreventivaInCorso;
   const mutazioniUtilizzabili = utilizzabile
     && !sessione?.sincronizzazione
     && !sessione?.renderCronologiaInCorso;
@@ -4860,6 +4922,7 @@ function aggiornaInterfacciaAttiva() {
     String(Boolean(
       sessione?.inEsecuzione
       || sessione?.compattazioneInCorso
+      || sessione?.compattazionePreventivaInCorso
       || sessione?.renderCronologiaInCorso
     )),
   );
@@ -4868,6 +4931,7 @@ function aggiornaInterfacciaAttiva() {
   DOM.btnRicaricaRisorse.disabled = !mutazioniUtilizzabili
     || Boolean(sessione?.inEsecuzione)
     || Boolean(sessione?.compattazioneInCorso)
+    || Boolean(sessione?.compattazionePreventivaInCorso)
     || ricaricaRisorseInCorso;
   DOM.btnRicaricaRisorse.setAttribute("aria-busy", String(ricaricaRisorseInCorso));
   DOM.btnRicaricaRisorse.querySelector("strong").textContent = ricaricaRisorseInCorso
@@ -4892,7 +4956,9 @@ function aggiornaInterfacciaAttiva() {
     ? "La cronologia è conservata e sarà navigabile appena Pi termina la risposta."
     : "Apri cronologia e rami";
   const fermaLaterale = document.querySelector("[data-azione='interrompi']");
-  if (fermaLaterale) fermaLaterale.disabled = !mutazioniUtilizzabili || !sessione?.inEsecuzione;
+  const interrompibile = APP.bridgeOnline && sessione?.attiva
+    && (sessione.inEsecuzione || sessione.compattazioneInCorso || sessione.compattazionePreventivaInCorso);
+  if (fermaLaterale) fermaLaterale.disabled = !interrompibile;
 
   if (!sessione) {
     DOM.etiCartella.textContent = "nessuna cartella";
@@ -4925,10 +4991,11 @@ function aggiornaInterfacciaAttiva() {
   DOM.btnModello.title = sessione.provider && sessione.modello ? `${sessione.provider} / ${sessione.modello}` : "Scegli il modello";
   DOM.etiRagionamento.textContent = traduciLivello(sessione.ragionamento);
   disegnaBarraStatoSessione(sessione);
-  DOM.invioOccupato.hidden = !(sessione.inEsecuzione || sessione.compattazioneInCorso);
-  DOM.btnStatoAttivita.disabled = !(sessione.inEsecuzione || sessione.compattazioneInCorso);
+  DOM.invioOccupato.hidden = !(sessione.inEsecuzione || sessione.compattazioneInCorso || sessione.compattazionePreventivaInCorso);
+  DOM.btnStatoAttivita.disabled = !(sessione.inEsecuzione || sessione.compattazioneInCorso || sessione.compattazionePreventivaInCorso);
   DOM.modoCoda.value = sessione.modoCoda || "followUp";
-  DOM.btnFermaTop.hidden = !sessione.inEsecuzione;
+  DOM.btnFermaTop.hidden = !interrompibile;
+  DOM.btnFermaTop.disabled = !interrompibile;
   disegnaComandi(sessione);
   disegnaCoda(sessione);
   disegnaEstensioni(sessione);
@@ -4938,6 +5005,7 @@ function aggiornaInterfacciaAttiva() {
   else if (sessione.erroreCronologia) segnaStato("errore", "cronologia non disponibile");
   else if (sessione.riservata) segnaStato("errore", "chiusura da completare");
   else if (!sessione.attiva) segnaStato("errore", "sessione chiusa");
+  else if (sessione.compattazionePreventivaInCorso) segnaStato("lavora", "Libero spazio prima di inviare...");
   else if (sessione.compattazioneInCorso) segnaStato("lavora", "sta liberando spazio…");
   else if (sessione.inEsecuzione) segnaStato("lavora", "sta lavorando…");
   else segnaStato("pronto", "pronto");
@@ -4962,6 +5030,9 @@ function durataStato(ms) {
 
 function testoStatoAttivita(sessione) {
   if (!sessione) return "Nessuna conversazione attiva.";
+  if (sessione.compattazionePreventivaInCorso) {
+    return "Libero spazio prima di inviare... La richiesta attende la verifica del ponte e puoi annullarla con Ferma.";
+  }
   if (sessione.compattazioneInCorso) {
     return "Pi sta compattando il contesto. La cronologia non viene cancellata; nessuna percentuale viene stimata.";
   }
@@ -5203,7 +5274,7 @@ async function aggiornaStatisticheSessione(sessione) {
 async function aggiornaDalPonte({ sostituisci = false } = {}) {
   const stato = await chiedi("/api/stato");
   if (stato.servizio !== "pi-gui-bridge") throw new Error("La porta locale e occupata da un servizio diverso.");
-  if (stato.versione !== 7) {
+  if (stato.versione !== 8) {
     throw new Error("E attiva una versione non compatibile del ponte. Chiudila e riapri l'interfaccia.");
   }
   if (APP.tokenApi && APP.tokenApi !== stato.tokenApi) {
@@ -6610,6 +6681,7 @@ function preparaCatalogoModelliDinamico(sessione, titolo, { onCancel = null } = 
         rpc({ type: "get_available_models" }, { sessionId: sessione.id }),
         rpc({ type: "get_state" }, { sessionId: sessione.id }),
         rpc({ type: "get_available_thinking_levels" }, { sessionId: sessione.id }),
+        rpc({ type: "get_session_stats" }, { sessionId: sessione.id }),
       ]);
       if (Array.isArray(catalogo.models)) sessione.modelli = catalogo.models;
     } catch (errore) {
@@ -6641,18 +6713,11 @@ function preparaCatalogoModelliDinamico(sessione, titolo, { onCancel = null } = 
   return risultato;
 }
 
-function modelloGpt56Configurabile(modello) {
-  return Boolean(
-    modello
-    && PROVIDER_GPT_56.has(String(modello.provider || "").toLowerCase())
-    && ID_GPT_56.has(String(modello.id || "").toLowerCase()),
-  );
-}
-
 function contestoGptSessioneOccupata(sessione) {
   return Boolean(
     sessione?.inEsecuzione
     || sessione?.compattazioneInCorso
+    || sessione?.compattazionePreventivaInCorso
     || sessione?.renderCronologiaInCorso
     || sessione?.handoffInCorso
     || sessione?.chiusuraInCorso,
@@ -6736,233 +6801,168 @@ async function aggiornaCataloghiContestoGptAperti() {
   }, { aggiornate: 0, pendenti: 0, errori: 0 });
 }
 
-function creaGestioneContestoEstesoGpt(sessione, preparazione, { nascosto = false } = {}) {
+function creaInformazioneContestoModelli(sessione, { nascosto = false } = {}) {
   const pannello = crea("section", "contesto-esteso-gpt");
-  pannello.setAttribute("aria-label", "Contesto GPT-5.6");
-  pannello.hidden = true;
-  let stato = null;
-  let caricamento = false;
-  let modificaInCorso = false;
-  let confermaRichiesta = null;
-  let errore = null;
+  pannello.setAttribute("aria-label", "Finestra di contesto");
+  pannello.hidden = nascosto;
+  const modaleRichiesta = APP.modale;
+  let statoApi = null;
+  let letturaInCorso = false;
+  let salvataggioInCorso = false;
+  let erroreApi = "";
+  let esitoApi = "";
 
-  const sessioneOccupata = () => Boolean(
-    sessione.inEsecuzione
-    || sessione.compattazioneInCorso
-    || sessione.renderCronologiaInCorso,
-  );
-  const configurazioneEsterna = () => Boolean(
-    stato
-    && (
-      ["mixed", "custom"].includes(stato.mode)
-      || stato.conflict
-      || stato.mutable === false
-    ),
-  );
-  const normalizzaStato = (dati) => {
-    const enabled = dati?.enabled === true;
-    const mode = ["short", "extended", "mixed", "custom"].includes(dati?.mode)
-      ? dati.mode
-      : (enabled ? "extended" : "short");
-    return {
-      enabled,
-      mode,
-      managed: dati?.managed === true,
-      conflict: dati?.conflict === true,
-      mutable: dati?.mutable !== false,
-      contextWindow: Number.isFinite(Number(dati?.contextWindow))
-        ? Number(dati.contextWindow)
-        : null,
-    };
+  const leggiStatoApi = async () => {
+    if (letturaInCorso) return;
+    letturaInCorso = true;
+    erroreApi = "";
+    disegna();
+    try {
+      statoApi = await chiedi("/api/contesto-esteso-gpt", { corpo: {} });
+    } catch (errore) {
+      erroreApi = "Non riesco a verificare il contesto API: " + testoErrore(errore);
+    } finally {
+      letturaInCorso = false;
+      if (APP.modale === modaleRichiesta) disegna();
+    }
   };
 
-  const disponibile = () => !nascosto && (
-    modelloGpt56Configurabile({ provider: sessione.provider, id: sessione.modello })
-    || sessione.modelli.some(modelloGpt56Configurabile)
-  );
-
   const disegna = () => {
-    pannello.hidden = !disponibile();
+    pannello.hidden = nascosto;
     if (pannello.hidden) return;
     pannello.replaceChildren();
     const intestazione = crea("div", "contesto-esteso-gpt-intestazione");
-    intestazione.appendChild(crea("strong", null, "Contesto GPT-5.6"));
-    if (stato) {
-      const etichettaStato = stato.mode === "extended"
-        ? "1,05M configurato"
-        : stato.mode === "short"
-          ? "272k configurato"
-          : "configurazione personalizzata";
+    intestazione.appendChild(crea("strong", null, "Finestra di contesto"));
+    const finestra = finestraModelloSessione(sessione);
+    if (Number.isFinite(finestra) && finestra > 0) {
       intestazione.appendChild(crea(
         "span",
-        "etichetta " + (stato.mode === "extended" ? "locale" : "cloud"),
-        etichettaStato,
+        "etichetta locale",
+        `${numero(finestra)} token`,
       ));
     }
     pannello.appendChild(intestazione);
-
-    if (caricamento && !stato) {
-      const attesa = crea("div", "stato-caricamento-modelli");
-      attesa.append(crea("span", "spinner", ""), crea("p", "nota", "Verifico la configurazione del contesto…"));
-      pannello.appendChild(attesa);
-      return;
-    }
-    if (!stato) {
-      pannello.appendChild(crea("p", "nota", errore || "Configurazione del contesto non disponibile."));
-      const riprova = crea("button", "bottone", "Riprova");
-      riprova.type = "button";
-      riprova.onclick = () => void carica();
-      pannello.appendChild(riprova);
-      return;
-    }
-
-    const finestraEffettiva = modelloGpt56Configurabile({ provider: sessione.provider, id: sessione.modello })
-      ? finestraModelloSessione(sessione)
-      : null;
-    const dettaglioSessione = sessione.contestoGptDaRicaricare
-      ? " L'aggiornamento effettivo di questa scheda e ancora in attesa; la GUI riprovera automaticamente prima della prossima richiesta."
-      : finestraEffettiva
-        ? ` La finestra effettiva di questa scheda e ${numero(finestraEffettiva)} token.`
-        : "";
-    const descrizioneStato = stato.mode === "extended"
-      ? `La capacita estesa ufficiale e configurata a ${numero(CONTESTO_GPT_56_ESTESO)} token.${dettaglioSessione}`
-      : stato.mode === "short"
-        ? `PI e configurato intenzionalmente sulla fascia breve da ${numero(CONTESTO_GPT_56_BREVE)} token; per questo compatta prima del limite ufficiale del modello.${dettaglioSessione}`
-        : "models.json contiene finestre diverse o personalizzate. La GUI le mostra senza sovrascriverle: gestiscile manualmente oppure uniformale prima di usare questo interruttore.";
-    pannello.appendChild(crea("p", "nota", descrizioneStato));
     pannello.appendChild(crea(
       "p",
-      "nota nota-costo-contesto",
-      "Nelle chiamate API, oltre 272.000 token l'intera richiesta ha tariffazione long-context: 2× input e 1,5× output. Con OAuth questa GUI non presenta tale stima come una fattura, perche non conosce il conteggio economico del tuo piano.",
+      "nota",
+      "Interfaccia Pi usa la finestra restituita dal catalogo effettivo di Pi per ogni provider e modello. Il limite segue il catalogo effettivo del modello.",
     ));
-    if (errore) pannello.appendChild(crea("p", "avviso-sicurezza", errore));
+    pannello.appendChild(crea(
+      "p",
+      "nota",
+      "Se passi a una finestra più piccola e la cronologia supera lo spazio operativo, Pi la riassume con il modello attuale prima di effettuare il cambio. Se la verifica non riesce, conserva il modello precedente.",
+    ));
 
-    if (configurazioneEsterna()) {
-      pannello.appendChild(crea(
-        "small",
-        "nota",
-        "Configurazione esterna protetta: nessun valore personalizzato verra modificato dalla GUI.",
-      ));
-      return;
-    }
-
-    const obiettivo = !stato.enabled;
-    if (confermaRichiesta === obiettivo) {
+    const modello = modelloCorrenteSessione(sessione);
+    if (modello?.provider === "openai-codex") {
       pannello.appendChild(crea(
         "p",
-        "avviso-sicurezza",
-        obiettivo
-          ? "Conferma l'attivazione per GPT-5.6 Sol, Terra e Luna, sia API sia OAuth. Il cambio vale per le nuove richieste e non interrompe questa conversazione."
-          : "Conferma il ripristino della configurazione precedente. Se torna al limite breve e la cronologia lo supera, PI dovra riassumerla prima di rispondere.",
+        "nota",
+        "Con account ChatGPT non viene emessa una fattura per token: il consumo pesa sui limiti del piano. Per GPT-5.6 la finestra estesa si applica automaticamente, salvo preferenze personali già impostate.",
       ));
-      const azioni = crea("div", "azioni-contesto-esteso");
-      const annulla = crea("button", "bottone", "Annulla");
-      annulla.type = "button";
-      annulla.onclick = () => {
-        confermaRichiesta = null;
-        disegna();
-      };
-      const confermaBtn = crea(
-        "button",
-        "bottone primario",
-        obiettivo ? "Conferma 1,05M" : "Conferma ripristino",
-      );
-      confermaBtn.type = "button";
-      confermaBtn.onclick = () => void applica(obiettivo);
-      azioni.append(annulla, confermaBtn);
-      pannello.appendChild(azioni);
-      return;
     }
+    if (
+      modello?.provider !== "openai"
+      || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(modello.id)
+    ) return;
 
-    const cambia = crea(
-      "button",
-      "bottone",
-      stato.enabled ? "Ripristina configurazione precedente" : "Usa 1.050.000 token",
+    const riga = crea("label", "riga-impostazione impostazione-spiegata");
+    const testo = crea("span", "testo-impostazione");
+    const titolo = "Usa il contesto esteso di GPT-5.6 in API (1.050.000 token)";
+    testo.append(
+      crea("strong", null, titolo),
+      crea("small", null, "La scelta vale per Sol, Terra e Luna con chiave API."),
     );
-    cambia.type = "button";
-    cambia.disabled = modificaInCorso || sessioneOccupata();
-    cambia.setAttribute("aria-busy", String(modificaInCorso));
-    cambia.title = sessioneOccupata()
-      ? "Disponibile quando l'elaborazione corrente e conclusa"
-      : "Richiede una conferma esplicita";
-    cambia.onclick = () => {
-      confermaRichiesta = obiettivo;
+    const interruttore = crea("input");
+    interruttore.type = "checkbox";
+    interruttore.setAttribute("role", "switch");
+    interruttore.setAttribute("aria-label", titolo);
+    interruttore.checked = statoApi?.enabled === true;
+    interruttore.disabled = !statoApi?.mutable
+      || letturaInCorso
+      || salvataggioInCorso
+      || contestoGptSessioneOccupata(sessione)
+      || sessione.invioInCorso
+      || sessione.contestoGptDaRicaricare;
+    riga.append(testo, interruttore);
+    pannello.appendChild(riga);
+
+    const costo = modello.cost;
+    const tariffe = Array.isArray(costo?.tiers)
+      ? costo.tiers.filter((tariffa) =>
+        [tariffa?.inputTokensAbove, tariffa?.input, tariffa?.output, costo.input, costo.output]
+          .every((valore) => typeof valore === "number" && Number.isFinite(valore) && valore >= 0))
+      : [];
+    const prezzo = (valore) => valore.toLocaleString("it-IT", { maximumFractionDigits: 6 });
+    pannello.appendChild(crea(
+      "p",
+      "avviso-sicurezza",
+      tariffe.length
+        ? tariffe.map((tariffa) =>
+          `Oltre ${numero(tariffa.inputTokensAbove)} token in ingresso l'intera richiesta usa la tariffa lunga: input ${prezzo(costo.input)} -> ${prezzo(tariffa.input)}, output ${prezzo(costo.output)} -> ${prezzo(tariffa.output)} USD per milione di token.`).join(" ")
+        : "Il contesto esteso in API può aumentare il costo dell'intera richiesta. Le tariffe lunghe non sono disponibili nel catalogo corrente.",
+    ));
+    const stato = crea("p", erroreApi || statoApi?.conflict ? "avviso-sicurezza" : "nota",
+      erroreApi || (salvataggioInCorso
+        ? "Salvo la scelta API e verifico il catalogo..."
+        : letturaInCorso || !statoApi
+          ? "Verifico la configurazione API..."
+          : statoApi.conflict
+            ? "È presente un override personale o modificato esternamente: la GUI lo conserva."
+            : esitoApi || "La scelta API è salvata anche per i prossimi avvii."));
+    stato.setAttribute("role", "status");
+    stato.setAttribute("aria-live", "polite");
+    pannello.appendChild(stato);
+    if ((erroreApi || letturaInCorso) && !statoApi) {
+      const riprova = bottoneAzione("Riprova la verifica API", () => leggiStatoApi());
+      riprova.disabled = letturaInCorso;
+      pannello.appendChild(riprova);
+    }
+    interruttore.onchange = async () => {
+      if (salvataggioInCorso || interruttore.disabled) return;
+      const enabled = interruttore.checked;
+      salvataggioInCorso = true;
+      erroreApi = "";
+      esitoApi = "";
       disegna();
+      let sceltaSalvata = false;
+      try {
+        statoApi = await chiedi("/api/contesto-esteso-gpt", {
+          corpo: { enabled, sessionId: sessione.id },
+        });
+        sceltaSalvata = true;
+        if (statoApi.refreshRequired || sessione.contestoGptDaRicaricare) {
+          const esiti = await aggiornaCataloghiContestoGptAperti();
+          if (esiti.errori || sessione.contestoGptDaRicaricare) {
+            throw new Error("Il catalogo effettivo è ancora da verificare; la GUI riproverà automaticamente prima della prossima richiesta");
+          }
+          esitoApi = esiti.pendenti
+            ? `Scelta API salvata. ${esiti.pendenti} schede in lavoro adotteranno la nuova finestra appena terminano.`
+            : "Scelta API salvata e cataloghi verificati.";
+        } else {
+          esitoApi = "Scelta API salvata e catalogo verificato.";
+        }
+      } catch (errore) {
+        erroreApi = sceltaSalvata
+          ? "La scelta API è salvata, ma Pi deve ancora confermare il catalogo: " + testoErrore(errore) + ". La bozza resta salvata."
+          : "La scelta API non è stata salvata: " + testoErrore(errore);
+      } finally {
+        salvataggioInCorso = false;
+        if (APP.modale === modaleRichiesta) {
+          disegna();
+          risultato.onCatalogoAggiornato?.();
+        }
+      }
     };
-    pannello.appendChild(cambia);
-    if (sessioneOccupata()) {
-      pannello.appendChild(crea("small", "nota", "L'opzione si sblocca alla fine dell'elaborazione corrente."));
-    }
+    if (!statoApi && !letturaInCorso && !erroreApi) void leggiStatoApi();
   };
 
-  const carica = async () => {
-    if (!disponibile() || caricamento) return;
-    caricamento = true;
-    errore = null;
-    disegna();
-    try {
-      const dati = await chiedi("/api/contesto-esteso-gpt", { corpo: {} });
-      stato = normalizzaStato(dati);
-    } catch (causa) {
-      errore = testoErrore(causa);
-    } finally {
-      caricamento = false;
-      disegna();
-    }
-  };
-
-  const applica = async (enabled) => {
-    if (modificaInCorso || sessioneOccupata() || configurazioneEsterna()) return;
-    modificaInCorso = true;
-    confermaRichiesta = null;
-    errore = null;
-    let salvata = false;
-    disegna();
-    try {
-      await preparazione.aggiornamento.catch(() => {});
-      if (APP.sessioni.get(sessione.id) !== sessione || sessioneOccupata()) {
-        toast("La conversazione ha iniziato un'elaborazione: il contesto non e stato cambiato.", "avviso");
-        return;
-      }
-      const dati = await chiedi("/api/contesto-esteso-gpt", {
-        corpo: { enabled, sessionId: sessione.id },
-      });
-      salvata = true;
-      stato = normalizzaStato(dati);
-      if (dati.refreshRequired) {
-        const esiti = await aggiornaCataloghiContestoGptAperti();
-        if (esiti.errori) {
-          const schede = esiti.errori === 1 ? "scheda" : "schede";
-          errore = `Aggiornamento effettivo non completato per ${esiti.errori} ${schede}; la GUI riprovera automaticamente prima della prossima richiesta.`;
-        }
-        if (esiti.pendenti) {
-          toast(esiti.pendenti === 1
-            ? "La scheda in lavoro adottera la nuova finestra appena termina."
-            : `${esiti.pendenti} schede in lavoro adotteranno la nuova finestra appena terminano.`, "avviso");
-        }
-      }
-      preparazione.onAggiorna?.();
-      toast(enabled
-        ? "Contesto GPT-5.6 esteso a 1.050.000 token."
-        : "Configurazione GPT-5.6 precedente ripristinata.");
-    } catch (causa) {
-      errore = salvata
-        ? `Impostazione salvata, ma il catalogo non si e aggiornato: ${testoErrore(causa)}. Usa Ricarica estensioni prima del prossimo invio.`
-        : testoErrore(causa);
-      toast(errore, "errore");
-    } finally {
-      modificaInCorso = false;
-      disegna();
-    }
-  };
-
-  return {
+  const risultato = {
     elemento: pannello,
-    aggiorna() {
-      disegna();
-      if (disponibile() && !stato && !caricamento) void carica();
-    },
+    aggiorna: disegna,
+    onCatalogoAggiornato: null,
   };
+  return risultato;
 }
 
 async function apriSceltaModello(
@@ -6977,10 +6977,10 @@ async function apriSceltaModello(
   });
   if (!preparazione) return;
   const { corpo } = preparazione;
-  const gestioneContestoGpt = creaGestioneContestoEstesoGpt(sessione, preparazione, {
+  const informazioneContesto = creaInformazioneContestoModelli(sessione, {
     nascosto: Boolean(operazione),
   });
-  corpo.appendChild(gestioneContestoGpt.elemento);
+  corpo.appendChild(informazioneContesto.elemento);
   const involucroRicerca = crea("div", "ricerca-modelli");
   const ricerca = crea("input", "campo");
   ricerca.placeholder = "Cerca per nome o fornitore";
@@ -7055,14 +7055,21 @@ async function apriSceltaModello(
       bottone.appendChild(crea("span", "etichetta " + classeStato, testoStato));
       bottone.onclick = async () => {
         bottone.disabled = true;
-        avvisa("Cambio modello…");
+        const pressioneAggiornata = pressioneContestoCambioModello(sessione, modello);
+        avvisa(pressioneAggiornata
+          ? "Libero spazio e verifico il nuovo modello…"
+          : "Cambio modello…");
         try {
           if (operazione) {
             await operazione.rpc(
               { type: "set_model", provider: modello.provider, modelId: modello.id },
+              { timeout: 6 * 60 * 1000 },
             );
           } else {
-            await rpc({ type: "set_model", provider: modello.provider, modelId: modello.id }, { sessionId: sessione.id });
+            await rpc(
+              { type: "set_model", provider: modello.provider, modelId: modello.id },
+              { sessionId: sessione.id, timeout: 6 * 60 * 1000 },
+            );
           }
           ricordaModello(modello);
           await Promise.allSettled([
@@ -7072,10 +7079,10 @@ async function apriSceltaModello(
           operazione?.completa();
           chiudiModale({ annulla: false });
           toast(
-            pressioneContesto
-              ? `Modello cambiato: ${nomeModello(modello)}. Al prossimo invio Pi liberera spazio prima di rispondere; puo richiedere qualche minuto.`
+            pressioneAggiornata
+              ? `Contesto riassunto con il modello precedente; ora è attivo ${nomeModello(modello)}.`
               : "Modello cambiato: " + nomeModello(modello),
-            pressioneContesto ? "avviso" : undefined,
+            pressioneAggiornata ? "avviso" : undefined,
           );
         } catch (errore) {
           operazione?.fallisce(errore);
@@ -7092,10 +7099,11 @@ async function apriSceltaModello(
   ricerca.oninput = disegna;
   preparazione.onAggiorna = () => {
     disegna();
-    gestioneContestoGpt.aggiorna();
+    informazioneContesto.aggiorna();
   };
+  informazioneContesto.onCatalogoAggiornato = () => preparazione.onAggiorna?.();
   disegna();
-  gestioneContestoGpt.aggiorna();
+  informazioneContesto.aggiorna();
   requestAnimationFrame(() => ricerca.focus());
 }
 
@@ -7294,6 +7302,7 @@ async function ricaricaRisorsePi() {
     sessione.inEsecuzione
     || sessione.invioInCorso
     || sessione.compattazioneInCorso
+    || sessione.compattazionePreventivaInCorso
     || sessione.renderCronologiaInCorso
     || sessione.sincronizzazione
     || sessione.handoffInCorso
@@ -9232,6 +9241,10 @@ async function gestisciComandoComposer(sessione, fotografia, testo) {
 
 async function invia() {
   const sessione = sessioneAttiva();
+  if (sessione?.compattazionePreventivaInCorso) {
+    toast("Una richiesta è già in verifica prima dell'invio. La bozza resta salvata: attendi oppure premi Ferma.", "avviso");
+    return;
+  }
   if (sessione?.compattazioneInCorso) {
     toast("Pi sta liberando spazio. La bozza e salvata: potrai inviarla appena il riassunto e concluso.", "avviso");
     return;
@@ -9257,6 +9270,10 @@ async function invia() {
     await (sessione.codaImportazioneImmagini || Promise.resolve()).catch(() => {});
     await (sessione.codaImportazioneFile || Promise.resolve()).catch(() => {});
     await (sessione.codaAllegatiBozza || Promise.resolve()).catch(() => {});
+    if (sessione.compattazionePreventivaInCorso) {
+      toast("La verifica preventiva è ancora in corso. La bozza resta salvata e non è stata inviata.", "avviso");
+      return;
+    }
     if (sessione.compattazioneInCorso) {
       toast("Pi ha iniziato a liberare spazio. La bozza resta salvata e non e stata inviata.", "avviso");
       return;
@@ -9432,7 +9449,7 @@ async function invia() {
       sessione.modoCoda = "followUp";
       if (sessione.id === APP.attivaId) DOM.modoCoda.value = "followUp";
     }
-    if (sessione.compattazioneInCorso) {
+    if (sessione.compattazioneInCorso || sessione.compattazionePreventivaInCorso) {
       const bloccoCompattazione = new Error(
         "Pi ha iniziato a liberare spazio. La bozza resta salvata e non e stata inviata.",
       );
@@ -9548,16 +9565,22 @@ function mostraStatistiche(dati, sessione) {
   corpo.appendChild(griglia);
   if (costo?.spiegazione) corpo.appendChild(crea("p", "nota", costo.spiegazione));
   if (dati.contextUsage) {
-    const percentuale = Number.isFinite(dati.contextUsage.percent) ? dati.contextUsage.percent : 0;
+    const percentuale = Number.isFinite(dati.contextUsage.percent) ? dati.contextUsage.percent : null;
     const contesto = crea("div", "stat");
     contesto.style.marginTop = "10px";
-    contesto.appendChild(crea("strong", null, `${percentuale.toFixed(1)}% del contesto usato`));
-    contesto.appendChild(crea("small", null, `${numero(dati.contextUsage.tokens)} di ${numero(dati.contextUsage.contextWindow)} token`));
-    const barra = crea("div", "barra-contesto");
-    const piena = crea("span");
-    piena.style.width = Math.max(0, Math.min(100, percentuale)) + "%";
-    barra.appendChild(piena);
-    contesto.appendChild(barra);
+    contesto.appendChild(crea("strong", null, percentuale == null
+      ? "Percentuale di contesto non disponibile"
+      : `${percentuale.toFixed(1)}% del contesto usato`));
+    const tokenUsati = Number.isFinite(dati.contextUsage.tokens) ? numero(dati.contextUsage.tokens) : "non disponibile";
+    const finestra = Number.isFinite(dati.contextUsage.contextWindow) ? numero(dati.contextUsage.contextWindow) : "non disponibile";
+    contesto.appendChild(crea("small", null, `${tokenUsati} di ${finestra} token`));
+    if (percentuale != null) {
+      const barra = crea("div", "barra-contesto");
+      const piena = crea("span");
+      piena.style.width = Math.max(0, Math.min(100, percentuale)) + "%";
+      barra.appendChild(piena);
+      contesto.appendChild(barra);
+    }
     corpo.appendChild(contesto);
   }
   if (dati.sessionFile) corpo.appendChild(crea("div", "percorso-attuale", dati.sessionFile));
@@ -9674,6 +9697,94 @@ function bottoneAzione(testo, azione, classe = "bottone") {
   return bottone;
 }
 
+async function apriImpostazioniGui() {
+  const corpo = apriModale("Impostazioni della GUI");
+  const modaleRichiesta = APP.modale;
+  corpo.appendChild(crea("p", "nota",
+    "Questa preferenza vale per tutte le conversazioni della GUI ed è conservata ai prossimi avvii. La compattazione automatica di Pi mantiene la tua impostazione separata."));
+  const riga = crea("label", "riga-impostazione impostazione-spiegata");
+  const testo = crea("span", "testo-impostazione");
+  const etichetta = crea("strong", null, "Compatta prima di inviare oltre il 90% della finestra");
+  testo.append(etichetta, crea("small", null,
+    "Scegli un intero da 50 a 95. Al raggiungimento della soglia il ponte libera spazio prima di una nuova richiesta; le correzioni durante il lavoro restano disponibili."));
+  const soglia = crea("input", "campo");
+  soglia.type = "number";
+  soglia.min = "50";
+  soglia.max = "95";
+  soglia.step = "1";
+  soglia.value = "90";
+  soglia.style.width = "100px";
+  soglia.disabled = true;
+  soglia.setAttribute("aria-label", "Soglia della compattazione preventiva in percentuale");
+  soglia.oninput = () => {
+    const valore = Number(soglia.value);
+    const sogliaEtichetta = Number.isInteger(valore) && valore >= 50 && valore <= 95
+      ? valore
+      : valoreSalvato ?? 90;
+    etichetta.textContent = `Compatta prima di inviare oltre il ${sogliaEtichetta}% della finestra`;
+  };
+  riga.append(testo, soglia);
+  corpo.appendChild(riga);
+  corpo.appendChild(crea("p", "nota",
+    "Con finestre fino a circa 164.000 token Pi riassume da solo prima di questa soglia (riserva predefinita di Pi: 16.384 token). La soglia conta sulle finestre più grandi."));
+  const stato = crea("p", "nota", "Leggo le impostazioni della GUI...");
+  stato.setAttribute("role", "status");
+  stato.setAttribute("aria-live", "polite");
+  corpo.appendChild(stato);
+  let valoreSalvato = null;
+  let salvataggioInCorso = false;
+  const salva = bottoneAzione("Salva impostazioni GUI", async () => {
+    if (salvataggioInCorso || valoreSalvato == null) return;
+    const sogliaCompattazionePercento = Number(soglia.value);
+    if (!Number.isInteger(sogliaCompattazionePercento) || sogliaCompattazionePercento < 50 || sogliaCompattazionePercento > 95) {
+      stato.textContent = "La soglia deve essere un numero intero da 50 a 95.";
+      soglia.focus();
+      return;
+    }
+    salvataggioInCorso = true;
+    salva.disabled = true;
+    soglia.disabled = true;
+    stato.textContent = "Salvo la soglia della GUI...";
+    try {
+      const impostazioni = await chiedi("/api/impostazioni", { corpo: { sogliaCompattazionePercento } });
+      valoreSalvato = impostazioni.sogliaCompattazionePercento;
+      if (APP.modale !== modaleRichiesta) return;
+      soglia.value = String(valoreSalvato);
+      soglia.oninput();
+      stato.textContent = `Soglia salvata: ${valoreSalvato}%.`;
+    } catch (errore) {
+      if (APP.modale !== modaleRichiesta) return;
+      stato.textContent = "Non riesco a confermare il salvataggio: " + testoErrore(errore)
+        + `. Ultima soglia confermata: ${valoreSalvato}%.`;
+    } finally {
+      salvataggioInCorso = false;
+      if (APP.modale === modaleRichiesta) {
+        salva.disabled = false;
+        soglia.disabled = false;
+      }
+    }
+  }, "bottone primario");
+  salva.disabled = true;
+  DOM.modalePiede.hidden = false;
+  DOM.modalePiede.append(bottoneAzione("Chiudi", () => chiudiModale()), salva);
+  try {
+    const impostazioni = await chiedi("/api/impostazioni");
+    if (APP.modale !== modaleRichiesta) return;
+    valoreSalvato = impostazioni.sogliaCompattazionePercento;
+    soglia.value = String(valoreSalvato);
+    soglia.oninput();
+    soglia.disabled = false;
+    salva.disabled = false;
+    stato.textContent = `Soglia attuale: ${valoreSalvato}%. Premi Salva per applicare le modifiche.`;
+  } catch (errore) {
+    if (APP.modale !== modaleRichiesta) return;
+    stato.textContent = "Non riesco a leggere le impostazioni della GUI: " + testoErrore(errore);
+    corpo.appendChild(bottoneAzione("Riprova", () => void apriImpostazioniGui()));
+  }
+}
+
+const AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO = "Attenzione: con lo spazio automatico disattivato resta solo la soglia preventiva della GUI, applicata prima di un nuovo invio. Steer, follow-up e turni lunghi non sono protetti e il contesto può esaurirsi.";
+
 async function apriImpostazioniPi(sessione, operazione = null) {
   const corpo = apriModale("Impostazioni di Pi", {
     larga: true,
@@ -9704,6 +9815,7 @@ async function apriImpostazioniPi(sessione, operazione = null) {
     "nota",
     "Queste opzioni cambiano il comportamento dell'agente, non soltanto l'aspetto della GUI. Le preferenze globali valgono anche nelle prossime sessioni di Pi.",
   ));
+  corpo.appendChild(bottoneAzione("Impostazioni della GUI", () => void apriImpostazioniGui()));
   const controlli = new Map();
   const aggiungiScelta = (nome, titolo, descrizione, opzioni) => {
     const riga = crea("label", "riga-impostazione impostazione-spiegata");
@@ -9722,6 +9834,14 @@ async function apriImpostazioniPi(sessione, operazione = null) {
     controlli.set(nome, { elemento: selezione, tipo: typeof correnti[nome] });
   };
   aggiungiScelta("autoCompaction", "Libera spazio automaticamente", "Riassume il contesto quando si avvicina al limite del modello.", [[true, "Attivo"], [false, "Disattivo"]]);
+  const avvisoSpazio = crea("p", "avviso-sicurezza", AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO);
+  avvisoSpazio.setAttribute("role", "status");
+  avvisoSpazio.setAttribute("aria-live", "polite");
+  const spazioAutomatico = controlli.get("autoCompaction").elemento;
+  const aggiornaAvvisoSpazio = () => { avvisoSpazio.hidden = spazioAutomatico.value !== "false"; };
+  spazioAutomatico.onchange = aggiornaAvvisoSpazio;
+  aggiornaAvvisoSpazio();
+  corpo.appendChild(avvisoSpazio);
   aggiungiScelta("autoRetry", "Riprova gli errori temporanei", "Consente a Pi di ritentare automaticamente richieste fallite per cause transitorie.", [[true, "Attivo"], [false, "Disattivo"]]);
   aggiungiScelta("steeringMode", "Correzioni durante il lavoro", "Una per volta attende una nuova risposta; tutte insieme consegna l'intera coda.", [["one-at-a-time", "Una per volta"], ["all", "Tutte insieme"]]);
   aggiungiScelta("followUpMode", "Richieste da fare dopo", "Decide come consegnare i messaggi accodati quando l'agente termina.", [["one-at-a-time", "Una per volta"], ["all", "Tutte insieme"]]);
@@ -9788,7 +9908,7 @@ async function apriImpostazioniPi(sessione, operazione = null) {
 }
 
 function apriControlliAvanzati(sessioneRichiesta = null) {
-  const sessione = sessioneRichiesta || sessioneAttiva();
+  const sessione = sessioneRichiesta?.id ? sessioneRichiesta : sessioneAttiva();
   if (!sessione) return;
   const corpo = apriModale("Controlli avanzati", { larga: true });
   corpo.appendChild(crea("p", "nota", "Le funzioni quotidiane restano nella barra laterale. Qui trovi sessioni ramificate, code, shell e il protocollo RPC completo."));
@@ -9811,6 +9931,7 @@ function apriControlliAvanzati(sessioneRichiesta = null) {
   corpo.appendChild(gestione);
 
   const impostazioni = sezioneAvanzata("Comportamento automatico e coda");
+  impostazioni.appendChild(bottoneAzione("Impostazioni della GUI", () => void apriImpostazioniGui()));
   const rigaSteer = crea("label", "riga-impostazione");
   rigaSteer.appendChild(crea("span", null, "Correzioni durante il lavoro"));
   const selezioneSteer = crea("select", "selettore");
@@ -9836,7 +9957,11 @@ function apriControlliAvanzati(sessioneRichiesta = null) {
   const barraAuto = crea("div", "barra-modale");
   barraAuto.append(
     bottoneAzione("Spazio automatico: attiva", () => comandoBreve(sessione, { type: "set_auto_compaction", enabled: true })),
-    bottoneAzione("Spazio automatico: disattiva", () => comandoBreve(sessione, { type: "set_auto_compaction", enabled: false })),
+    bottoneAzione("Spazio automatico: disattiva", async () => {
+      if (await comandoBreve(sessione, { type: "set_auto_compaction", enabled: false })) {
+        avvisa(AVVISO_SPAZIO_AUTOMATICO_DISATTIVATO);
+      }
+    }),
     bottoneAzione("Tentativi automatici: attiva", () => comandoBreve(sessione, { type: "set_auto_retry", enabled: true })),
     bottoneAzione("Tentativi automatici: disattiva", () => comandoBreve(sessione, { type: "set_auto_retry", enabled: false })),
     bottoneAzione("Annulla nuovi tentativi", () => comandoBreve(sessione, { type: "abort_retry" })),
@@ -9884,8 +10009,10 @@ async function comandoBreve(sessione, comando) {
   try {
     await rpc(comando, { sessionId: sessione.id, timeout: 30000 });
     toast("Impostazione applicata.");
+    return true;
   } catch (errore) {
     toast(testoErrore(errore), "errore");
+    return false;
   }
 }
 
@@ -10938,7 +11065,7 @@ DOM.btnRicaricaSistemaGuidato.onclick = () => {
 DOM.btnChiudiSistemaGuidato.onclick = chiudiPannelloSistemaGuidato;
 DOM.btnModello.onclick = () => apriSceltaModello();
 DOM.btnRagionamento.onclick = apriSceltaRagionamento;
-DOM.btnControlli.onclick = apriControlliAvanzati;
+DOM.btnControlli.onclick = () => apriControlliAvanzati();
 DOM.btnFermaTop.onclick = interrompi;
 DOM.btnCercaComandi.onclick = () => apriRicercaComandi();
 DOM.btnAllega.onclick = () => {

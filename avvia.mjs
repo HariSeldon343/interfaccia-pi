@@ -89,7 +89,7 @@ async function ponteRisponde(timeoutMs = 1500) {
     });
     if (!r.ok) return false;
     const dati = await leggiJsonLimitato(r);
-    return dati.servizio === "pi-gui-bridge" && dati.versione === 7;
+    return dati.servizio === "pi-gui-bridge" && dati.versione === 8;
   } catch {
     return false;
   }

@@ -5,6 +5,10 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function creaVistaCore() {
   "use strict";
 
+  // Riserva fissa del cambio modello sicuro, distinta dalla
+  // compaction.reserveTokens configurabile nelle impostazioni di Pi.
+  const RISERVA_CAMBIO_MODELLO = 16_384;
+
   const RIGA_METODO = /^\s*(?:`|\*\*|__)?(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:(?:`|\*\*|__)\s*)?(?:\s*[—–-]\s*(.*?))?(?:(?:`|\*\*|__))?\s*$/i;
   const SUFFISSO_METODO_TECNICO = /^stack e goal confermati[.!]?$/i;
 
@@ -146,10 +150,41 @@
     return finestraContestoValida(statistiche?.contextUsage?.contextWindow);
   }
 
+  function pianoCambioModello({
+    modelloCorrente = null,
+    modelloDestinazione = null,
+    tokenContesto = null,
+    riservaToken = RISERVA_CAMBIO_MODELLO,
+  } = {}) {
+    const stessaIdentita = chiaveModello(modelloCorrente)
+      && chiaveModello(modelloCorrente) === chiaveModello(modelloDestinazione);
+    const finestra = finestraContestoValida(modelloDestinazione?.contextWindow);
+    const usati = tokenContesto == null ? NaN : Number(tokenContesto);
+    const riserva = riservaToken == null ? NaN : Number(riservaToken);
+    const riservaValida = Number.isFinite(riserva) && riserva >= 0 ? riserva : RISERVA_CAMBIO_MODELLO;
+    const budget = finestra == null ? null : Math.max(0, finestra - riservaValida);
+    const usoConosciuto = Number.isFinite(usati) && usati >= 0;
+    return {
+      stessaIdentita: Boolean(stessaIdentita),
+      finestra,
+      budget,
+      usati: usoConosciuto ? usati : null,
+      usoConosciuto,
+      compatta: Boolean(
+        !stessaIdentita
+        && finestra != null
+        && usoConosciuto
+        && usati > budget
+      ),
+    };
+  }
+
   return Object.freeze({
+    RISERVA_CAMBIO_MODELLO,
     chiaveModello,
     etichettaRiepilogo,
     finestraContestoModelloCorrente,
+    pianoCambioModello,
     presentaErroreCompattazione,
     presentaCosto,
     pulisciRispostaAgente,

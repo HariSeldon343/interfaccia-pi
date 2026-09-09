@@ -11,6 +11,16 @@ indicizzare tutti i documenti, selezionarne alcuni o usare soltanto la chat.
 PDF, DOCX, XLSX e PPTX vengono affiancati dal testo estratto; Pi riceve i
 percorsi leggibili. Questa tappa mantiene la versione **2.6.2**.
 
+Le modifiche non rilasciate completano anche il cambio modello sicuro: quando
+serve, il modello corrente riassume la conversazione prima del cambio. GPT-5.6
+Sol, Terra e Luna usano automaticamente 1.050.000 token solo con account ChatGPT
+(`openai-codex`); con chiave API (`openai`) il catalogo resta a 272.000 e il
+contesto esteso è una scelta esplicita nel pannello informativo, con i costi
+letti dal catalogo. Gli override personali restano protetti. Il ponte versione 8
+compatta inoltre prima dei nuovi turni dalla soglia predefinita del 90%, regolabile
+fra 50 e 95 nelle **Impostazioni della GUI** e salvata in
+`~/.pi/gui/impostazioni.json`, senza cambiare la compattazione automatica di Pi.
+
 La 2.6 integra **Sistema Guidato** come pannello interno, raggiungibile da un
 pulsante evidente e dal comando virtuale `/sistema` anche senza selezionare una
 cartella. Un solo servizio locale viene avviato su richiesta per l'intero
@@ -34,8 +44,8 @@ precedenti dopo la compattazione, evita feedback duplicati quando una chat e
 troppo breve da riassumere e filtra anche i marker operativi in Markdown.
 
 La 2.5.3 mantiene sempre visibile il testo dei prompt originali dopo la compattazione,
-aggiunge file e drag-and-drop, corregge il contesto mostrato dopo un cambio
-modello e rende opzionale la finestra GPT-5.6 da 1,05M token. Il composer resta
+aggiunge file e drag-and-drop e corregge il contesto mostrato dopo un cambio
+modello. Il composer resta
 scrivibile mentre Pi libera spazio e l'attivita in corso ha un segnale visivo
 discreto.
 
