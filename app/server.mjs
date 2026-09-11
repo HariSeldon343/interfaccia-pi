@@ -29,6 +29,20 @@ import { StringDecoder } from "node:string_decoder";
 import { creaGestoreSistemaGuidato } from "./sistema-guidato-manager.mjs";
 import { creaGestoreEstrazione } from "./estrazione-worker.mjs";
 import { creaSerializzatore, scriviFileAtomico } from "./persistenza-atomica.mjs";
+import { creaArchivioConsigli } from "./consiglio-store.mjs";
+import {
+  ambienteRuolo,
+  creaGestoreConsiglio,
+  erroreConsiglio,
+  PREFISSO_SCHEDA_RISULTATO,
+} from "./consiglio.mjs";
+import { analizzaUscitaScrittore, componiPromptScrittore } from "./consiglio-scrittore.mjs";
+import { eseguiPianoTest, valutaEval } from "./consiglio-controlli.mjs";
+import { validaToolConsiglio } from "./consiglio-guard.mjs";
+import {
+  configurazioneConsiglioPredefinita,
+  validaConfigurazioneConsiglio,
+} from "./consiglio-ruoli.mjs";
 import { creaGestoreLibreria, quotaOperazioneConsentita } from "./libreria.mjs";
 import LIBRERIA_CORE from "./public/library-core.js";
 import VISTA_CORE from "./public/view-core.js";
@@ -157,6 +171,7 @@ export function argomentiAvvioPi({
   approvaProgetto = false,
   senzaCartella = false,
   estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
+  estensioneConsiglio = null,
 } = {}) {
   const argomenti = [cliPi, "--mode", "rpc", "--no-extensions"];
   if (senzaCartella) {
@@ -171,6 +186,9 @@ export function argomentiAvvioPi({
       : PROMPT_INTERFACCIA_GRAFICA,
   );
   if (senzaCartella) argomenti.push("--extension", estensioneSenzaCartella);
+  // La guardia del consiglio serve anche quando la sessione ha una cartella:
+  // e l'unico modo per far valere i divieti sui ruoli dentro il processo di pi.
+  if (estensioneConsiglio) argomenti.push("--extension", estensioneConsiglio);
   if (provider) argomenti.push("--provider", provider);
   if (modello) argomenti.push("--model", modello);
   if (ragionamento) argomenti.push("--thinking", ragionamento);
@@ -3057,17 +3075,37 @@ function erroreHttp(messaggio, stato = 400) {
   return errore;
 }
 
-function validaImpostazioniGui(valore) {
-  if (
-    !oggettoJson(valore)
-    || Object.keys(valore).length !== 1
-    || !Number.isInteger(valore.sogliaCompattazionePercento)
-    || valore.sogliaCompattazionePercento < 50
-    || valore.sogliaCompattazionePercento > 95
-  ) {
+// Le impostazioni della GUI hanno due chiavi: la soglia di compattazione e i
+// ruoli del consiglio. Il validatore accetta l'una, l'altra o entrambe; il
+// salvataggio fonde, cosi un client che conosce solo la soglia non cancella i
+// ruoli e viceversa.
+export function validaImpostazioniGui(valore) {
+  if (!oggettoJson(valore)) {
     throw erroreHttp("sogliaCompattazionePercento deve essere un intero fra 50 e 95, senza altri campi", 400);
   }
-  return { sogliaCompattazionePercento: valore.sogliaCompattazionePercento };
+  const chiavi = Object.keys(valore);
+  const ammesse = ["sogliaCompattazionePercento", "consiglio"];
+  if (!chiavi.length || chiavi.some((chiave) => !ammesse.includes(chiave))) {
+    throw erroreHttp(
+      "Le impostazioni accettano soltanto sogliaCompattazionePercento e consiglio, e almeno un campo",
+      400,
+    );
+  }
+  const valide = {};
+  if (Object.hasOwn(valore, "sogliaCompattazionePercento")) {
+    if (
+      !Number.isInteger(valore.sogliaCompattazionePercento)
+      || valore.sogliaCompattazionePercento < 50
+      || valore.sogliaCompattazionePercento > 95
+    ) {
+      throw erroreHttp("sogliaCompattazionePercento deve essere un intero fra 50 e 95, senza altri campi", 400);
+    }
+    valide.sogliaCompattazionePercento = valore.sogliaCompattazionePercento;
+  }
+  if (Object.hasOwn(valore, "consiglio")) {
+    valide.consiglio = validaConfigurazioneConsiglio(valore.consiglio);
+  }
+  return valide;
 }
 
 function powershellSistemaWindows() {
@@ -3503,11 +3541,17 @@ export class SessionePi {
     bloccaComandiEstensione = true,
     estensioniBuiltinConsentite = null,
     estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
+    estensioneConsiglio = join(QUI, "consiglio-guard.mjs"),
   }) {
     this.id = id;
     this.cliPi = cliPi;
     this.identificaFile = identificaFile;
     this.emettiGlobale = emetti;
+    // Popolati solo per le sessioni aperte da un consiglio: ruolo, lavoro e
+    // osservatore degli eventi usati dal coordinatore.
+    this.consiglio = null;
+    this.osservatoreConsiglio = null;
+    this.estensioneConsiglio = estensioneConsiglio;
     this.proc = null;
     this.avvioCompletato = false;
     this.cartella = null;
@@ -4061,6 +4105,7 @@ export class SessionePi {
     sessionPath,
     nome,
     approvaProgetto,
+    consiglio = null,
   }) {
     if (!this.cliPi) {
       throw new Error(
@@ -4106,6 +4151,7 @@ export class SessionePi {
     // mutex sui JSONL. La GUI mantiene skill, prompt template, context file e
     // strumenti, ma disabilita la sola discovery delle estensioni. Il pulsante
     // terminale apre invece PI integrale quando serve quella superficie TUI.
+    this.consiglio = consiglio || null;
     const argomenti = argomentiAvvioPi({
       cliPi: this.cliPi,
       provider,
@@ -4117,15 +4163,28 @@ export class SessionePi {
       approvaProgetto,
       senzaCartella: this.senzaCartella,
       estensioneSenzaCartella: this.estensioneSenzaCartella,
+      estensioneConsiglio: this.consiglio ? this.estensioneConsiglio : null,
     });
 
     const generazione = ++this.generazione;
+    // L'ambiente del figlio e l'unico canale per dare alla guardia il ruolo, il
+    // workspace e il file del piano: pi aggancia le estensioni solo per percorso.
     const processo = spawn(process.execPath, argomenti, {
       cwd: this.directoryLavoro,
       shell: false,
       detached: process.platform !== "win32",
       windowsHide: true,
-      env: { ...process.env, NO_COLOR: "1" },
+      env: {
+        ...process.env,
+        NO_COLOR: "1",
+        ...(this.consiglio
+          ? ambienteRuolo({
+            ruolo: this.consiglio.ruolo,
+            workspace: this.consiglio.workspace,
+            filePiano: this.consiglio.filePiano,
+          })
+          : {}),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc = processo;
@@ -4779,6 +4838,21 @@ export class SessionePi {
     return this.invia(comando, clientId, replayId);
   }
 
+  // Canale dedicato ai prompt del consiglio. Non passa dalla compattazione
+  // preventiva del ponte: la sessione e appena nata, il ponte e l'unico a
+  // scriverci e i prompt per sessione sono al massimo due. Resta attiva la
+  // compattazione interna di pi.
+  inviaPromptDiRuolo(testo, { id = null } = {}) {
+    if (!this.consiglio) {
+      throw erroreHttp("Questa conversazione non appartiene a un consiglio.", 409);
+    }
+    return this.invia({
+      type: "prompt",
+      message: String(testo ?? ""),
+      id: id || `consiglio-${randomUUID()}`,
+    });
+  }
+
   inviaEAttendi(comando, timeout = 8000) {
     const id = comando.id || "ponte-" + randomUUID();
     return new Promise((risolvi, rifiuta) => {
@@ -4816,6 +4890,14 @@ export class SessionePi {
   }
 
   diffondi(evento) {
+    if (this.osservatoreConsiglio) {
+      // Un osservatore guasto non deve fermare gli eventi della sessione.
+      try {
+        this.osservatoreConsiglio(evento);
+      } catch {
+        // Il coordinatore registra da se i propri errori.
+      }
+    }
     if (["agent_end", "agent_settled", "compaction_end"].includes(evento?.type)) {
       this.#invalidaStatistiche();
     }
@@ -5463,6 +5545,16 @@ export class SessionePi {
       compattazionePrenotata: Boolean(this.prenotazioneCompattazione),
       compattazioneAvvioIncerto: Boolean(this.compattazioneAvvioIncertoId),
       ...this.statoRicaricaCatalogoModelli(),
+      ...(this.consiglio
+        ? {
+          consiglio: {
+            lavoroId: this.consiglio.lavoroId,
+            roleId: this.consiglio.roleId,
+            ruolo: this.consiglio.ruolo,
+            invioManuale: false,
+          },
+        }
+        : {}),
       creataIl: this.creataIl,
     };
   }
@@ -5893,6 +5985,21 @@ export function creaPonte({
   gestoreSistemaGuidato = null,
   gestoreEstrazione = null,
   launcherToken = null,
+  // Punti di aggancio del consiglio: i valori predefiniti sono i moduli dello
+  // scrittore, dei controlli e della guardia; i test li sostituiscono con doppi.
+  fondiRisultato = {
+    componiPrompt: componiPromptScrittore,
+    analizzaUscita: analizzaUscitaScrittore,
+  },
+  verificaControlli = null,
+  guardStrumenti = validaToolConsiglio,
+  attendi: attendiConsiglio = (ms) => new Promise((risolvi) => {
+    const timer = setTimeout(risolvi, ms);
+    timer.unref?.();
+  }),
+  estensioneConsiglio = join(QUI, "consiglio-guard.mjs"),
+  percorsoNpmCli = null,
+  eseguiComandoConsiglio = null,
 } = {}) {
   const radiceSenzaCartellaRisolta = resolve(radiceSenzaCartella);
   const config = join(home, ".pi", "gui");
@@ -5903,7 +6010,10 @@ export function creaPonte({
   let impostazioni = { sogliaCompattazionePercento: SOGLIA_COMPATTAZIONE_PREDEFINITA };
   const impostazioniPronte = (async () => {
     try {
-      impostazioni = validaImpostazioniGui(JSON.parse(await readFile(fileImpostazioni, "utf8")));
+      impostazioni = {
+        ...impostazioni,
+        ...validaImpostazioniGui(JSON.parse(await readFile(fileImpostazioni, "utf8"))),
+      };
     } catch (errore) {
       if (errore.code !== "ENOENT") {
         console.warn("Non riesco a leggere le impostazioni della GUI: uso la soglia predefinita del 90% e conservo il file.", errore.message);
@@ -5912,6 +6022,27 @@ export function creaPonte({
   })();
   // La lettura parte all'avvio. Un file non valido resta intatto e può essere
   // corretto da un successivo salvataggio esplicito nelle impostazioni.
+  async function salvaImpostazioniGui(nuove) {
+    await impostazioniPronte;
+    return serializzaImpostazioni(fileImpostazioni, async () => {
+      if (chiusuraDefinitiva) throw erroreHttp("Il ponte si sta chiudendo", 503);
+      // La fusione sta dentro il serializzatore: il serializzatore ordina la
+      // scrittura, non la lettura. Calcolata fuori, due salvataggi sovrapposti
+      // leggerebbero la stessa base e l'ultimo cancellerebbe la chiave scritta
+      // dall'altro, per esempio i ruoli del consiglio quando si salva la sola
+      // soglia di compattazione.
+      const fuse = { ...impostazioni, ...nuove };
+      await mkdir(config, { recursive: true });
+      await scriviFileAtomico(fileImpostazioni, JSON.stringify(fuse, null, 2) + "\n", {
+        primaPubblicazione: primaPubblicazioneImpostazioni,
+      });
+      if (impostazioni.sogliaCompattazionePercento !== fuse.sogliaCompattazionePercento) {
+        for (const sessione of sessioni.values()) sessione.azzeraInefficaciaCompattazionePreventiva();
+      }
+      impostazioni = fuse;
+      return { ...impostazioni };
+    });
+  }
   const fileOperazioniCondivisione = join(config, "share-operations-v1.json");
   const sessioni = new Map();
   const terminali = new Map();
@@ -5933,6 +6064,314 @@ export function creaPonte({
     iniziaPreparazione: estrazione.iniziaPreparazione, erroreHttp });
   const operazioniLibreria = new Map();
   const generazioniLibreria = new Map();
+  const cartellaConsigli = join(config, "consigli");
+  const archivioConsigli = creaArchivioConsigli({ radice: cartellaConsigli });
+  const processiTestConsiglio = new Set();
+  const taskkillConsiglio = join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "taskkill.exe",
+  );
+
+  function descriviSessioneSorgente(id) {
+    const sessione = id ? sessioni.get(id) : null;
+    if (!sessione?.proc || sessione.consiglio) return null;
+    return {
+      id: sessione.id,
+      cartella: sessione.senzaCartella ? null : sessione.cartella,
+      provider: sessione.provider,
+      modello: sessione.modello,
+    };
+  }
+
+  async function catalogoModelliConsiglio(sourceSessionId) {
+    const sessione = (sourceSessionId ? sessioni.get(sourceSessionId) : null)
+      || [...sessioni.values()].find((voce) => voce.proc && !voce.consiglio)
+      || null;
+    if (!sessione?.proc) return [];
+    const dati = await sessione.inviaEAttendi({ type: "get_available_models" }, timeoutStatoIniziale);
+    return Array.isArray(dati?.models) ? dati.models : [];
+  }
+
+  async function apriSessioneRuoloConsiglio({
+    lavoroId, roleId, ruolo, workspace, filePiano, provider, modello, ragionamento, nome,
+  }) {
+    const id = randomUUID();
+    const sessione = new SessionePi({
+      id,
+      cliPi,
+      emetti,
+      elencaDiscendenti,
+      terminaDiscendenti,
+      bloccaComandiEstensione,
+      estensioniBuiltinConsentite,
+      scadenzaRebindModelloMs,
+      estensioneConsiglio,
+      leggiSogliaCompattazione: async () => {
+        await impostazioniPronte;
+        return impostazioni.sogliaCompattazionePercento;
+      },
+    });
+    sessione.osservatoreConsiglio = (evento) => consiglio.osservaEvento(id, evento);
+    sessioni.set(id, sessione);
+    try {
+      await sessione.avvia({
+        cartella: workspace || null,
+        directoryLavoro: workspace || await creaDirectorySenzaCartella(radiceSenzaCartellaRisolta),
+        senzaCartella: !workspace,
+        provider,
+        modello,
+        ragionamento,
+        nome,
+        approvaProgetto: false,
+        consiglio: {
+          lavoroId,
+          roleId,
+          ruolo,
+          workspace: workspace || "",
+          filePiano: filePiano || "",
+        },
+      });
+      await completaAvvioSessione(sessione, { consentiInesistente: true });
+    } catch (errore) {
+      await fermaSessioneConEstrazione(sessione, { notifica: false }).catch(() => {});
+      if (!sessione.proc) {
+        sessioni.delete(id);
+        dimenticaLibreriaSessione(id);
+      }
+      throw errore;
+    }
+    return sessione;
+  }
+
+  async function chiudiSessioneRuoloConsiglio(sessione) {
+    if (!sessioni.has(sessione.id)) return;
+    await fermaSessioneConEstrazione(sessione, { notifica: false });
+    sessioni.delete(sessione.id);
+    dimenticaLibreriaSessione(sessione.id);
+    if (ultimaSessioneId === sessione.id) {
+      ultimaSessioneId = [...sessioni.values()].reverse().find((voce) => voce.proc)?.id || null;
+    }
+    emetti({ type: "gui_sessione_chiusa", guiSessionId: sessione.id });
+    programmaAutoStop();
+  }
+
+  async function ultimaRispostaConsiglio(sessione) {
+    const { messaggi } = await snapshotCronologia(sessione);
+    const ultimo = [...messaggi].reverse().find((messaggio) =>
+      messaggio?.role === "assistant"
+      && !(messaggio.stopReason === "aborted" && (!messaggio.content || messaggio.content.length === 0)));
+    const testo = Array.isArray(ultimo?.content)
+      ? ultimo.content.filter((parte) => parte?.type === "text").map((parte) => String(parte.text || "")).join("").trim()
+      : "";
+    return { testo, stopReason: ultimo?.stopReason || null };
+  }
+
+  // Ambiente ridotto per il comando dei test: niente segreti del ponte, niente
+  // variabili del consiglio, solo quello che serve a un processo Windows.
+  function ambienteComandoConsiglio() {
+    const consentite = [
+      "PATH", "Path", "SystemRoot", "windir", "COMSPEC", "PATHEXT", "TEMP", "TMP",
+      "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+      "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "OS", "LANG", "HOME",
+    ];
+    const ambiente = { NO_COLOR: "1" };
+    for (const nome of consentite) {
+      if (typeof process.env[nome] === "string") ambiente[nome] = process.env[nome];
+    }
+    return ambiente;
+  }
+
+  function eseguiComandoLocaleConsiglio(eseguibile, argomenti, {
+    cwd = null, timeoutMs = 60_000, registraProcesso = null, ambienteCompleto = false,
+  } = {}) {
+    return new Promise((risolvi) => {
+      let processo;
+      try {
+        processo = spawn(eseguibile, argomenti, {
+          cwd: cwd || undefined,
+          shell: false,
+          windowsHide: true,
+          env: ambienteCompleto ? { ...process.env, NO_COLOR: "1" } : ambienteComandoConsiglio(),
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (errore) {
+        const messaggio = String(errore?.message || errore);
+        risolvi({ codice: -1, uscita: messaggio, stdout: "", stderr: messaggio, scaduto: false });
+        return;
+      }
+      registraProcesso?.(processo);
+      // I due flussi restano anche separati: il registro dei test li vuole
+      // mescolati in ordine, ma chi legge un identificativo da git deve poter
+      // guardare il solo stdout, senza rischiare di prendere un avviso.
+      let uscita = "";
+      let stdout = "";
+      let stderr = "";
+      let scaduto = false;
+      const LIMITE = 1_000_000;
+      const aggiungi = (pezzo, dove) => {
+        const testo = pezzo.toString("utf8");
+        if (uscita.length <= LIMITE) uscita += testo;
+        if (dove === "stdout") {
+          if (stdout.length <= LIMITE) stdout += testo;
+        } else if (stderr.length <= LIMITE) stderr += testo;
+      };
+      processo.stdout?.on("data", (pezzo) => aggiungi(pezzo, "stdout"));
+      processo.stderr?.on("data", (pezzo) => aggiungi(pezzo, "stderr"));
+      const timer = setTimeout(() => {
+        scaduto = true;
+        try {
+          processo.kill();
+        } catch {
+          // Il processo puo essere gia uscito da solo.
+        }
+      }, timeoutMs);
+      timer.unref?.();
+      const concludi = (codice, errore = null) => {
+        clearTimeout(timer);
+        const coda = errore ? String(errore?.message || errore) : "";
+        risolvi({
+          codice: Number.isInteger(codice) ? codice : -1,
+          uscita: uscita + coda,
+          stdout,
+          stderr: stderr + coda,
+          scaduto,
+        });
+      };
+      processo.on("error", (errore) => concludi(-1, errore));
+      processo.on("close", (codice) => concludi(codice));
+    });
+  }
+
+  function registraProcessoTestConsiglio(processo) {
+    if (!processo?.pid) return;
+    processiTestConsiglio.add(processo);
+    processo.once("close", () => processiTestConsiglio.delete(processo));
+  }
+
+  async function chiudiProcessiTestConsiglio() {
+    for (const processo of [...processiTestConsiglio]) {
+      processiTestConsiglio.delete(processo);
+      if (!processo.pid || processo.exitCode !== null || processo.signalCode !== null) continue;
+      let discendenti = [];
+      try {
+        discendenti = await elencaDiscendenti(processo.pid);
+      } catch {
+        discendenti = [];
+      }
+      try {
+        processo.kill();
+      } catch {
+        // Il processo puo essere gia terminato.
+      }
+      if (discendenti.length) {
+        await terminaDiscendenti(discendenti, taskkillConsiglio).catch(() => false);
+      }
+    }
+  }
+
+  // Adattatore fra il coordinatore e il modulo dei controlli: le caselle EVAL
+  // valgono sempre, il comando dei test solo per i lavori di codice. Il piano
+  // viene ricontrollato dal modulo stesso prima dello spawn.
+  async function verificaControlliConsiglio({ tipo, piano, risultato, registraProcesso, timeoutMs }) {
+    const caselle = valutaEval(risultato?.eval || []);
+    if (tipo !== "codice") {
+      return {
+        tipo: "eval",
+        esito: caselle.esito,
+        motivi: caselle.motivi,
+        logTroncato: null,
+        impronteFile: [],
+      };
+    }
+    const esecuzione = await eseguiPianoTest(piano, {
+      timeoutMs,
+      fileDichiarati: risultato?.fileModificati || [],
+      elencaDiscendenti,
+      terminaDiscendenti,
+      taskkillWindows: taskkillConsiglio,
+      onProcesso: registraProcesso,
+    });
+    return {
+      tipo: "test",
+      esito: esecuzione.esito === "pass" && caselle.esito === "pass" ? "pass" : "fail",
+      motivi: [...esecuzione.motivi, ...caselle.motivi],
+      logTroncato: esecuzione.log || null,
+      impronteFile: esecuzione.impronteFile || [],
+    };
+  }
+
+  // Gli errori del consiglio hanno una forma sola: codice, messaggio,
+  // recuperabile. Un errore senza stato HTTP resta un guasto del ponte e sale.
+  async function rispostaConsiglio(risposta, esecuzione) {
+    try {
+      const esito = await esecuzione();
+      return json(risposta, esito.corpo, esito.stato);
+    } catch (errore) {
+      if (!errore?.statusHttp) throw errore;
+      return json(
+        risposta,
+        {
+          codice: errore.codiceConsiglio || "richiesta-non-valida",
+          messaggio: String(errore.message || errore),
+          recuperabile: Boolean(errore.recuperabile),
+          ...(errore.consenso ? { consenso: errore.consenso } : {}),
+        },
+        errore.statusHttp,
+      );
+    }
+  }
+
+  const consiglio = creaGestoreConsiglio({
+    archivio: archivioConsigli,
+    cartellaConsigli,
+    acquisisciMutazione: () => acquisisciMutazione(),
+    reclamaOperazione: (dati) => reclamaOperazione(dati),
+    trovaOperazioneRegistrata: (dati) => trovaOperazioneRegistrata(dati),
+    completaOperazione: (record, risultato, opzioni) => completaOperazione(record, risultato, opzioni),
+    improntaOperazione,
+    operationIdValido,
+    postiLiberi: () => maxSessioni
+      - [...sessioni.values()].filter((sessione) => sessione.proc).length
+      - consiglio.postiPrenotati(),
+    apriSessioneRuolo: (dati) => apriSessioneRuoloConsiglio(dati),
+    chiudiSessioneRuolo: (sessione) => chiudiSessioneRuoloConsiglio(sessione),
+    leggiUltimaRisposta: (sessione) => ultimaRispostaConsiglio(sessione),
+    descriviSessioneSorgente,
+    catalogoModelli: (sourceSessionId) => catalogoModelliConsiglio(sourceSessionId),
+    leggiConfigurazioneRuoli: async () => {
+      await impostazioniPronte;
+      return impostazioni.consiglio || configurazioneConsiglioPredefinita();
+    },
+    salvaConfigurazioneRuoli: async (configurazione) => {
+      const salvate = await salvaImpostazioniGui({ consiglio: configurazione });
+      return salvate.consiglio;
+    },
+    emetti: (evento) => emetti(evento),
+    fondiRisultato,
+    verificaControlli: verificaControlli || verificaControlliConsiglio,
+    guardStrumenti,
+    attendi: attendiConsiglio,
+    eseguiComando: (eseguibile, argomenti, opzioni) => (
+      eseguiComandoConsiglio || eseguiComandoLocaleConsiglio
+    )(eseguibile, argomenti, opzioni),
+    esisteFile: async (percorso) => {
+      try {
+        await stat(percorso);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    leggiFile: (percorso, codifica) => readFile(percorso, codifica),
+    improntaFile: async (percorso) => createHash("sha256").update(await readFile(percorso)).digest("hex"),
+    percorsoNpmCli,
+    nuovoId: () => "lavoro-" + randomUUID(),
+    registraProcessoTest: registraProcessoTestConsiglio,
+  });
+  void archivioConsigli.applicaRitenzione().catch((errore) => {
+    console.warn("Non riesco ad applicare la ritenzione dei lavori del consiglio:", errore.message);
+  });
 
   function invalidaLibreriaSessione(sessionId) {
     generazioniLibreria.set(sessionId, (generazioniLibreria.get(sessionId) || 0) + 1);
@@ -6950,6 +7389,9 @@ export function creaPonte({
   function programmaAutoStop() {
     annullaAutoStop();
     if (!autoStopMs || ascoltatori.size || terminali.size || chiusuraDefinitiva) return;
+    // Un consiglio in raccolta, fusione o verifica sta lavorando nella cartella
+    // dell'utente: spegnere il ponte lo lascerebbe a meta.
+    if (consiglio.lavoriInCorso().length) return;
     timerAutoStop = setTimeout(async () => {
       timerAutoStop = null;
       if (ascoltatori.size || terminali.size || chiusuraDefinitiva) return;
@@ -7086,6 +7528,12 @@ export function creaPonte({
   }
 
   function trovaSessione(id) {
+    if (typeof id === "string" && id.startsWith(PREFISSO_SCHEDA_RISULTATO)) {
+      throw erroreHttp(
+        "La scheda Risultato del consiglio non è una conversazione di pi: usa i pulsanti del consiglio.",
+        409,
+      );
+    }
     let sessione = id ? sessioni.get(id) : sessioni.get(ultimaSessioneId);
     if (!id && !sessione?.proc) {
       sessione = [...sessioni.values()].reverse().find((candidata) => candidata.proc) || null;
@@ -7224,8 +7672,14 @@ export function creaPonte({
     sessione.notificaAvviata();
   }
 
+  // Alle sessioni vere si aggiungono le schede "Risultato" del consiglio, che
+  // non hanno un processo dietro: devono arrivare dal server, perche il client
+  // cancella dallo snapshot ogni voce che non trova nell'elenco.
   function statoSessioni() {
-    return [...sessioni.values()].map((sessione) => sessione.riassunto());
+    return [
+      ...[...sessioni.values()].map((sessione) => sessione.riassunto()),
+      ...consiglio.schede(),
+    ];
   }
 
   function marcaCataloghiModelliDaRicaricare(contextWindow, configurazione) {
@@ -7650,6 +8104,11 @@ $processo.WaitForExit()
     const metodo = String(richiesta.method || "GET").toUpperCase();
     const vieGet = new Set(["/api/eventi", "/api/stato", "/api/salute"]);
     const viePost = new Set([
+      "/api/consiglio/avvia",
+      "/api/consiglio/stato",
+      "/api/consiglio/approva",
+      "/api/consiglio/rifai",
+      "/api/consiglio/annulla",
       "/api/sfoglia",
       "/api/sessioni-salvate",
       "/api/cronologia",
@@ -7824,7 +8283,7 @@ $processo.WaitForExit()
         return;
       }
 
-      const metodoAtteso = via === "/api/impostazioni"
+      const metodoAtteso = ["/api/impostazioni", "/api/consiglio/ruoli"].includes(via)
         ? "GET, POST" : vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
       if (via.startsWith("/api/") && !metodoAtteso) {
         return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Operazione non trovata" }, 404);
@@ -8258,19 +8717,34 @@ $processo.WaitForExit()
         await impostazioniPronte;
         if (!post) return json(risposta, { ...impostazioni });
         const nuove = validaImpostazioniGui(await leggiCorpo(richiesta));
-        const salvate = await serializzaImpostazioni(fileImpostazioni, async () => {
-          if (chiusuraDefinitiva) throw erroreHttp("Il ponte si sta chiudendo", 503);
-          await mkdir(config, { recursive: true });
-          await scriviFileAtomico(fileImpostazioni, JSON.stringify(nuove, null, 2) + "\n", {
-            primaPubblicazione: primaPubblicazioneImpostazioni,
-          });
-          if (impostazioni.sogliaCompattazionePercento !== nuove.sogliaCompattazionePercento) {
-            for (const sessione of sessioni.values()) sessione.azzeraInefficaciaCompattazionePreventiva();
+        return json(risposta, await salvaImpostazioniGui(nuove));
+      }
+
+      if (via.startsWith("/api/consiglio/")) {
+        if (chiusuraDefinitiva) {
+          return json(
+            risposta,
+            { codice: "chiusura", messaggio: "Il ponte si sta chiudendo", recuperabile: true },
+            503,
+          );
+        }
+        const azione = via.slice("/api/consiglio/".length);
+        const corpo = post ? await leggiCorpo(richiesta) : null;
+        return rispostaConsiglio(risposta, () => {
+          if (azione === "avvia") return consiglio.avvia(corpo);
+          if (azione === "stato") return consiglio.stato(corpo);
+          if (azione === "approva") return consiglio.approva(corpo);
+          if (azione === "rifai") return consiglio.rifai(corpo);
+          if (azione === "annulla") return consiglio.annulla(corpo);
+          if (azione === "ruoli") {
+            return consiglio.ruoli(corpo, {
+              sourceSessionId: post
+                ? (corpo?.sourceSessionId || null)
+                : url.searchParams.get("sessionId"),
+            });
           }
-          impostazioni = nuove;
-          return { ...impostazioni };
+          throw erroreConsiglio("richiesta-non-valida", "Operazione del consiglio non trovata.", 404);
         });
-        return json(risposta, salvate);
       }
 
       if (via === "/api/ricarica-contesto-gpt" && post) {
@@ -8702,7 +9176,10 @@ $processo.WaitForExit()
           }
         }
 
-        const numeroAttive = [...sessioni.values()].filter((sessione) => sessione.proc).length;
+        // Le prenotazioni del consiglio contano come sessioni gia aperte: i
+        // posti sono riservati prima che i processi esistano davvero.
+        const numeroAttive = [...sessioni.values()].filter((sessione) => sessione.proc).length
+          + consiglio.postiPrenotati();
         if (numeroAttive >= maxSessioni) {
           return json(
             risposta,
@@ -9402,6 +9879,15 @@ $processo.WaitForExit()
         let promptInoltrato = false;
         try {
           const sessione = trovaSessione(sessionId);
+          // Su una sessione di ruolo il ponte e l'unico mittente: restano
+          // ammesse soltanto le letture, non prompt, cambio modello, fork o
+          // cambio conversazione. Spegnere i pulsanti non basterebbe.
+          if (sessione.consiglio && !String(comando.type || "").startsWith("get_")) {
+            throw erroreHttp(
+              `Questa conversazione è il ${sessione.consiglio.ruolo} di un consiglio: i comandi manuali sono rifiutati, usa i pulsanti della scheda Risultato.`,
+              409,
+            );
+          }
           sessioneComando = sessione;
           if (operationId) {
             const { id: _idCorrelazione, ...contenuto } = comando;
@@ -10005,6 +10491,9 @@ $processo.WaitForExit()
       }
       for (const risposta of ascoltatori.keys()) risposta.end();
       ascoltatori.clear();
+      // Il comando dei test e un figlio del ponte, non di pi: senza questo
+      // passaggio resterebbe a girare codice del progetto dopo la chiusura.
+      await chiudiProcessiTestConsiglio();
       await fermaSessioniConEstrazione({ notifica: false });
       sessioni.clear();
       operazioniLibreria.clear();
@@ -10040,6 +10529,7 @@ $processo.WaitForExit()
     programmaAutoStop,
     emetti,
     sistemaGuidato,
+    consiglio,
     pulisciFileAllegatiPendentiOrfani,
     numeroAscoltatori: () => ascoltatori.size,
   };

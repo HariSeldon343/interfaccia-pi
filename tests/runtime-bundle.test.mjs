@@ -110,6 +110,34 @@ test("Tauri include runtime completo e il launcher release lo preferisce", async
   assert.match(rust, /#\[cfg\(not\(debug_assertions\)\)\][\s\S]*None/);
 });
 
+test("le risorse del pacchetto includono i moduli del consiglio", async () => {
+  const [config, pacchetto] = await Promise.all([
+    readFile(join(RADICE, "src-tauri", "tauri.conf.json"), "utf8").then(JSON.parse),
+    readFile(join(RADICE, "package.json"), "utf8").then(JSON.parse),
+  ]);
+  const controlli = pacchetto.scripts.check.split(" && ");
+  const moduli = [
+    "consiglio.mjs",
+    "consiglio-store.mjs",
+    "consiglio-ruoli.mjs",
+    "consiglio-scrittore.mjs",
+    "consiglio-guard.mjs",
+    "consiglio-controlli.mjs",
+  ];
+  for (const modulo of moduli) {
+    assert.equal(
+      config.bundle.resources["../app/" + modulo],
+      "app/" + modulo,
+      "Risorsa del consiglio mancante: " + modulo,
+    );
+    assert.ok(
+      controlli.includes("node --check app/" + modulo),
+      "Controllo sintattico mancante: app/" + modulo,
+    );
+    assert.equal(await esiste(join(RADICE, "app", modulo)), true, "Modulo del consiglio mancante: " + modulo);
+  }
+});
+
 test("estrazione: script di verifica e CI preparano il bundle con cache legata ai pin", async () => {
   const pacchetto = JSON.parse(await readFile(join(RADICE, "package.json"), "utf8"));
   assert.equal(pacchetto.scripts["vendor:estrazione"], "node scripts/vendor-estrazione.mjs");

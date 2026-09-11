@@ -1,6 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
 import { join } from "node:path";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, writeFileSync } from "node:fs";
 
 const decoder = new StringDecoder("utf8");
 let buffer = "";
@@ -17,6 +17,64 @@ const persistenzaTardiva = process.cwd().includes("file-tardivo");
 if (!persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
 let contatoreSessioni = 0;
 let leafIdAttivo = process.cwd().includes("leaf-cronologia") ? "n-new" : null;
+
+// Condotte del consiglio. Come il resto del file si pilotano con i marcatori
+// nel nome della cartella di lavoro, per non introdurre un secondo modo di
+// guidare il finto.
+const marcatore = (nome) => process.cwd().includes(nome);
+const ruoloConsiglio = process.env.PI_GUI_CONSIGLIO_RUOLO || "";
+let promptRicevuti = 0;
+let ruoloCheFallisce = null;
+
+if (ruoloConsiglio) {
+  // Traccia leggibile dal test: le tre variabili arrivano solo dall'ambiente
+  // del processo figlio, non dalla riga di comando.
+  try {
+    writeFileSync(
+      join(process.cwd(), `consiglio-ambiente-${sessioneIdAvvio}.json`),
+      JSON.stringify({
+        ruolo: ruoloConsiglio,
+        workspace: process.env.PI_GUI_CONSIGLIO_WORKSPACE ?? null,
+        piano: process.env.PI_GUI_CONSIGLIO_PIANO ?? null,
+        argomenti: process.argv.slice(2),
+      }),
+      "utf8",
+    );
+  } catch {
+    // La traccia e un aiuto ai test, non una condizione di funzionamento.
+  }
+}
+
+function reclamaFallimento() {
+  if (ruoloCheFallisce !== null) return ruoloCheFallisce;
+  try {
+    closeSync(openSync(join(process.cwd(), "consiglio-fallimento.lock"), "wx"));
+    ruoloCheFallisce = true;
+  } catch {
+    ruoloCheFallisce = false;
+  }
+  return ruoloCheFallisce;
+}
+
+function condottaFallimento(numeroPrompt) {
+  if (marcatore("consiglio-429-sempre")) return "Errore del provider: 429 Too Many Requests.";
+  // Solo lo scrittore incappa nel limite: serve a fermare il ciclo dopo la
+  // raccolta, nel punto in cui il ponte aspetta prima di ripetere.
+  if (marcatore("consiglio-429-scrittore")) {
+    return ruoloConsiglio === "scrittore" && numeroPrompt === 1
+      ? "Errore del provider: 429 Too Many Requests."
+      : null;
+  }
+  if (marcatore("consiglio-uno-fallisce")) {
+    return reclamaFallimento() ? "Errore del provider: 429 Too Many Requests." : null;
+  }
+  if (numeroPrompt > 1) return null;
+  if (marcatore("consiglio-429-testo")) {
+    return "Errore del provider: 429 Too Many Requests. Please retry after 3 seconds.";
+  }
+  if (marcatore("consiglio-429-muto")) return "Errore del provider: too many requests.";
+  return null;
+}
 
 function consumaFallimentoPrimoStato() {
   const marcatore = process.env.PI_GUI_FAKE_FAIL_FIRST_STATE_FILE;
@@ -76,9 +134,11 @@ function gestisci(comando) {
     return risposta(comando, { entries: [] });
   }
   if (comando.type === "get_available_models") {
-    return risposta(comando, {
-      models: [{ provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 }],
-    });
+    const models = [{ provider: "fake", id: "modello-test", name: "Modello test", contextWindow: 32000 }];
+    if (marcatore("consiglio-catalogo-due")) {
+      models.push({ provider: "fake", id: "modello-secondo", name: "Modello secondo", contextWindow: 32000 });
+    }
+    return risposta(comando, { models });
   }
   if (comando.type === "set_model") {
     return risposta(comando, {
@@ -149,10 +209,40 @@ function gestisci(comando) {
   if (comando.type === "prompt") {
     // PI reale materializza il JSONL soltanto quando persiste il primo turno.
     if (persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
+    promptRicevuti += 1;
     const user = { role: "user", content: comando.message, timestamp: Date.now() };
     messages.push(user);
     risposta(comando);
     scrivi({ type: "agent_start" });
+    if (marcatore("consiglio-auto-retry") && promptRicevuti === 1) {
+      // pi ritenta da solo: al ponte arriva soltanto questa notizia.
+      scrivi({
+        type: "auto_retry_start",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+        errorMessage: "429 Too Many Requests",
+      });
+    }
+    const fallimento = condottaFallimento(promptRicevuti);
+    if (fallimento) {
+      scrivi({ type: "error", message: fallimento });
+      scrivi({ type: "agent_settled" });
+      return;
+    }
+    if (marcatore("consiglio-stop-error")) {
+      messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: "risposta interrotta" }],
+        provider: "fake",
+        model: "modello-test",
+        stopReason: "error",
+        timestamp: Date.now(),
+      });
+      scrivi({ type: "message_end", message: messages.at(-1) });
+      scrivi({ type: "agent_settled" });
+      return;
+    }
     if (comando.message === "/dialog-test") {
       scrivi({
         type: "extension_ui_request",
@@ -163,7 +253,9 @@ function gestisci(comando) {
       });
       return;
     }
-    const testo = "risposta con città";
+    const testo = ruoloConsiglio
+      ? `risposta con città dal ruolo ${ruoloConsiglio} (${sessioneIdAvvio})`
+      : "risposta con città";
     messages.push({
       role: "assistant",
       content: [{ type: "text", text: testo }],
@@ -185,7 +277,11 @@ function gestisci(comando) {
     process.stdout.write(riga.subarray(0, posizioneAccento));
     process.stdout.write(riga.subarray(posizioneAccento));
     scrivi({ type: "message_end", message: messages.at(-1) });
-    scrivi({ type: "agent_settled" });
+    // Con questo marcatore il messaggio e gia finito ma il turno no: serve a
+    // provare che il contributo si raccoglie soltanto su agent_settled, e a
+    // tenere aperta una finestra in cui il lavoro si puo annullare davvero.
+    if (marcatore("consiglio-settled-lento")) setTimeout(() => scrivi({ type: "agent_settled" }), 1500);
+    else scrivi({ type: "agent_settled" });
     return;
   }
   if (comando.type === "extension_ui_response") {
