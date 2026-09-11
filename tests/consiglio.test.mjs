@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +22,10 @@ import {
   sembraLimiteRichieste,
 } from "../app/consiglio.mjs";
 import { normalizzaPianoManuale } from "../app/consiglio-controlli.mjs";
+
+// La cartella temporanea in forma canonica (lunga): il ponte canonicalizza i percorsi con realpath e
+// sui runner Windows di GitHub tmpdir() restituisce la forma corta RUNNER~1, che non combacerebbe.
+const TMP = realpathSync.native(tmpdir());
 
 const QUI = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = join(QUI, "fake-pi.mjs");
@@ -44,7 +49,7 @@ async function avviaPonteConsiglio(t, {
   primaDelPonte = null,
   ...opzioni
 } = {}) {
-  const home = await mkdtemp(join(tmpdir(), "pi-gui-consiglio-"));
+  const home = await mkdtemp(join(TMP, "pi-gui-consiglio-"));
   const cartellaLavoro = join(home, cartella);
   await mkdir(cartellaLavoro, { recursive: true });
   // Serve a chi deve trovare qualcosa già sul disco quando il ponte nasce, per
@@ -222,7 +227,7 @@ async function attendiEvento(eventi, predicato, timeout = 15_000) {
 }
 
 test("il file del lavoro si rilegge identico dopo la scrittura atomica", async (t) => {
-  const radice = await mkdtemp(join(tmpdir(), "pi-gui-consigli-"));
+  const radice = await mkdtemp(join(TMP, "pi-gui-consigli-"));
   t.after(() => rm(radice, { recursive: true, force: true }));
   const archivio = creaArchivioConsigli({ radice });
   const lavoro = {
@@ -244,7 +249,7 @@ test("il file del lavoro si rilegge identico dopo la scrittura atomica", async (
 });
 
 test("gli allegati non finiscono nel file del lavoro", async (t) => {
-  const radice = await mkdtemp(join(tmpdir(), "pi-gui-consigli-"));
+  const radice = await mkdtemp(join(TMP, "pi-gui-consigli-"));
   t.after(() => rm(radice, { recursive: true, force: true }));
   const archivio = creaArchivioConsigli({ radice, limiteLog: 32 });
   await archivio.salva({
@@ -273,7 +278,7 @@ test("gli allegati non finiscono nel file del lavoro", async (t) => {
 });
 
 test("i lavori oltre la ritenzione vengono rimossi all'avvio", async (t) => {
-  const home = await mkdtemp(join(tmpdir(), "pi-gui-ritenzione-"));
+  const home = await mkdtemp(join(TMP, "pi-gui-ritenzione-"));
   t.after(() => rm(home, { recursive: true, force: true }));
   const radice = join(home, ".pi", "gui", "consigli");
   await mkdir(radice, { recursive: true });
@@ -1275,7 +1280,7 @@ test("le impronte dei file dichiarati si confrontano in una forma sola", () => {
 });
 
 test("i lavori interrotti tornano dal disco con la proposta di ripristino", async (t) => {
-  const home = await mkdtemp(join(tmpdir(), "pi-gui-ricarica-"));
+  const home = await mkdtemp(join(TMP, "pi-gui-ricarica-"));
   t.after(() => rm(home, { recursive: true, force: true }));
   const cartellaLavoro = join(home, "progetto");
   await mkdir(cartellaLavoro, { recursive: true });

@@ -9,10 +9,15 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { creaPonte } from "../app/server.mjs";
+
+// La cartella temporanea in forma canonica (lunga): il ponte canonicalizza i percorsi con realpath e
+// sui runner Windows di GitHub tmpdir() restituisce la forma corta RUNNER~1, che non combacerebbe.
+const TMP = realpathSync.native(tmpdir());
 
 const QUI = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = join(QUI, "fake-pi.mjs");
@@ -26,7 +31,7 @@ function improntaTesto(testo) {
 }
 
 async function avviaPonteIntegrazione(t, { cartella, maxSessioni = 4, ...opzioni } = {}) {
-  const home = await mkdtemp(join(tmpdir(), "pi-gui-integrazione-"));
+  const home = await mkdtemp(join(TMP, "pi-gui-integrazione-"));
   const cartellaLavoro = join(home, cartella);
   await mkdir(cartellaLavoro, { recursive: true });
   const ponte = creaPonte({
@@ -216,7 +221,7 @@ test("un lavoro di codice esegue il piano indicato a mano e blocca Approva se il
 });
 
 test("con il piano npm la guardia protegge il manifesto e un piano cambiato blocca Approva", async (t) => {
-  const home = await mkdtemp(join(tmpdir(), "pi-gui-integrazione-npm-"));
+  const home = await mkdtemp(join(TMP, "pi-gui-integrazione-npm-"));
   const npmCli = join(home, "npm-cli.js");
   await writeFile(npmCli, "process.exit(0);\n", "utf8");
   const ambiente = await avviaPonteIntegrazione(t, {
