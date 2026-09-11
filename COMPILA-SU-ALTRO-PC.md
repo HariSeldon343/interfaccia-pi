@@ -1,8 +1,8 @@
-# Interfaccia pi 2.7.0 Pilot — sorgente completo
+# Interfaccia pi 2.8.0 Pilot — sorgente completo
 
 Questa cartella contiene il pacchetto sorgente completo necessario per modificare
 l'interfaccia, il bridge, Sistema Guidato e l'installer desktop di Interfaccia pi
-2.7.0 Pilot.
+2.8.0 Pilot.
 
 ## Prima di iniziare
 
@@ -10,7 +10,7 @@ Non compilare direttamente dentro kDrive. Copia o estrai il progetto in un
 percorso locale corto, per esempio:
 
 ```text
-C:\src\pi-gui-2.7.0
+C:\src\pi-gui-2.8.0
 ```
 
 In questo modo si evitano conflitti di sincronizzazione e limiti di lunghezza dei
@@ -40,7 +40,7 @@ dell'estrazione, senza installazioni globali o nuove dipendenze npm del progetto
 Apri PowerShell nella cartella estratta ed esegui:
 
 ```powershell
-cd C:\src\pi-gui-2.7.0
+cd C:\src\pi-gui-2.8.0
 npm ci
 npm run vendor:estrazione
 npm run check
@@ -51,15 +51,15 @@ npm run vendor:pi:check
 npm run vendor:estrazione:check
 npm run vendor:sistema:check
 npm run release:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.7.0'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.8.0'
 npm run build:desktop:offline
 ```
 
 Gli installer prodotti si trovano qui:
 
 ```text
-src-tauri\target-final-2.7.0\release\bundle\nsis\Interfaccia pi_2.7.0_x64-setup.exe
-src-tauri\target-final-2.7.0\release\bundle\msi\Interfaccia pi_2.7.0_x64_en-US.msi
+src-tauri\target-final-2.8.0\release\bundle\nsis\Interfaccia pi_2.8.0_x64-setup.exe
+src-tauri\target-final-2.8.0\release\bundle\msi\Interfaccia pi_2.8.0_x64_en-US.msi
 ```
 
 ## Modificare l'installer
@@ -68,9 +68,9 @@ La configurazione principale è in `src-tauri/tauri.conf.json`. Gli script di
 preparazione e vendoring sono in `scripts/`; il frontend è in `app/`; il backend
 desktop Rust è in `src-tauri/src/`.
 
-La 2.7.0 raccoglie nel changelog la libreria locale con trascinamento e testo
-estratto, il cambio modello sicuro, il contesto GPT-5.6 per provider e la
-compattazione preventiva. I file di versione sono allineati alla 2.7.0. Prima
+La 2.8.0 raccoglie nel changelog il consiglio a più modelli: ruoli assegnabili
+ai modelli collegati, scrittore con tabella di provenienza, controllo automatico
+e ripristino con git. I file di versione sono allineati alla 2.8.0. Prima
 della compilazione, rigenera il pacchetto compatibile di Sistema Guidato:
 il suo manifesto deve corrispondere alla versione dell'host. Verifica la
 coerenza con `npm run release:check` e `npm run vendor:sistema:check`.

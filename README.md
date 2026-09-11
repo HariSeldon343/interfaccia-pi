@@ -1,17 +1,27 @@
 # Interfaccia pi
 
 Interfaccia desktop Windows, accessibile e multi-sessione, per usare l'agente
-Pi con o senza una cartella di lavoro. La versione candidata è la **2.7.0
+Pi con o senza una cartella di lavoro. La versione candidata è la **2.8.0
 Pilot**, esplicitamente non-production, e include Pi 0.84.2 in un runtime
 autocontenuto e verificato.
 
-La **2.7.0** aggiunge una libreria locale: trascina file o
+La **2.8.0** aggiunge il consiglio a più modelli: da **Strumenti > Chiedi al
+consiglio** la stessa richiesta va a un massimo di quattro consiglieri, ciascuno
+con il proprio modello, e uno scrittore fonde i contributi in una risposta sola.
+La scheda **Risultato** mostra il testo fuso, la tabella di provenienza con il
+modello di ogni parte, i contributi scartati e l'esito del controllo automatico;
+il testo entra nella chat soltanto con **Approva**, mentre **Rifai** apre una
+revisione nuova. Nei lavori di codice il consenso si dà una volta sola, gli
+strumenti sono limitati per ruolo e i file dichiarati si riportano indietro con
+git.
+
+La **2.7.0** ha aggiunto una libreria locale: trascina file o
 cartelle, oppure usa **＋ > Allega cartella**, e scegli una sola volta se
 indicizzare tutti i documenti, selezionarne alcuni o usare soltanto la chat.
 PDF, DOCX, XLSX e PPTX vengono affiancati dal testo estratto; Pi riceve i
 percorsi leggibili.
 
-La 2.7.0 porta anche il cambio modello sicuro: quando
+La 2.7.0 ha portato anche il cambio modello sicuro: quando
 serve, il modello corrente riassume la conversazione prima del cambio.
 GPT-5.6 Sol, Terra e Luna e GPT-6 Astra usano automaticamente 1.050.000 token solo
 con account ChatGPT (`openai-codex`); con chiave API (`openai`) il catalogo resta

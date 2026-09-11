@@ -1,6 +1,6 @@
 # Interfaccia grafica per pi
 
-Versione 2.7.0 Pilot non-production, aggiornata il 09/09/2026.
+Versione 2.8.0 Pilot non-production, aggiornata il 11/09/2026.
 
 È una finestra pensata per usare l'agente `pi` senza dover conoscere i comandi
 del terminale. Le operazioni quotidiane sono visibili e spiegate in italiano;
@@ -59,6 +59,9 @@ a sei sessioni complessive.
   della GUI, applicata prima di un nuovo invio; steer, follow-up e turni lunghi
   non sono protetti e il contesto può esaurirsi;
 - scegliere quanto il modello deve ragionare;
+- chiedere la stessa cosa a più modelli con **Chiedi al consiglio** e ricevere
+  una risposta sola, con la tabella di chi ha scritto che cosa, da approvare
+  oppure da rifare;
 - iniziare, rinominare, clonare, ramificare, comprimere ed esportare una
   conversazione;
 - aprire **Cronologia e rami** dalla barra Strumenti e tornare a un passaggio
@@ -97,6 +100,42 @@ a sei sessioni complessive.
   mettono a rischio la cronologia e la shell diretta con un avviso esplicito.
 - aprire **Sistema Guidato** dal pulsante nella testata o da `/sistema`, anche
   senza cartella, senza lasciare la finestra dell'app.
+
+## Chiedere al consiglio
+
+Premi **Chiedi al consiglio** nella barra Strumenti. La richiesta che hai scritto
+viene mandata a più modelli insieme, fino a quattro consiglieri, e un ruolo in
+più, lo scrittore, rimette insieme le loro risposte in un testo solo.
+
+I ruoli si assegnano una volta sola in **Ruoli del consiglio**, dentro le
+impostazioni: per ogni consigliere scegli un modello fra quelli già collegati e,
+se vuoi, quanto deve ragionare. Un ruolo senza modello resta spento. I modelli
+non si scrivono a mano, l'elenco è quello che dichiara Pi.
+
+Mentre il consiglio lavora, ogni ruolo ha la sua scheda con lo stato scritto a
+parole. Alla fine compare la scheda **Risultato**, con il testo unico, la tabella
+della provenienza (quale parte viene da quale contributo, con il modello che l'ha
+prodotta, che cosa è stato preso e perché) e l'elenco di quello che è stato
+lasciato fuori.
+
+Il testo non entra nella chat da solo. **Approva** lo scrive nella casella del
+messaggio, dove puoi ancora correggerlo prima di inviarlo; **Rifai** chiede un
+altro giro senza cancellare quello precedente.
+
+Se il lavoro tocca dei file, prima di iniziare arriva una richiesta di consenso,
+una volta sola: dice quale cartella verrà modificata, quale comando verrà
+eseguito alla fine, dove restano salvati richiesta e contributi e se i file si
+possono riportare indietro con git. In quel caso i consiglieri possono soltanto
+leggere, lo scrittore scrive soltanto dentro la cartella di lavoro e nessuno dei
+due può aprire il terminale. **Approva** resta bloccato finché il controllo
+automatico non passa: le caselle EVAL per i lavori di testo, lo script `test` del
+progetto per i lavori di codice. Se quel comando non viene riconosciuto, puoi
+indicarlo a mano.
+
+Se chiudi la finestra a metà lavoro, alla riapertura il lavoro torna segnato come
+interrotto, con la proposta di riportare indietro i file che erano già stati
+dichiarati. Il ripristino riguarda soltanto i file che il repository conosce già:
+quelli nuovi restano dove sono.
 
 ## Creare un sistema di gestione guidato
 
@@ -172,7 +211,7 @@ accedere anche ad altri file consentiti dal tuo account Windows.
 
 Per installare la versione corrente, usa:
 
-`src-tauri\target-final-2.7.0\release\bundle\nsis\Interfaccia pi_2.7.0_x64-setup.exe`
+`src-tauri\target-final-2.8.0\release\bundle\nsis\Interfaccia pi_2.8.0_x64-setup.exe`
 
 L'installazione è per il profilo utente e crea il collegamento nel menu Start.
 La variante `.msi` nella cartella `bundle\msi\` è pensata per installazioni
@@ -383,7 +422,7 @@ npm run vendor:pi:check
 npm run vendor:estrazione:check
 npm run vendor:sistema:check
 npm run release:check
-$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.7.0'
+$env:CARGO_TARGET_DIR = Join-Path $PWD 'src-tauri\target-final-2.8.0'
 npm run build:desktop:offline
 ```
 

@@ -126,6 +126,16 @@ sono esclusi. **Ferma** completa il file corrente e poi si arresta. Il
 riepilogo mostra indicizzati, duplicati e saltati e permette di copiare il
 percorso della libreria. Il cambio di scheda ferma i file successivi.
 
+Con **Chiedi al consiglio**, nella barra Strumenti, la stessa richiesta va a più
+modelli insieme, fino a quattro consiglieri, e un ruolo in più, lo scrittore, ne
+fonde le risposte in un testo solo. I modelli dei ruoli si scelgono una volta in
+**Ruoli del consiglio**, dentro le impostazioni. La scheda **Risultato** mostra il
+testo unico e la tabella di chi ha scritto che cosa. **Approva** lo porta nella
+casella del messaggio, dove puoi ancora correggerlo prima di inviarlo, e **Rifai**
+chiede un altro giro. Se il lavoro tocca dei file, il consenso si dà una volta
+sola e dice quale cartella verrà modificata, quale comando di test verrà eseguito
+alla fine e se i file si possono riportare indietro con git.
+
 Anche la shell rapida conserva la sintassi originale: `! git status` esegue il
 comando e aggiunge il risultato al contesto; `!! git status` lo esegue senza
 aggiungerlo al contesto. In entrambi i casi la GUI mostra prima una conferma.
@@ -240,10 +250,14 @@ la garanzia assoluta sull'intero albero richiederebbe un Job Object nativo.
 | Conversazioni | `%USERPROFILE%\.pi\agent\sessions\` |
 | Libreria con cartella | `<cartella>\raw\<categoria>\` e `<cartella>\.ingest-index.json` |
 | Libreria senza cartella | `%USERPROFILE%\.pi\gui\libreria\` |
+| Lavori del consiglio | `%USERPROFILE%\.pi\gui\consigli\` |
 | Schede fonte, se la directory esiste | `<cartella>\wiki\sources\` |
 
 La libreria non scade e non viene rimossa dalla pulizia degli allegati
 temporanei. I riferimenti della richiesta sono salvati insieme alla bozza.
+
+I lavori del consiglio restano salvati in chiaro, con richiesta, istruzioni e
+contributi, e vengono eliminati dopo trenta giorni.
 
 Nell'app installata la documentazione originale è inclusa nelle risorse, sotto
 `runtime\pi\docs\`. Nel percorso browser/portable si trova invece dentro il

@@ -1,5 +1,53 @@
 # Changelog
 
+## 2.8.0 Pilot (non-production) — 2026-09-11
+
+- aggiunge il consiglio a più modelli in **Strumenti > Chiedi al consiglio**: la
+  stessa richiesta va a un massimo di quattro consiglieri, ciascuno con il proprio
+  modello fra quelli già collegati e con il proprio livello di ragionamento, e uno
+  scrittore ne fonde i contributi in una risposta sola; i ruoli si assegnano dal
+  pannello **Ruoli del consiglio** nelle impostazioni e nessun identificativo di
+  modello è scritto nella GUI, il catalogo arriva sempre da Pi;
+- mostra una scheda per ogni ruolo con lo stato scritto a parole e una scheda
+  **Risultato** con il testo fuso, la tabella di provenienza (parte del risultato,
+  contributo, modello, cosa è stato preso e perché), i contributi lasciati fuori,
+  i file modificati e l'esito del controllo; la colonna del modello la compila il
+  ponte con i propri dati, non lo scrittore;
+- fa entrare il testo nella bozza della chat soltanto con **Approva**, mentre
+  **Rifai** apre una revisione nuova senza cancellare la precedente e, quando è
+  possibile, propone prima di riportare indietro i file dichiarati;
+- vincola lo scrittore a un contratto a sezioni fisse, con testo unico, tabella
+  di provenienza, contributi scartati, elenco dei file modificati e caselle EVAL,
+  e scarta i contributi che non rispettano il formato senza fermare il lavoro;
+- esegue un controllo automatico prima di sbloccare **Approva**: nei lavori di
+  testo valuta le caselle EVAL, nei lavori di codice esegue lo script `test` del
+  `package.json` del progetto, congelato all'avvio e riconosciuto con un'impronta
+  SHA-256 ricalcolata prima di ogni esecuzione, con timeout, log troncato e
+  ambiente ridotto alle sole variabili necessarie;
+- limita gli strumenti per ruolo: i consiglieri leggono soltanto, lo scrittore
+  scrive soltanto dentro la cartella di lavoro e la shell resta negata; la guardia
+  è fail-closed e nel dubbio nega, ma riduce la superficie e non promette una
+  sandbox, perché l'applicazione gira con i permessi dell'account;
+- chiede il consenso una volta sola per lavoro, prima di iniziare: dice quale
+  cartella verrà modificata, quale comando verrà eseguito, che richiesta,
+  istruzioni e contributi restano salvati in chiaro fino a trenta giorni e se il
+  ripristino con git è possibile;
+- ripete una sola volta la chiamata al modello che risponde con un limite di
+  richieste (429), aspettando i secondi dichiarati nel testo dell'errore oppure
+  venti secondi, e mostra l'attesa nella scheda del ruolo;
+- salva ogni lavoro in un file JSON sotto `~/.pi/gui/consigli` con scrittura
+  atomica, conserva al massimo cinquanta lavori per trenta giorni e, alla
+  riapertura della finestra, ricarica dal disco anche i lavori interrotti dalla
+  chiusura del ponte, con la proposta di ripristino quando lo scrittore aveva già
+  dichiarato dei file;
+- limiti dichiarati: il ripristino con git riporta allo stato di partenza soltanto
+  i file già tracciati dal repository e non usa `reset --hard`, quindi i file nuovi
+  restano dove sono; il piano dei test viene riconosciuto solo dallo script `test`
+  di npm, altrimenti va indicato a mano e senza piano **Approva** resta bloccato
+  nei lavori di codice; l'intestazione HTTP `Retry-After` non arriva al ponte,
+  perché Pi consegna soltanto il testo dell'errore;
+- resta un pilot non-production, updater-disabled e non firmato Authenticode.
+
 ## 2.7.0 Pilot (non-production) — 2026-09-09
 
 - rende sicuro il cambio modello: se necessario riassume con il modello
