@@ -5256,6 +5256,9 @@ async function sincronizzaMessaggiFinali(sessione) {
 
 async function caricaCapacita(sessione, { refresh = false } = {}) {
   if (!sessione?.id || APP.sessioni.get(sessione.id) !== sessione) return false;
+  // La scheda "Risultato" del consiglio non ha un processo Pi dietro: il ponte
+  // risponderebbe 409 e il catalogo dei comandi non le serve.
+  if (sessione.schedaRisultato) return false;
   const richiesta = Number(sessione.richiestaCapacita || 0) + 1;
   sessione.richiestaCapacita = richiesta;
   sessione.capacitaInCaricamento = true;
