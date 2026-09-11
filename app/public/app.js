@@ -30,6 +30,8 @@ const {
 } = CLIPBOARD_CORE;
 const VISTA_CORE = globalThis.PiGuiViewCore;
 if (!VISTA_CORE) throw new Error("Il modulo di presentazione non e stato caricato");
+const CONSIGLIO_CORE = globalThis.PiGuiConsiglioCore;
+if (!CONSIGLIO_CORE) throw new Error("Il modulo del consiglio non è stato caricato");
 const ATTACHMENT_CORE = globalThis.PiGuiAttachmentCore;
 if (!ATTACHMENT_CORE) throw new Error("Il modulo degli allegati non e stato caricato");
 const LIBRARY_CORE = globalThis.PiGuiLibraryCore;
@@ -106,6 +108,7 @@ const DOM = {
   btnRicaricaSistemaGuidato: $("#btn-ricarica-sistema-guidato"),
   btnChiudiSistemaGuidato: $("#btn-chiudi-sistema-guidato"),
   statiEstensioni: $("#stati-estensioni"),
+  fasciaConsiglio: $("#fascia-consiglio"),
   widgetSopra: $("#widget-sopra"),
   widgetSotto: $("#widget-sotto"),
   velo: $("#velo"),
@@ -977,6 +980,12 @@ const APP = {
   modelliPredefiniti: {},
   sessioni: new Map(),
   attivaId: null,
+  // Lo stato del consiglio rispecchia il ponte: si ricostruisce dallo snapshot
+  // e dagli eventi, non nasce nel browser.
+  consiglio: CONSIGLIO_CORE.statoIniziale(),
+  // Letture di stato del consiglio in volo: chiave, promessa. Serve la
+  // promessa, non un semaforo, perché chi aspetta deve poterla attendere.
+  dettagliConsiglioInCorso: new Map(),
   preferite: [],
   recenti: [],
   radici: [],
@@ -2283,8 +2292,13 @@ async function chiedi(via, { corpo, signal } = {}) {
     throw new Error("Il ponte ha restituito una risposta non leggibile.");
   }
   if (!risposta.ok || dati.errore) {
-    const errore = new Error(dati.errore || `Errore HTTP ${risposta.status}`);
+    // Gli errori del consiglio hanno una forma propria, {codice, messaggio,
+    // recuperabile}, e sul consenso mancante portano anche il testo da mostrare:
+    // senza questi campi la spiegazione del ponte andrebbe persa.
+    const errore = new Error(dati.errore || dati.messaggio || `Errore HTTP ${risposta.status}`);
     errore.statusHttp = risposta.status;
+    if (typeof dati.consenso === "string") errore.consenso = dati.consenso;
+    if (typeof dati.recuperabile === "boolean") errore.recuperabile = dati.recuperabile;
     const codice = typeof dati.code === "string"
       ? dati.code
       : typeof dati.codice === "string"
@@ -2880,7 +2894,63 @@ function benvenuto(sessione) {
   return box;
 }
 
+// La scheda "Risultato" del consiglio arriva dallo snapshot del ponte e non ha
+// un processo dietro: niente bozza, niente allegati, niente cronologia. Resta
+// una voce di APP.sessioni soltanto perché la barra delle schede e la scheda
+// attiva lavorano su quella mappa.
+function creaSchedaRisultato(meta) {
+  const vista = crea("div", "vista-sessione");
+  const sessione = {
+    id: meta.id,
+    schedaRisultato: true,
+    consiglio: meta.consiglio || null,
+    cartella: meta.cartella || null,
+    nomeCartella: meta.nomeCartella || CONSIGLIO_CORE.NOME_SCHEDA_RISULTATO,
+    senzaCartella: Boolean(meta.senzaCartella),
+    nomeSessione: meta.nomeSessione || CONSIGLIO_CORE.NOME_SCHEDA_RISULTATO,
+    titoloEstensione: null,
+    provider: null,
+    modello: null,
+    nomeModello: null,
+    ragionamento: null,
+    fileSessione: null,
+    chiaveBozza: null,
+    bozza: "",
+    bozzaSporca: false,
+    attiva: false,
+    avvioCompletato: true,
+    riservata: false,
+    inEsecuzione: false,
+    errore: false,
+    sincronizzazione: false,
+    inviiPendenti: [],
+    inviiNascosti: new Set(),
+    allegati: [],
+    allegatiLibreria: [],
+    coda: { steering: [], followUp: [] },
+    modoCoda: "followUp",
+    comandi: [],
+    comandiPi: [],
+    modelli: [],
+    livelli: [],
+    statoRpc: {},
+    strumenti: new Map(),
+    statiEstensioni: new Map(),
+    widgetSopra: new Map(),
+    widgetSotto: new Map(),
+    ragionamentiAperti: new Set(),
+    gruppiAttivitaAperti: new Set(),
+    gruppiTurno: [],
+    frameDelta: null,
+    seguiFondo: true,
+    vista,
+  };
+  APP.sessioni.set(sessione.id, sessione);
+  return sessione;
+}
+
 function creaSessione(meta) {
+  if (CONSIGLIO_CORE.voceSchedaRisultato(meta)) return creaSchedaRisultato(meta);
   const vista = crea("div", "vista-sessione");
   const bozza = preparaBozza(meta);
   const inviiPendenti = caricaInviiPendenti(bozza.chiave);
@@ -3048,6 +3118,9 @@ function unisciSessione(meta) {
     "revisioneCatalogoModelliAttesa",
     "contextWindowCatalogoModelliAttesa",
     "rebindModelloInCorso",
+    // Il ponte marca così le sessioni dei ruoli del consiglio: senza questo
+    // campo la scheda non saprebbe che l'invio manuale è rifiutato dal server.
+    "consiglio",
   ];
   for (const campo of campi) {
     if (Object.hasOwn(meta, campo) && meta[campo] !== undefined) sessione[campo] = meta[campo];
@@ -3055,7 +3128,13 @@ function unisciSessione(meta) {
   if (Object.hasOwn(meta, "catalogoModelliDaRicaricare")) {
     sessione.contestoGptDaRicaricare = Boolean(meta.catalogoModelliDaRicaricare);
   }
-  if (Object.hasOwn(meta, "fileSessione") && meta.fileSessione !== undefined) {
+  // La scheda Risultato non ha una bozza propria: darle una chiave di bozza
+  // creerebbe record inutili nello spazio locale del browser.
+  if (
+    !sessione.schedaRisultato
+    && Object.hasOwn(meta, "fileSessione")
+    && meta.fileSessione !== undefined
+  ) {
     aggiornaIdentitaBozza(sessione, meta.fileSessione);
   }
   return sessione;
@@ -3063,6 +3142,7 @@ function unisciSessione(meta) {
 
 function applicaSnapshot(sessioni, { sostituisci = false } = {}) {
   const presenti = new Set();
+  APP.consiglio = CONSIGLIO_CORE.applicaSnapshotConsiglio(APP.consiglio, sessioni || [], { sostituisci });
   for (const meta of sessioni || []) {
     presenti.add(meta.id);
     unisciSessione(meta);
@@ -3105,10 +3185,7 @@ function sessioneAttiva() {
 }
 
 function idSessioneDiRipiego() {
-  const sessioni = [...APP.sessioni.values()];
-  return sessioni.slice().reverse().find((sessione) => sessione.attiva)?.id
-    || sessioni.at(-1)?.id
-    || null;
+  return CONSIGLIO_CORE.idRipiego([...APP.sessioni.values()]);
 }
 
 function azzeraUiEstensioni(sessione) {
@@ -3159,6 +3236,10 @@ function attivaSessione(id) {
   }
   DOM.conversazione.replaceChildren(sessione.vista);
   DOM.input.value = sessione.bozza;
+  if (sessione.schedaRisultato) {
+    disegnaSchedaRisultato(sessione);
+    void aggiornaDettaglioConsiglio(CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, sessione.id)?.lavoroId);
+  }
   document.title = sessione.titoloEstensione || "Interfaccia pi";
   disegnaAllegati();
   adattaAltezza();
@@ -3168,13 +3249,37 @@ function attivaSessione(id) {
   inFondo(sessione);
 }
 
+// Stato a parole di una scheda del consiglio: il colore da solo non basta a
+// chi legge con la tastiera o con uno screen reader.
+function statoSchedaConsiglio(sessione) {
+  if (sessione?.schedaRisultato) {
+    const lavoro = CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, sessione.id);
+    return {
+      testo: CONSIGLIO_CORE.testoStatoLavoro(lavoro?.stato),
+      livello: CONSIGLIO_CORE.livelloStatoLavoro(lavoro?.stato),
+    };
+  }
+  if (!sessione?.consiglio?.roleId) return null;
+  const riferimento = CONSIGLIO_CORE.ruoloDiSessione(APP.consiglio, sessione.id);
+  const stato = riferimento?.ruolo?.stato;
+  return {
+    testo: CONSIGLIO_CORE.testoStatoRuolo(stato),
+    livello: CONSIGLIO_CORE.livelloStatoRuolo(stato),
+  };
+}
+
 function disegnaSchede() {
   DOM.schede.replaceChildren();
   for (const sessione of APP.sessioni.values()) {
     const gruppo = crea("div", "scheda-gruppo");
+    const statoConsiglio = statoSchedaConsiglio(sessione);
     if (sessione.id === APP.attivaId) gruppo.classList.add("attiva");
-    if (sessione.inEsecuzione) gruppo.classList.add("lavora");
-    if (sessione.errore || !sessione.attiva) gruppo.classList.add("errore");
+    if (sessione.inEsecuzione || statoConsiglio?.livello === "lavoro") gruppo.classList.add("lavora");
+    if (
+      sessione.errore
+      || statoConsiglio?.livello === "errore"
+      || (!statoConsiglio && !sessione.attiva)
+    ) gruppo.classList.add("errore");
 
     const apri = crea("button", "scheda");
     apri.type = "button";
@@ -3182,7 +3287,8 @@ function disegnaSchede() {
     const statoAccessibile = [
       sessione.id === APP.attivaId ? "attiva" : null,
       sessione.inEsecuzione ? "pi sta lavorando" : null,
-      sessione.errore ? "errore" : !sessione.attiva ? "sessione chiusa" : null,
+      statoConsiglio ? statoConsiglio.testo : null,
+      statoConsiglio ? null : sessione.errore ? "errore" : !sessione.attiva ? "sessione chiusa" : null,
     ].filter(Boolean).join(", ");
     apri.setAttribute(
       "aria-label",
@@ -3195,13 +3301,22 @@ function disegnaSchede() {
     apri.appendChild(
       crea("span", "scheda-nome", sessione.nomeSessione || sessione.nomeCartella || "Sessione"),
     );
+    if (statoConsiglio) {
+      const etichettaStato = crea("span", "scheda-stato", statoConsiglio.testo);
+      etichettaStato.setAttribute("aria-hidden", "true");
+      apri.appendChild(etichettaStato);
+    }
     apri.onclick = () => attivaSessione(sessione.id);
 
     const chiudi = crea("button", "scheda-chiudi", "×");
     chiudi.type = "button";
-    chiudi.title = "Chiudi questa sessione";
+    chiudi.title = sessione.schedaRisultato
+      ? "Chiudi la scheda Risultato e annulla il lavoro del consiglio"
+      : "Chiudi questa sessione";
     chiudi.setAttribute("aria-label", "Chiudi " + (sessione.nomeSessione || sessione.nomeCartella));
-    chiudi.onclick = () => chiudiSessione(sessione.id);
+    chiudi.onclick = () => (sessione.schedaRisultato
+      ? chiudiSchedaRisultato(sessione.id)
+      : chiudiSessione(sessione.id));
     gruppo.append(apri, chiudi);
     DOM.schede.appendChild(gruppo);
   }
@@ -4575,6 +4690,13 @@ function gestisciEvento(evento) {
     if (!APP.attivaId && APP.sessioni.size) attivaSessione(idSessioneDiRipiego());
     return;
   }
+  // Gli eventi del consiglio parlano di un lavoro, non di una conversazione:
+  // gui_consiglio_ruolo porta un guiSessionId ma non è un evento di quella
+  // sessione, quindi si intercetta prima della normale risoluzione.
+  if (String(evento.type || "").startsWith("gui_consiglio_")) {
+    applicaEventoConsiglioGui(evento);
+    return;
+  }
 
   const id = evento.guiSessionId;
   let sessione = id ? APP.sessioni.get(id) : null;
@@ -4878,9 +5000,17 @@ function abilitaAzioni(attiva) {
 function aggiornaInterfacciaAttiva() {
   const sessione = sessioneAttiva();
   disegnaInviiDaVerificare(sessione);
+  disegnaFasciaConsiglio(sessione);
+  if (sessione?.schedaRisultato) {
+    aggiornaInterfacciaSchedaRisultato(sessione);
+    return;
+  }
   const composerScrivibile = Boolean(
     APP.bridgeOnline
       && sessione?.attiva
+      // Sulle sessioni dei ruoli il ponte rifiuta i prompt manuali: il composer
+      // resta spento invece di lasciare provare un invio destinato a un 409.
+      && CONSIGLIO_CORE.invioManualeConsentito(sessione)
       && sessione.avvioCompletato !== false
       && !sessione.handoffInCorso
       && !sessione.chiusuraInCorso
@@ -4900,7 +5030,9 @@ function aggiornaInterfacciaAttiva() {
   if (!mutazioniUtilizzabili) chiudiMenuAzioniComposer();
   DOM.input.disabled = !composerScrivibile;
   if (!APP.paletteComandi.aperta) {
-    DOM.suggerimento.textContent = sessione?.renderCronologiaInCorso && composerScrivibile
+    DOM.suggerimento.textContent = sessione?.consiglio?.roleId
+      ? "Questa conversazione è un ruolo del consiglio: l'invio manuale è disattivato, usa i pulsanti della scheda Risultato"
+      : sessione?.renderCronologiaInCorso && composerScrivibile
       ? "Ricostruisco la cronologia salvata: scrivi pure, la bozza resta salvata; invio e modifiche si riattivano al termine"
       : sessione?.compattazioneInCorso && composerScrivibile
         ? "Scrivi pure: la bozza resta salvata e potrai inviarla appena il riassunto e concluso"
@@ -9652,6 +9784,7 @@ async function eseguiAzione(azione) {
     toast("Avvia prima una conversazione.", "avviso");
     return;
   }
+  if (azione === "consiglio") return apriConsiglioDallaSessione();
   if (azione === "modello") return apriSceltaModello();
   if (azione === "ragionamento") return apriSceltaRagionamento();
   if (azione === "nuova") return nuovaConversazione();
@@ -9684,6 +9817,782 @@ async function eseguiAzione(azione) {
       toast(spiegaErrorePi(testoErrore(errore), sessione), "errore");
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Consiglio a più modelli: schede dei ruoli, scheda Risultato, pannello ruoli
+// ---------------------------------------------------------------------------
+
+// Adattatore unico verso il ponte. Gli errori del consiglio hanno la forma
+// {codice, messaggio, recuperabile}: qui diventano un esito, così le funzioni
+// del modulo del consiglio restano pure e provabili senza browser.
+// Senza corpo si legge, e leggere è una GET: `chiedi` distingue il metodo su
+// `corpo !== undefined`, quindi un null passato di sfuggita diventerebbe una
+// POST con il corpo "null", che il ponte rifiuta con 400.
+async function chiamaConsiglio(via, corpo) {
+  try {
+    return { ok: true, dati: await chiedi(via, corpo == null ? {} : { corpo }) };
+  } catch (errore) {
+    return {
+      ok: false,
+      codice: errore.codice || errore.code || "errore",
+      messaggio: testoErrore(errore),
+      consenso: typeof errore.consenso === "string" ? errore.consenso : null,
+      stato: errore.statusHttp || null,
+    };
+  }
+}
+
+function livelloRigaRuolo(riga, ruolo) {
+  if (riga.chiave === "stato") return CONSIGLIO_CORE.livelloStatoRuolo(ruolo?.stato);
+  if (riga.chiave === "errore") return "errore";
+  return "attesa";
+}
+
+// Fascia sopra la conversazione di un ruolo: stato a parole, attesa del
+// provider e ripetizione del consiglio restano righe distinte.
+function disegnaFasciaConsiglio(sessione) {
+  const riferimento = sessione?.consiglio?.roleId
+    ? CONSIGLIO_CORE.ruoloDiSessione(APP.consiglio, sessione.id)
+    : null;
+  DOM.fasciaConsiglio.replaceChildren();
+  DOM.fasciaConsiglio.hidden = !riferimento;
+  if (!riferimento) return;
+  const ruolo = riferimento.ruolo;
+  DOM.fasciaConsiglio.appendChild(
+    crea("span", "fascia-consiglio-titolo", CONSIGLIO_CORE.etichettaRuolo(ruolo)),
+  );
+  for (const riga of CONSIGLIO_CORE.righeRuolo(ruolo)) {
+    DOM.fasciaConsiglio.appendChild(
+      crea("span", "fascia-consiglio-riga livello-" + livelloRigaRuolo(riga, ruolo), riga.testo),
+    );
+  }
+  DOM.fasciaConsiglio.appendChild(
+    crea("span", "fascia-consiglio-riga", "Invio manuale disattivato: il risultato si governa dalla scheda Risultato"),
+  );
+}
+
+function aggiornaInterfacciaSchedaRisultato(sessione) {
+  const lavoro = CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, sessione.id);
+  const livello = CONSIGLIO_CORE.livelloStatoLavoro(lavoro?.stato);
+  chiudiPaletteComandi();
+  chiudiMenuAzioniComposer();
+  DOM.input.disabled = true;
+  DOM.btnInvia.disabled = true;
+  DOM.btnAllega.disabled = true;
+  DOM.btnModello.disabled = true;
+  DOM.btnRagionamento.disabled = true;
+  DOM.btnControlli.disabled = true;
+  DOM.btnAlbero.disabled = true;
+  DOM.modoCoda.disabled = true;
+  DOM.btnRicaricaRisorse.disabled = true;
+  DOM.btnRicaricaRisorse.setAttribute("aria-busy", "false");
+  DOM.azioneAllegaFile.disabled = true;
+  DOM.azioneAllegaCartella.disabled = true;
+  DOM.azioneAllegaImmagine.disabled = true;
+  DOM.azioneRichiamaSkill.disabled = true;
+  DOM.azioneComandiEstensioni.disabled = true;
+  DOM.azioneRicaricaRisorse.disabled = true;
+  DOM.btnStatoAttivita.disabled = true;
+  DOM.invioOccupato.hidden = true;
+  DOM.btnFermaTop.hidden = true;
+  DOM.btnCercaComandi.hidden = true;
+  abilitaAzioni(false);
+  DOM.suggerimento.textContent = "La scheda Risultato non si scrive: usa Approva, Rifai o Annulla";
+  DOM.conversazione.setAttribute(
+    "aria-busy",
+    String(CONSIGLIO_CORE.STATI_LAVORO_IN_CORSO.includes(lavoro?.stato)),
+  );
+  DOM.etiCartella.textContent = CONSIGLIO_CORE.NOME_SCHEDA_RISULTATO;
+  DOM.etiPercorso.textContent = sessione.cartella || "Lavoro di solo testo";
+  DOM.etiPercorso.title = sessione.cartella || "";
+  DOM.etiModello.textContent = "consiglio";
+  DOM.etiRagionamento.textContent = "—";
+  DOM.listaComandi.replaceChildren();
+  DOM.notaComandi.textContent = "La scheda Risultato non ha comandi: mostra il lavoro del consiglio.";
+  disegnaBarraStatoSessione(null);
+  disegnaEstensioni(null);
+  disegnaCoda(sessione);
+  segnaStato(
+    livello === "errore" ? "errore" : livello === "lavoro" ? "lavora" : "",
+    CONSIGLIO_CORE.testoStatoLavoro(lavoro?.stato).toLowerCase(),
+  );
+}
+
+function tabellaConsiglio(intestazioni, righe, celle) {
+  const tabella = crea("table", "consiglio-tabella");
+  const testa = crea("thead");
+  const rigaTesta = crea("tr");
+  for (const intestazione of intestazioni) rigaTesta.appendChild(crea("th", null, intestazione));
+  testa.appendChild(rigaTesta);
+  const corpo = crea("tbody");
+  for (const riga of righe) {
+    const elemento = crea("tr");
+    for (const cella of celle(riga)) elemento.appendChild(crea("td", null, cella));
+    corpo.appendChild(elemento);
+  }
+  tabella.append(testa, corpo);
+  return tabella;
+}
+
+function sezioneConsiglio(titolo) {
+  const sezione = crea("section", "consiglio-sezione");
+  sezione.appendChild(crea("h3", null, titolo));
+  return sezione;
+}
+
+// La scheda Risultato si disegna soltanto dai dati del ponte: lo stato del
+// lavoro arriva dallo snapshot e dagli eventi, il testo e le tabelle dalla
+// lettura di /api/consiglio/stato.
+function disegnaSchedaRisultato(sessione) {
+  const lavoro = CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, sessione.id);
+  const vista = CONSIGLIO_CORE.vistaRisultato(lavoro);
+  const pannello = crea("div", "consiglio-pannello");
+
+  const intestazione = crea("div", "consiglio-intestazione");
+  intestazione.appendChild(crea("h2", null, vista.titolo));
+  intestazione.appendChild(
+    crea("span", "consiglio-stato livello-" + vista.stato.livello, vista.stato.testo),
+  );
+  if (vista.revisione) intestazione.appendChild(crea("span", "consiglio-nota", "Revisione " + vista.revisione));
+  pannello.appendChild(intestazione);
+  if (vista.motivo) pannello.appendChild(crea("p", "consiglio-motivo", vista.motivo));
+
+  const sezioneAzioni = sezioneConsiglio("Cosa vuoi fare");
+  const azioni = crea("div", "consiglio-azioni");
+  for (const azione of vista.azioni) {
+    const bottone = crea(
+      "button",
+      "bottone" + (azione.chiave === "approva" ? " primario" : ""),
+      azione.etichetta,
+    );
+    bottone.type = "button";
+    bottone.disabled = !azione.attivo;
+    if (azione.motivo) bottone.title = azione.motivo;
+    bottone.onclick = () => {
+      if (azione.chiave === "approva") return void approvaConsiglioDallaScheda(vista.lavoroId);
+      if (azione.chiave === "rifai") return void rifaiConsiglioDallaScheda(vista.lavoroId);
+      return void annullaConsiglioDallaScheda(vista.lavoroId);
+    };
+    azioni.appendChild(bottone);
+  }
+  sezioneAzioni.appendChild(azioni);
+  for (const azione of vista.azioni) {
+    if (azione.attivo || !azione.motivo) continue;
+    sezioneAzioni.appendChild(
+      crea("p", "consiglio-motivo", azione.etichetta + " non è disponibile. " + azione.motivo),
+    );
+  }
+  pannello.appendChild(sezioneAzioni);
+
+  const sezioneControllo = sezioneConsiglio("Controllo automatico");
+  sezioneControllo.appendChild(crea("p", null, vista.controllo.testo));
+  if (vista.controllo.motivi.length) {
+    const elencoMotivi = crea("ul", "consiglio-elenco");
+    for (const motivo of vista.controllo.motivi) elencoMotivi.appendChild(crea("li", null, motivo));
+    sezioneControllo.appendChild(elencoMotivi);
+  }
+  pannello.appendChild(sezioneControllo);
+
+  if (vista.ripristino?.proposto) {
+    const sezioneRipristino = sezioneConsiglio("Ripristino proposto");
+    sezioneRipristino.appendChild(crea("p", null,
+      "Questo lavoro non è arrivato in fondo. Con Rifai posso riportare indietro questi file, e prima te lo chiedo:"));
+    const elencoRipristino = crea("ul", "consiglio-elenco");
+    for (const percorso of vista.ripristino.file || []) {
+      elencoRipristino.appendChild(crea("li", null, percorso));
+    }
+    sezioneRipristino.appendChild(elencoRipristino);
+    pannello.appendChild(sezioneRipristino);
+  } else if (vista.ripristino?.motivo) {
+    pannello.appendChild(crea("p", "consiglio-nota", "Ripristino: " + vista.ripristino.motivo));
+  }
+
+  if (vista.assegnazioni.length) {
+    const sezioneAssegnazioni = sezioneConsiglio("Chi lavora a questa revisione");
+    sezioneAssegnazioni.appendChild(tabellaConsiglio(
+      ["Ruolo", "Modello"],
+      vista.assegnazioni,
+      (riga) => [riga.etichetta, riga.modello],
+    ));
+    pannello.appendChild(sezioneAssegnazioni);
+  }
+
+  const sezioneTesto = sezioneConsiglio(
+    vista.inComposizione ? "Bozza in composizione" : "Testo fuso",
+  );
+  sezioneTesto.appendChild(crea(
+    "p",
+    "consiglio-testo",
+    vista.testo || "Il testo fuso non è ancora disponibile.",
+  ));
+  pannello.appendChild(sezioneTesto);
+
+  const sezioneProvenienza = sezioneConsiglio("Cosa ho preso da chi");
+  if (vista.provenienza.righe.length) {
+    sezioneProvenienza.appendChild(tabellaConsiglio(
+      vista.provenienza.intestazioni,
+      vista.provenienza.righe,
+      (riga) => [riga.parte, riga.contributo, riga.modello, riga.cosaHoPreso, riga.perche],
+    ));
+  } else {
+    sezioneProvenienza.appendChild(crea("p", "consiglio-nota", "Nessuna riga di provenienza dichiarata."));
+  }
+  sezioneProvenienza.appendChild(crea(
+    "p",
+    "consiglio-nota",
+    "La colonna Modello la scrive il ponte con i propri dati, non lo scrittore.",
+  ));
+  pannello.appendChild(sezioneProvenienza);
+
+  const sezioneScartati = sezioneConsiglio("Cosa ho lasciato fuori");
+  if (vista.scartati.righe.length) {
+    sezioneScartati.appendChild(tabellaConsiglio(
+      vista.scartati.intestazioni,
+      vista.scartati.righe,
+      (riga) => [riga.contributo, riga.modello, riga.cosaHoLasciatoFuori, riga.perche],
+    ));
+  } else {
+    sezioneScartati.appendChild(crea("p", "consiglio-nota", "Lo scrittore non ha dichiarato scarti."));
+  }
+  if (vista.contributiScartati.length) {
+    sezioneScartati.appendChild(crea("p", "consiglio-nota", "Contributi non entrati nella fusione:"));
+    const elencoScartati = crea("ul", "consiglio-elenco");
+    for (const voce of vista.contributiScartati) {
+      elencoScartati.appendChild(crea("li", null, voce.roleId + " (" + voce.modello + "): " + voce.motivo));
+    }
+    sezioneScartati.appendChild(elencoScartati);
+  }
+  pannello.appendChild(sezioneScartati);
+
+  if (vista.fileModificati.length) {
+    const sezioneFile = sezioneConsiglio("File dichiarati modificati");
+    const elencoFile = crea("ul", "consiglio-elenco");
+    for (const percorso of vista.fileModificati) elencoFile.appendChild(crea("li", null, percorso));
+    sezioneFile.appendChild(elencoFile);
+    pannello.appendChild(sezioneFile);
+  }
+
+  if (vista.valutazione.length) {
+    const sezioneEval = sezioneConsiglio("Autovalutazione dello scrittore");
+    sezioneEval.appendChild(crea(
+      "p",
+      "consiglio-nota",
+      "È l'autovalutazione dello scrittore, non una verifica indipendente.",
+    ));
+    const elencoEval = crea("ul", "consiglio-elenco");
+    for (const casella of vista.valutazione) {
+      elencoEval.appendChild(crea(
+        "li",
+        null,
+        (casella.segnata ? "Sì" : "No") + " · " + casella.codice + " " + (casella.descrizione || "")
+        + (casella.evidenza ? " Evidenza: " + casella.evidenza : ""),
+      ));
+    }
+    sezioneEval.appendChild(elencoEval);
+    pannello.appendChild(sezioneEval);
+  }
+
+  if (vista.storico.length) {
+    const sezioneStorico = sezioneConsiglio("Revisioni precedenti");
+    const elencoStorico = crea("ul", "consiglio-elenco");
+    for (const voce of vista.storico) {
+      elencoStorico.appendChild(crea("li", null, "Revisione " + voce.revisione + ": " + voce.stato));
+    }
+    sezioneStorico.appendChild(elencoStorico);
+    pannello.appendChild(sezioneStorico);
+  }
+
+  sessione.vista.replaceChildren(pannello);
+  return pannello;
+}
+
+function ridisegnaConsiglio(lavoroId) {
+  disegnaSchede();
+  const attiva = sessioneAttiva();
+  if (!attiva) return;
+  if (attiva.schedaRisultato) {
+    const lavoro = CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, attiva.id);
+    if (!lavoroId || lavoro?.lavoroId === lavoroId) {
+      disegnaSchedaRisultato(attiva);
+      aggiornaInterfacciaSchedaRisultato(attiva);
+    }
+    return;
+  }
+  if (attiva.consiglio?.lavoroId && (!lavoroId || attiva.consiglio.lavoroId === lavoroId)) {
+    disegnaFasciaConsiglio(attiva);
+  }
+}
+
+function applicaEventoConsiglioGui(evento) {
+  const esito = CONSIGLIO_CORE.applicaEventoConsiglio(APP.consiglio, evento);
+  if (!esito.applicato) return;
+  APP.consiglio = esito.stato;
+  ridisegnaConsiglio(esito.lavoroId);
+  if (APP.consiglio.lavori[esito.lavoroId]?.dettaglioDaLeggere) {
+    void aggiornaDettaglioConsiglio(esito.lavoroId);
+  }
+  // Il ponte manda lo snapshot solo all'apertura del canale: una finestra già
+  // collegata quando il consiglio parte non avrebbe la scheda Risultato finché
+  // non ricarica. Alla prima notizia di un lavoro sconosciuto si rilegge lo
+  // stato, una volta sola.
+  const scheda = CONSIGLIO_CORE.PREFISSO_SCHEDA_RISULTATO + esito.lavoroId;
+  const attesa = "scheda:" + esito.lavoroId;
+  if (!APP.sessioni.has(scheda) && !APP.dettagliConsiglioInCorso.has(attesa)) {
+    const rilettura = aggiornaDalPonte({ sostituisci: true })
+      .catch(() => {})
+      .finally(() => APP.dettagliConsiglioInCorso.delete(attesa));
+    APP.dettagliConsiglioInCorso.set(attesa, rilettura);
+  }
+}
+
+// Il testo del risultato non viaggia negli eventi: si legge da qui quando lo
+// stato cambia oppure quando si apre la scheda. Una lettura già in volo non si
+// duplica e nemmeno si ignora: chi arriva dopo riceve quella promessa, così
+// l'attesa di Rifai attende davvero una lettura buona invece di tornare subito.
+function aggiornaDettaglioConsiglio(lavoroId) {
+  if (!lavoroId) return Promise.resolve(false);
+  const inVolo = APP.dettagliConsiglioInCorso.get(lavoroId);
+  if (inVolo) return inVolo;
+  const lettura = leggiDettaglioConsiglio(lavoroId, true)
+    .finally(() => APP.dettagliConsiglioInCorso.delete(lavoroId));
+  APP.dettagliConsiglioInCorso.set(lavoroId, lettura);
+  return lettura;
+}
+
+// Un errore o una lettura sorpassata lasciano il lavoro da leggere: senza una
+// seconda lettura la scheda resterebbe ferma su "Il testo fuso non è ancora
+// disponibile" senza dire perché. Si riprova una volta sola, poi si parla.
+async function leggiDettaglioConsiglio(lavoroId, riprova) {
+  const esito = await chiamaConsiglio("/api/consiglio/stato", { lavoroId });
+  if (!esito.ok) {
+    if (riprova) return leggiDettaglioConsiglio(lavoroId, false);
+    toast("Non riesco a leggere il risultato del consiglio: " + esito.messaggio, "errore");
+    return false;
+  }
+  APP.consiglio = CONSIGLIO_CORE.applicaDettaglioConsiglio(APP.consiglio, esito.dati).stato;
+  ridisegnaConsiglio(lavoroId);
+  if (riprova && APP.consiglio.lavori[lavoroId]?.dettaglioDaLeggere) {
+    return leggiDettaglioConsiglio(lavoroId, false);
+  }
+  return true;
+}
+
+// Approva non invia niente: scrive la bozza della conversazione sorgente e
+// lascia all'utente la decisione di mandarla.
+function scriviBozzaConsiglio({ sessionId, testo }) {
+  const sessione = APP.sessioni.get(sessionId);
+  if (!sessione || sessione.schedaRisultato) return false;
+  ramificaLineageBozza(sessione);
+  sessione.bozza = String(testo || "");
+  sessione.bozzaSporca = true;
+  salvaBozza(sessione);
+  if (sessione.id === APP.attivaId) {
+    DOM.input.value = sessione.bozza;
+    adattaAltezza();
+    aggiornaInterfacciaAttiva();
+  }
+  return true;
+}
+
+async function approvaConsiglioDallaScheda(lavoroId) {
+  const lavoro = APP.consiglio.lavori[lavoroId];
+  if (!lavoro) return;
+  const esito = await CONSIGLIO_CORE.approvaConsiglio({
+    lavoro,
+    operationId: globalThis.crypto.randomUUID(),
+    chiama: chiamaConsiglio,
+    scriviBozza: scriviBozzaConsiglio,
+  });
+  if (!esito.approvato) {
+    toast(esito.messaggio, "errore");
+    void aggiornaDettaglioConsiglio(lavoroId);
+    return;
+  }
+  if (APP.sessioni.has(esito.sourceSessionId)) attivaSessione(esito.sourceSessionId);
+  // La conversazione di partenza può essere stata chiusa mentre il consiglio
+  // lavorava: in quel caso il testo non è finito in nessuna bozza e va detto,
+  // perché resta leggibile e copiabile solo qui sulla scheda Risultato.
+  toast(
+    esito.bozzaScritta
+      ? "Risultato approvato: il testo è nella bozza della conversazione di partenza, pronto da inviare o copiare."
+      : "Risultato approvato, ma la conversazione di partenza non è più aperta: il testo resta qui sulla scheda Risultato, pronto da copiare.",
+    esito.bozzaScritta ? "" : "avviso",
+  );
+  void aggiornaDettaglioConsiglio(lavoroId);
+}
+
+function chiediConfermaRipristino({ file }) {
+  return new Promise((risolvi) => {
+    const corpo = apriModale("Riportare indietro i file?", { onCancel: () => risolvi(false) });
+    corpo.appendChild(crea("p", "nota",
+      "Prima di rifare posso riportare questi file allo stato registrato all'avvio del lavoro. I file non tracciati da git restano come sono."));
+    const elenco = crea("ul", "consiglio-elenco");
+    for (const percorso of file) elenco.appendChild(crea("li", null, percorso));
+    corpo.appendChild(elenco);
+    DOM.modalePiede.hidden = false;
+    const annulla = crea("button", "bottone", "Non ripristinare");
+    const conferma = crea("button", "bottone primario", "Ripristina e rifai");
+    annulla.type = "button";
+    conferma.type = "button";
+    annulla.onclick = () => chiudiModale();
+    conferma.onclick = () => {
+      chiudiModale({ annulla: false });
+      risolvi(true);
+    };
+    DOM.modalePiede.append(annulla, conferma);
+  });
+}
+
+async function rifaiConsiglioDallaScheda(lavoroId) {
+  const lavoro = APP.consiglio.lavori[lavoroId];
+  if (!lavoro) return;
+  const istruzioni = await chiediTesto(
+    "Rifai con il consiglio",
+    "Istruzioni aggiuntive per la nuova revisione (facoltative)",
+    "",
+    true,
+  );
+  if (istruzioni === null) return;
+  const esito = await CONSIGLIO_CORE.rifaiConsiglio({
+    lavoro,
+    istruzioni,
+    ripristina: lavoro.tipo === "codice" && Boolean(lavoro.git?.disponibile),
+    operationId: globalThis.crypto.randomUUID(),
+    chiama: chiamaConsiglio,
+    chiediConferma: chiediConfermaRipristino,
+  });
+  if (!esito.rifatto) {
+    toast(esito.messaggio, esito.codice === "ripristino-non-confermato" ? "avviso" : "errore");
+    void aggiornaDettaglioConsiglio(lavoroId);
+    return;
+  }
+  APP.consiglio = CONSIGLIO_CORE.registraNuovaRevisione(APP.consiglio, {
+    lavoroId,
+    revisione: esito.revisione,
+  });
+  ridisegnaConsiglio(lavoroId);
+  await aggiornaDettaglioConsiglio(lavoroId);
+  const nuove = CONSIGLIO_CORE.vistaAssegnazioni(
+    Object.values(APP.consiglio.lavori[lavoroId]?.ruoli || {}),
+  );
+  toast(
+    "Revisione " + esito.revisione + " avviata"
+    + (nuove.length ? ": " + nuove.map((voce) => voce.etichetta + " con " + voce.modello).join(", ") : "."),
+  );
+}
+
+async function annullaConsiglioDallaScheda(lavoroId) {
+  const lavoro = APP.consiglio.lavori[lavoroId];
+  if (!lavoro) return;
+  const confermato = await conferma(
+    "Annullare il lavoro del consiglio?",
+    "Le conversazioni dei ruoli vengono chiuse e la scheda Risultato sparisce. La conversazione di partenza non viene toccata.",
+    "Annulla il lavoro",
+  );
+  if (!confermato) return;
+  const esito = await CONSIGLIO_CORE.annullaConsiglio({ lavoro, chiama: chiamaConsiglio });
+  if (!esito.annullato) {
+    toast(esito.messaggio, "errore");
+    return;
+  }
+  await aggiornaDalPonte({ sostituisci: true });
+}
+
+async function chiudiSchedaRisultato(id) {
+  const lavoro = CONSIGLIO_CORE.lavoroDiScheda(APP.consiglio, id);
+  if (!lavoro) return;
+  await annullaConsiglioDallaScheda(lavoro.lavoroId);
+}
+
+function chiediConsensoConsiglio(vista) {
+  return new Promise((risolvi) => {
+    const corpo = apriModale("Il consiglio modificherà i file di questa cartella", {
+      onCancel: () => risolvi(false),
+    });
+    corpo.appendChild(crea("p", "nota",
+      "Prima di avviare un lavoro di codice leggi che cosa succede. Il consenso si chiede una volta sola, all'avvio."));
+    const elenco = crea("ul", "consiglio-consenso");
+    for (const riga of vista.righe) {
+      if (riga.chiave === "comando" && vista.comando) {
+        const voce = crea("li");
+        voce.appendChild(crea("span", null, riga.testo.slice(0, riga.testo.length - vista.comando.length)));
+        voce.appendChild(crea("code", "consiglio-comando", vista.comando));
+        elenco.appendChild(voce);
+        continue;
+      }
+      elenco.appendChild(crea("li", null, riga.testo));
+    }
+    corpo.appendChild(elenco);
+    if (!vista.ripristinoPromesso) {
+      corpo.appendChild(crea("p", "consiglio-avviso",
+        "Senza git non posso promettere di riportare indietro i file: quello che il consiglio modifica resta modificato."));
+    }
+    DOM.modalePiede.hidden = false;
+    const annulla = crea("button", "bottone", "Non avviare");
+    const accetta = crea("button", "bottone primario", "Ho capito, avvia");
+    annulla.type = "button";
+    accetta.type = "button";
+    annulla.onclick = () => chiudiModale();
+    accetta.onclick = () => {
+      chiudiModale({ annulla: false });
+      risolvi(true);
+    };
+    DOM.modalePiede.append(annulla, accetta);
+  });
+}
+
+async function apriConsiglioDallaSessione() {
+  const sessione = sessioneAttiva();
+  if (!sessione || sessione.schedaRisultato || sessione.consiglio) {
+    toast("Apri prima una conversazione tua: il consiglio parte da lì.", "avviso");
+    return;
+  }
+  const prompt = String(DOM.input.value || sessione.bozza || "").trim();
+  if (!prompt) {
+    toast("Scrivi prima la richiesta nel campo di testo: il consiglio manda quella a tutti i ruoli.", "avviso");
+    return;
+  }
+  const corpo = apriModale("Chiedi al consiglio");
+  corpo.appendChild(crea("p", "nota",
+    "La richiesta va a tutti i consiglieri, poi lo scrittore ne compone una risposta sola. La conversazione di partenza non viene toccata."));
+  const anteprima = crea("p", "consiglio-testo", prompt);
+  corpo.appendChild(anteprima);
+
+  const rigaTipo = crea("label", "riga-impostazione");
+  rigaTipo.appendChild(crea("span", "testo-impostazione", "Tipo di lavoro"));
+  const tipo = crea("select", "campo");
+  const opzioneTesto = crea("option", null, "Solo testo, nessun file viene toccato");
+  opzioneTesto.value = "testo";
+  tipo.appendChild(opzioneTesto);
+  if (sessione.cartella) {
+    const opzioneCodice = crea("option", null, "Codice, lo scrittore modifica i file della cartella");
+    opzioneCodice.value = "codice";
+    tipo.appendChild(opzioneCodice);
+  }
+  rigaTipo.appendChild(tipo);
+  corpo.appendChild(rigaTipo);
+  if (!sessione.cartella) {
+    corpo.appendChild(crea("p", "nota",
+      "Questa conversazione non ha una cartella di lavoro: il consiglio può fare solo lavori di testo."));
+  }
+
+  const rigaIstruzioni = crea("label", "campo-etichetta", "Istruzioni aggiuntive (facoltative)");
+  const istruzioni = crea("textarea", "area-testo");
+  rigaIstruzioni.appendChild(istruzioni);
+  corpo.appendChild(rigaIstruzioni);
+
+  const stato = crea("p", "nota", "Leggo i ruoli del consiglio...");
+  stato.setAttribute("role", "status");
+  stato.setAttribute("aria-live", "polite");
+  corpo.appendChild(stato);
+
+  const modaleRichiesta = APP.modale;
+  DOM.modalePiede.hidden = false;
+  const annulla = crea("button", "bottone", "Annulla");
+  const avvia = crea("button", "bottone primario", "Avvia il consiglio");
+  annulla.type = "button";
+  avvia.type = "button";
+  avvia.disabled = true;
+  annulla.onclick = () => chiudiModale();
+  avvia.onclick = async () => {
+    avvia.disabled = true;
+    stato.textContent = "Avvio il consiglio...";
+    const scelte = { tipo: tipo.value, istruzioni: istruzioni.value.trim() || null };
+    chiudiModale({ annulla: false });
+    const esito = await CONSIGLIO_CORE.avviaConsiglio({
+      sourceSessionId: sessione.id,
+      prompt,
+      istruzioni: scelte.istruzioni,
+      tipo: scelte.tipo,
+      operationId: globalThis.crypto.randomUUID(),
+      chiama: chiamaConsiglio,
+      chiediConsenso: chiediConsensoConsiglio,
+    });
+    if (!esito.avviato) {
+      if (esito.codice !== "consenso-rifiutato") toast(esito.messaggio, "errore");
+      return;
+    }
+    await aggiornaDalPonte({ sostituisci: true });
+    const scheda = CONSIGLIO_CORE.PREFISSO_SCHEDA_RISULTATO + esito.dati.lavoroId;
+    if (APP.sessioni.has(scheda)) attivaSessione(scheda);
+  };
+  DOM.modalePiede.append(annulla, avvia);
+
+  const ruoli = await chiamaConsiglio("/api/consiglio/ruoli?sessionId=" + encodeURIComponent(sessione.id));
+  if (APP.modale !== modaleRichiesta) return;
+  if (!ruoli.ok) {
+    stato.textContent = "Non riesco a leggere i ruoli del consiglio: " + ruoli.messaggio;
+    return;
+  }
+  const vista = CONSIGLIO_CORE.vistaPannelloRuoli(ruoli.dati);
+  const assegnazioni = CONSIGLIO_CORE.vistaAssegnazioni([
+    ...ruoli.dati.effettive.consiglieri,
+    ruoli.dati.effettive.scrittore,
+  ]);
+  stato.textContent = assegnazioni
+    .map((voce) => voce.etichetta + ": " + voce.modello)
+    .join(" · ");
+  for (const avviso of vista.avvisi) corpo.appendChild(crea("p", "consiglio-avviso", avviso));
+  corpo.appendChild(crea("p", "consiglio-nota", vista.rigaSalvataggio));
+  avvia.disabled = !vista.avvioPossibile;
+  if (!vista.avvioPossibile) {
+    stato.textContent = "Nessun modello utilizzabile: collega un provider dalle impostazioni prima di avviare.";
+  }
+}
+
+// Pannello dei ruoli dentro le impostazioni della GUI. Le opzioni dei modelli
+// sono esattamente quelle del catalogo che il ponte ha restituito.
+function disegnaPannelloRuoliConsiglio(contenitore, stato, azioni) {
+  contenitore.replaceChildren();
+  const vista = stato.vista;
+  contenitore.appendChild(crea("h4", null, "Ruoli del consiglio"));
+  contenitore.appendChild(crea("p", "nota",
+    "Un consigliere risponde alla richiesta, lo scrittore ne compone una risposta sola. Il modello Automatico lo sceglie il ponte."));
+  const righe = [
+    ...stato.bozza.consiglieri.map((voce, indice) => ({ voce, tipo: "consigliere", ordine: indice + 1 })),
+    { voce: stato.bozza.scrittore, tipo: "scrittore", ordine: stato.bozza.consiglieri.length + 1 },
+  ];
+  righe.forEach(({ voce, tipo, ordine }, indice) => {
+    const riga = crea("div", "consiglio-ruoli-riga");
+    const effettiva = vista.righe.find((candidata) => candidata.roleId === voce.roleId) || null;
+    riga.appendChild(crea("strong", null, CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine)));
+    const modello = crea("select", "campo");
+    modello.setAttribute("aria-label", "Modello di " + CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine));
+    const automatico = crea("option", null, "Automatico");
+    automatico.value = "";
+    modello.appendChild(automatico);
+    for (const candidato of vista.catalogo) {
+      const opzione = crea("option", null, candidato.etichetta);
+      opzione.value = candidato.chiave;
+      modello.appendChild(opzione);
+    }
+    modello.value = voce.model || "";
+    modello.onchange = () => {
+      voce.model = modello.value || null;
+      azioni.segnaModificato();
+    };
+    riga.appendChild(modello);
+    const ragionamento = crea("select", "campo");
+    ragionamento.setAttribute("aria-label", "Ragionamento di " + CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine));
+    const predefinito = crea("option", null, "Ragionamento predefinito");
+    predefinito.value = "";
+    ragionamento.appendChild(predefinito);
+    for (const livello of stato.livelli) {
+      const opzione = crea("option", null, traduciLivello(livello));
+      opzione.value = livello;
+      ragionamento.appendChild(opzione);
+    }
+    ragionamento.value = voce.thinking || "";
+    ragionamento.onchange = () => {
+      voce.thinking = ragionamento.value || null;
+      azioni.segnaModificato();
+    };
+    riga.appendChild(ragionamento);
+    if (effettiva?.nonDisponibile) {
+      riga.appendChild(crea("span", "consiglio-avviso", "Non disponibile: " + effettiva.nonDisponibile));
+    } else if (effettiva?.etichettaModelloAttivo) {
+      riga.appendChild(crea("span", "consiglio-nota", "In uso: " + effettiva.etichettaModelloAttivo));
+    }
+    if (tipo === "consigliere") {
+      const su = crea("button", "bottone", "Su");
+      su.type = "button";
+      su.disabled = indice === 0;
+      su.setAttribute("aria-label", "Sposta in alto " + CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine));
+      su.onclick = () => azioni.muovi(indice, -1);
+      const giu = crea("button", "bottone", "Giù");
+      giu.type = "button";
+      giu.disabled = indice >= stato.bozza.consiglieri.length - 1;
+      giu.setAttribute("aria-label", "Sposta in basso " + CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine));
+      giu.onclick = () => azioni.muovi(indice, 1);
+      const togli = crea("button", "bottone", "Togli");
+      togli.type = "button";
+      togli.disabled = stato.bozza.consiglieri.length <= 1;
+      togli.setAttribute("aria-label", "Togli " + CONSIGLIO_CORE.etichettaRuoloBreve(tipo, ordine));
+      togli.onclick = () => azioni.togli(indice);
+      riga.append(su, giu, togli);
+    }
+    contenitore.appendChild(riga);
+  });
+  const aggiungi = crea("button", "bottone", "Aggiungi un consigliere");
+  aggiungi.type = "button";
+  aggiungi.disabled = stato.bozza.consiglieri.length >= 4;
+  aggiungi.onclick = () => azioni.aggiungi();
+  contenitore.appendChild(aggiungi);
+  for (const avviso of vista.avvisi) contenitore.appendChild(crea("p", "consiglio-avviso", avviso));
+  contenitore.appendChild(crea("p", "consiglio-nota", vista.rigaSalvataggio));
+  return contenitore;
+}
+
+async function apriPannelloRuoliConsiglio(contenitore, sessionId) {
+  const stato = { vista: null, bozza: null, livelli: [] };
+  const sessione = sessionId ? APP.sessioni.get(sessionId) : null;
+  stato.livelli = sessione?.livelli?.length ? sessione.livelli : ["off", "low", "medium", "high"];
+  const messaggio = crea("p", "nota", "Leggo i ruoli del consiglio...");
+  messaggio.setAttribute("role", "status");
+  messaggio.setAttribute("aria-live", "polite");
+  const elenco = crea("div", "consiglio-ruoli-elenco");
+  contenitore.append(messaggio, elenco);
+  const salva = crea("button", "bottone", "Salva i ruoli del consiglio");
+  salva.type = "button";
+  salva.disabled = true;
+  contenitore.appendChild(salva);
+
+  const azioni = {
+    segnaModificato: () => {
+      salva.disabled = false;
+    },
+    aggiungi: () => {
+      const roleId = CONSIGLIO_CORE.roleIdConsigliereLibero(stato.bozza);
+      if (!roleId) return;
+      stato.bozza.consiglieri.push({ roleId, model: null, thinking: null });
+      azioni.segnaModificato();
+      disegnaPannelloRuoliConsiglio(elenco, stato, azioni);
+    },
+    togli: (indice) => {
+      stato.bozza.consiglieri.splice(indice, 1);
+      azioni.segnaModificato();
+      disegnaPannelloRuoliConsiglio(elenco, stato, azioni);
+    },
+    muovi: (indice, passo) => {
+      const destinazione = indice + passo;
+      if (destinazione < 0 || destinazione >= stato.bozza.consiglieri.length) return;
+      const voci = stato.bozza.consiglieri;
+      [voci[indice], voci[destinazione]] = [voci[destinazione], voci[indice]];
+      azioni.segnaModificato();
+      disegnaPannelloRuoliConsiglio(elenco, stato, azioni);
+    },
+  };
+
+  const carica = async (corpo) => {
+    const esito = await chiamaConsiglio(
+      "/api/consiglio/ruoli" + (corpo ? "" : "?sessionId=" + encodeURIComponent(sessionId || "")),
+      corpo,
+    );
+    if (!esito.ok) {
+      messaggio.textContent = "Non riesco a leggere i ruoli del consiglio: " + esito.messaggio;
+      return false;
+    }
+    stato.vista = CONSIGLIO_CORE.vistaPannelloRuoli(esito.dati);
+    stato.bozza = CONSIGLIO_CORE.bozzaRuoli(stato.vista);
+    messaggio.textContent = "Versione " + stato.vista.version
+      + ". Le modifiche valgono dal prossimo consiglio: un lavoro in corso tiene i modelli con cui è partito.";
+    disegnaPannelloRuoliConsiglio(elenco, stato, azioni);
+    return true;
+  };
+
+  salva.onclick = async () => {
+    salva.disabled = true;
+    messaggio.textContent = "Salvo i ruoli del consiglio...";
+    const inviato = await carica({
+      ...CONSIGLIO_CORE.corpoConfigurazioneRuoli(stato.vista, stato.bozza),
+      ...(sessionId ? { sourceSessionId: sessionId } : {}),
+    });
+    if (!inviato) salva.disabled = false;
+  };
+  // Senza argomento: la prima lettura è una GET. Con un corpo, anche null,
+  // sarebbe una POST e il ponte la rifiuterebbe.
+  await carica();
 }
 
 // ---------------------------------------------------------------------------
@@ -9737,6 +10646,15 @@ async function apriImpostazioniGui() {
   stato.setAttribute("role", "status");
   stato.setAttribute("aria-live", "polite");
   corpo.appendChild(stato);
+  // I ruoli del consiglio vivono nella stessa finestra: modello e ragionamento
+  // per ruolo, ordine dei consiglieri e la riga che dice dove finisce il lavoro.
+  const sessioneCorrente = sessioneAttiva();
+  const pannelloRuoli = crea("section", "sezione-avanzata");
+  corpo.appendChild(pannelloRuoli);
+  void apriPannelloRuoliConsiglio(
+    pannelloRuoli,
+    sessioneCorrente && !sessioneCorrente.schedaRisultato ? sessioneCorrente.id : null,
+  );
   let valoreSalvato = null;
   let salvataggioInCorso = false;
   const salva = bottoneAzione("Salva impostazioni GUI", async () => {

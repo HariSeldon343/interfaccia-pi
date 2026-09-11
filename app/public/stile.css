@@ -2342,3 +2342,164 @@ body {
     white-space: nowrap;
   }
 }
+
+/* Consiglio a più modelli: fascia di stato dei ruoli, scheda Risultato,
+   pannello dei ruoli nelle impostazioni. */
+
+.fascia-consiglio {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 18px;
+  color: var(--testo-tenue);
+  background: #1b2230;
+  border-bottom: 1px solid var(--bordo);
+  font-size: 12.5px;
+}
+
+.fascia-consiglio-titolo { color: var(--testo); font-weight: 600; }
+
+.fascia-consiglio-riga {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border: 1px solid var(--bordo);
+  border-radius: 999px;
+}
+
+.fascia-consiglio-riga.livello-ok { border-color: var(--verde); color: var(--verde); }
+.fascia-consiglio-riga.livello-lavoro { border-color: var(--ambra); color: var(--ambra); }
+.fascia-consiglio-riga.livello-attesa { border-color: var(--bordo-chiaro); }
+.fascia-consiglio-riga.livello-errore { border-color: var(--rosso); color: var(--rosso); }
+
+.scheda-stato {
+  overflow: hidden;
+  max-width: 92px;
+  color: var(--testo-debole);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.consiglio-pannello {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 8px 0 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.consiglio-intestazione {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.consiglio-intestazione h2 { margin: 0; font-size: 18px; }
+
+.consiglio-stato {
+  padding: 2px 10px;
+  border: 1px solid var(--bordo);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.consiglio-stato.livello-ok { border-color: var(--verde); color: var(--verde); }
+.consiglio-stato.livello-lavoro { border-color: var(--ambra); color: var(--ambra); }
+.consiglio-stato.livello-errore { border-color: var(--rosso); color: var(--rosso); }
+
+.consiglio-sezione {
+  padding: 14px 16px;
+  background: var(--fondo-alto);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio);
+}
+
+.consiglio-sezione h3 { margin: 0 0 8px; font-size: 14px; }
+.consiglio-sezione p { margin: 0 0 8px; line-height: 1.6; }
+.consiglio-sezione p:last-child { margin-bottom: 0; }
+
+.consiglio-testo {
+  margin: 0;
+  max-height: 46vh;
+  overflow: auto;
+  color: var(--testo);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.consiglio-tabella {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.consiglio-tabella th,
+.consiglio-tabella td {
+  padding: 6px 8px;
+  border: 1px solid var(--bordo);
+  text-align: left;
+  vertical-align: top;
+}
+
+.consiglio-tabella th { color: var(--testo); font-weight: 600; }
+
+.consiglio-azioni {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.consiglio-motivo,
+.consiglio-nota {
+  margin: 8px 0 0;
+  color: var(--testo-debole);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.consiglio-avviso {
+  margin: 6px 0 0;
+  color: var(--ambra);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.consiglio-elenco { margin: 0; padding-left: 18px; line-height: 1.6; }
+
+.consiglio-ruoli-riga {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bordo);
+}
+
+.consiglio-ruoli-riga:last-of-type { border-bottom: 0; }
+.consiglio-ruoli-riga strong { min-width: 118px; }
+.consiglio-ruoli-riga select { max-width: 240px; }
+
+.consiglio-consenso {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  line-height: 1.65;
+}
+
+.consiglio-comando {
+  display: block;
+  padding: 8px 10px;
+  background: var(--fondo-campo);
+  border: 1px solid var(--bordo);
+  border-radius: var(--raggio-piccolo);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

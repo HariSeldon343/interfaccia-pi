@@ -37,7 +37,7 @@ import {
   PREFISSO_SCHEDA_RISULTATO,
 } from "./consiglio.mjs";
 import { analizzaUscitaScrittore, componiPromptScrittore } from "./consiglio-scrittore.mjs";
-import { eseguiPianoTest, valutaEval } from "./consiglio-controlli.mjs";
+import { eseguiPianoTest, normalizzaPianoManuale, valutaEval } from "./consiglio-controlli.mjs";
 import { validaToolConsiglio } from "./consiglio-guard.mjs";
 import {
   configurazioneConsiglioPredefinita,
@@ -5993,6 +5993,7 @@ export function creaPonte({
   },
   verificaControlli = null,
   guardStrumenti = validaToolConsiglio,
+  normalizzaPianoManualeConsiglio = normalizzaPianoManuale,
   attendi: attendiConsiglio = (ms) => new Promise((risolvi) => {
     const timer = setTimeout(risolvi, ms);
     timer.unref?.();
@@ -6351,6 +6352,7 @@ export function creaPonte({
     fondiRisultato,
     verificaControlli: verificaControlli || verificaControlliConsiglio,
     guardStrumenti,
+    normalizzaPianoManuale: normalizzaPianoManualeConsiglio,
     attendi: attendiConsiglio,
     eseguiComando: (eseguibile, argomenti, opzioni) => (
       eseguiComandoConsiglio || eseguiComandoLocaleConsiglio
@@ -6369,8 +6371,12 @@ export function creaPonte({
     nuovoId: () => "lavoro-" + randomUUID(),
     registraProcessoTest: registraProcessoTestConsiglio,
   });
-  void archivioConsigli.applicaRitenzione().catch((errore) => {
-    console.warn("Non riesco ad applicare la ritenzione dei lavori del consiglio:", errore.message);
+  // Ritenzione e ricarica in un passaggio solo: prima si buttano i lavori
+  // scaduti, poi quelli che restano tornano in memoria. I lavori che il ponte
+  // stava eseguendo quando si è spento tornano come "interrotto", con la
+  // proposta di ripristino, invece di sparire senza dire niente.
+  void consiglio.ricaricaDaDisco().catch((errore) => {
+    console.warn("Non riesco a rileggere i lavori del consiglio:", errore.message);
   });
 
   function invalidaLibreriaSessione(sessionId) {
@@ -8320,6 +8326,11 @@ $processo.WaitForExit()
         if (url.searchParams.get("token") !== tokenApi) {
           return json(risposta, { errore: "Flusso eventi non autorizzato" }, 403);
         }
+        // La rilettura dei lavori dal disco parte con il ponte e dura quanto
+        // basta a leggere la cartella e a interrogare git: in quella finestra
+        // lo snapshot sarebbe senza le schede dei lavori interrotti, e la
+        // finestra si collega proprio all'avvio. Qui si aspetta che finisca.
+        await consiglio.pronto();
         risposta.writeHead(200, {
           "content-type": "text/event-stream; charset=utf-8",
           "cache-control": "no-cache",
@@ -8382,6 +8393,10 @@ $processo.WaitForExit()
         // una lettura valida rinnova il tempo utile e impedisce all'auto-stop di
         // scattare fra health/state e l'apertura del flusso eventi.
         if (idClientValido(richiesta.headers["x-pi-gui-client"])) programmaAutoStop();
+        // Come per lo snapshot SSE: prima che lo stato parta, la rilettura dei
+        // lavori del consiglio deve essere finita, altrimenti la scheda di un
+        // lavoro interrotto comparirebbe solo al secondo caricamento.
+        await consiglio.pronto();
         return json(risposta, {
           servizio: FIRMA_PONTE,
           versione: VERSIONE_PONTE,

@@ -1570,6 +1570,7 @@ test("l'etichetta della soglia mantiene l'ultimo valore salvato con 89.5 e 49", 
   let corpo;
   let valoreSalvato = 87;
   const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi",
+    "sessioneAttiva", "apriPannelloRuoliConsiglio",
     `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
   )(
     app, { modalePiede: piede },
@@ -1579,6 +1580,9 @@ test("l'etichetta della soglia mantiene l'ultimo valore salvato con 89.5 e 49", 
       if (opzioni?.corpo) valoreSalvato = opzioni.corpo.sogliaCompattazionePercento;
       return { sogliaCompattazionePercento: valoreSalvato };
     },
+    // Il pannello dei ruoli del consiglio vive nella stessa finestra: qui non
+    // è in prova, quindi resta un doppio silenzioso.
+    () => null, async () => {},
   );
   await apri();
   const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
@@ -1621,6 +1625,7 @@ test("le impostazioni della GUI leggono la soglia salvata e mantengono il valore
   let salvata = 87;
   let fallisce = false;
   const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi", "testoErrore", "chiudiModale",
+    "sessioneAttiva", "apriPannelloRuoliConsiglio",
     `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
   )(
     app, { modalePiede: piede },
@@ -1636,6 +1641,7 @@ test("le impostazioni della GUI leggono la soglia salvata e mantengono il valore
       return { sogliaCompattazionePercento: salvata };
     },
     (errore) => errore.message, () => {},
+    () => null, async () => {},
   );
   const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
   const testo = () => nodi(corpo).map((nodo) => nodo.textContent).join(" ");
@@ -2215,5 +2221,61 @@ test("il nuovo tema continua a stilizzare i nodi creati dinamicamente da app.js"
   ]) {
     assert.match(stile, new RegExp(`\\.${classe}(?:[^\\w-]|$)`),
       `stile.css non copre piu la classe dinamica .${classe}`);
+  }
+});
+
+test("gli identificativi statici nuovi del consiglio sono unici e usati", () => {
+  const idHtml = elementiHtml
+    .map((elemento) => elemento.attributi.get("id"))
+    .filter(Boolean);
+  for (const id of ["fascia-consiglio", "btn-consiglio"]) {
+    assert.equal(
+      idHtml.filter((candidato) => candidato === id).length,
+      1,
+      `#${id} deve comparire una volta sola in index.html`,
+    );
+  }
+  // L'uso si prova per identificativo, e per ciascuno nel modo in cui è
+  // davvero legato al frontend: la fascia per selettore, il bottone per la sua
+  // azione, perché in app.js "btn-consiglio" non compare da nessuna parte.
+  assert.match(frontend, /fasciaConsiglio: \$\("#fascia-consiglio"\)/);
+  assert.match(frontend, /DOM\.fasciaConsiglio\.replaceChildren\(\)/);
+
+  const bottone = elementoConId("btn-consiglio");
+  assert.equal(bottone.attributi.get("data-azione"), "consiglio");
+  assert.equal(bottone.attributi.get("type"), "button");
+  assert.match(corpoFunzione("eseguiAzione"), /azione === "consiglio"/);
+
+  const fascia = elementoConId("fascia-consiglio");
+  assert.equal(fascia.attributi.get("aria-live"), "polite");
+  assert.equal(fascia.attributi.get("role"), "status");
+  assert.ok(fascia.attributi.has("hidden"), "la fascia del consiglio nasce nascosta");
+
+  assert.match(html, /<script src="\/consiglio-core\.js"><\/script>/);
+  const ordine = html.indexOf('src="/consiglio-core.js"');
+  assert.ok(ordine !== -1 && ordine < html.indexOf('src="/app.js"'),
+    "il modulo del consiglio va caricato prima del frontend");
+
+  for (const classe of [
+    "fascia-consiglio",
+    "fascia-consiglio-riga",
+    "scheda-stato",
+    "consiglio-pannello",
+    "consiglio-sezione",
+    "consiglio-tabella",
+    "consiglio-azioni",
+    "consiglio-motivo",
+    "consiglio-avviso",
+    "consiglio-elenco",
+    "consiglio-testo",
+    "consiglio-ruoli-riga",
+    "consiglio-consenso",
+    "consiglio-comando",
+    "consiglio-stato",
+    "consiglio-nota",
+  ]) {
+    assert.match(stile, new RegExp(`\.${classe}(?:[^\w-]|$)`),
+      `stile.css non copre la classe dinamica .${classe}`);
+    assert.ok(frontend.includes(classe), `app.js non usa più la classe .${classe}`);
   }
 });

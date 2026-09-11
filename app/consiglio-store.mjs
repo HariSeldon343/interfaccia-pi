@@ -1,7 +1,7 @@
-// Persistenza dei lavori del consiglio a piu modelli.
+// Persistenza dei lavori del consiglio a più modelli.
 // Un solo file JSON per lavoro sotto ~/.pi/gui/consigli, scritto con la
-// scrittura atomica gia usata dalle impostazioni e serializzato per chiave.
-// Il modulo non conosce ne HTTP ne le sessioni: riceve oggetti semplici.
+// scrittura atomica già usata dalle impostazioni e serializzato per chiave.
+// Il modulo non conosce né HTTP né le sessioni: riceve oggetti semplici.
 
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -147,8 +147,8 @@ export function creaArchivioConsigli({
   }
 
   // All'apertura del ponte: via i lavori conclusi oltre la ritenzione, poi si
-  // tengono al massimo i piu recenti. Un lavoro ancora aperto non si cancella
-  // mai per anzianita.
+  // tengono al massimo i più recenti. Un lavoro ancora aperto non si cancella
+  // mai per anzianità.
   async function applicaRitenzione({
     ritenzioneMs = RITENZIONE_LAVORI_MS,
     massimo = MAX_LAVORI_CONSERVATI,

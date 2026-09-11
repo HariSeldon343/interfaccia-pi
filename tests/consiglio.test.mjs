@@ -14,11 +14,13 @@ import {
   RITENZIONE_LAVORI_MS,
 } from "../app/consiglio-store.mjs";
 import {
+  improntaFileCanonica,
   percorsiDaRipristinare,
   rilevaPianoTest,
   secondiAttesaDaErrore,
   sembraLimiteRichieste,
 } from "../app/consiglio.mjs";
+import { normalizzaPianoManuale } from "../app/consiglio-controlli.mjs";
 
 const QUI = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = join(QUI, "fake-pi.mjs");
@@ -39,11 +41,15 @@ async function avviaPonteConsiglio(t, {
   autoStopMs = 0,
   senzaSorgente = false,
   senzaDoppi = false,
+  primaDelPonte = null,
   ...opzioni
 } = {}) {
   const home = await mkdtemp(join(tmpdir(), "pi-gui-consiglio-"));
   const cartellaLavoro = join(home, cartella);
   await mkdir(cartellaLavoro, { recursive: true });
+  // Serve a chi deve trovare qualcosa già sul disco quando il ponte nasce, per
+  // esempio i lavori del consiglio che la riapertura deve rileggere.
+  if (primaDelPonte) await primaDelPonte({ home, cartellaLavoro });
   const conf = {
     controllo: { tipo: "eval", esito: "pass", motivi: [] },
     fileModificati: [],
@@ -193,7 +199,7 @@ function ascoltaEventi(t, ambiente) {
         try {
           eventi.push(JSON.parse(blocco.slice("data: ".length)));
         } catch {
-          // Il battito non e un evento JSON.
+          // Il battito non è un evento JSON.
         }
       }
     }
@@ -291,7 +297,7 @@ test("i lavori oltre la ritenzione vengono rimossi all'avvio", async (t) => {
   const rimasti = (await readdir(radice)).map((nome) => nome.replace(/\.json$/u, ""));
   assert.equal(rimasti.includes("lavoro-vecchio-approvato"), false, "un approvato oltre trenta giorni va via");
   assert.equal(rimasti.includes("lavoro-vecchio-annullato"), false, "un annullato oltre trenta giorni va via");
-  assert.equal(rimasti.includes("lavoro-vecchio-aperto"), true, "un lavoro ancora aperto non si cancella per anzianita");
+  assert.equal(rimasti.includes("lavoro-vecchio-aperto"), true, "un lavoro ancora aperto non si cancella per anzianità");
   assert.equal(rimasti.includes("lavoro-recente"), true);
   assert.equal(rimasti.length, 2);
 
@@ -303,7 +309,7 @@ test("i lavori oltre la ritenzione vengono rimossi all'avvio", async (t) => {
   await pausa(200);
   const dopoIlTetto = await readdir(radice);
   assert.equal(dopoIlTetto.length, 50, "restano al massimo cinquanta lavori");
-  assert.equal(dopoIlTetto.includes("lavoro-recente.json"), true, "il piu recente resta");
+  assert.equal(dopoIlTetto.includes("lavoro-recente.json"), true, "il più recente resta");
 });
 
 test("con posti insufficienti avvia risponde 409 e non apre nessuna sessione", async (t) => {
@@ -331,14 +337,14 @@ test("due avvii concorrenti con lo stesso operationId creano un solo lavoro e ap
     JSON.stringify([primo.dati, secondo.dati]),
   );
   const lavoroId = primo.dati.lavoroId;
-  assert.equal(secondo.dati.lavoroId, lavoroId, "la seconda chiamata rilegge l'esito gia registrato");
+  assert.equal(secondo.dati.lavoroId, lavoroId, "la seconda chiamata rilegge l'esito già registrato");
   assert.deepEqual(
     secondo.dati.ruoli.map((ruolo) => ruolo.guiSessionId),
     primo.dati.ruoli.map((ruolo) => ruolo.guiSessionId),
     "le stesse sessioni, non una seconda coppia",
   );
   assert.equal(ambiente.ponte.consiglio.lavori.size, 1);
-  assert.equal(ambiente.ponte.sessioni.size, 3, "una sorgente piu due ruoli, aperti una volta sola");
+  assert.equal(ambiente.ponte.sessioni.size, 3, "una sorgente più due ruoli, aperti una volta sola");
   await attendiStato(ambiente, lavoroId, ["bozza_valida", "bozza_bloccata"]);
 });
 
@@ -352,6 +358,27 @@ test("stesso operationId con corpo diverso dà 409", async (t) => {
   assert.match(secondo.dati.messaggio, /gia associato a una richiesta diversa/);
   assert.equal(ambiente.ponte.consiglio.lavori.size, 1);
   await attendiStato(ambiente, primo.dati.lavoroId, ["bozza_valida", "bozza_bloccata"]);
+
+  // Due piani a mano che si appiattiscono nella stessa riga di comando sono due
+  // esecuzioni diverse: "-e" e "process.exit(0)" come argomenti separati, oppure
+  // "-e process.exit(0)" come argomento solo. Se l'impronta guardasse la riga
+  // ricomposta, il secondo avvio tornerebbe 202 con l'esito del primo e l'utente
+  // riceverebbe il risultato di un comando che non ha chiesto.
+  const corpoPiano = corpoAvvio(ambiente, {
+    tipo: "codice",
+    consenso: true,
+    piano: { eseguibile: process.execPath, argomenti: ["-e", "process.exit(0)"] },
+  });
+  const conPiano = await ambiente.post("/api/consiglio/avvia", corpoPiano);
+  assert.equal(conPiano.risposta.status, 202, JSON.stringify(conPiano.dati));
+  const stessaRiga = await ambiente.post("/api/consiglio/avvia", {
+    ...corpoPiano,
+    piano: { eseguibile: process.execPath, argomenti: ["-e process.exit(0)"] },
+  });
+  assert.equal(stessaRiga.risposta.status, 409, JSON.stringify(stessaRiga.dati));
+  assert.match(stessaRiga.dati.messaggio, /gia associato a una richiesta diversa/);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 2, "il secondo corpo non deve creare un lavoro suo");
+  await attendiStato(ambiente, conPiano.dati.lavoroId, ["bozza_valida", "bozza_bloccata"]);
 });
 
 test("il piano si congela all'avvio con l'impronta del file che lo definisce", async (t) => {
@@ -519,8 +546,8 @@ test("il contributo si raccoglie solo dopo agent_settled", async (t) => {
   assert.equal(avvio.risposta.status, 202, JSON.stringify(avvio.dati));
   const consigliere = avvio.dati.ruoli.find((ruolo) => ruolo.tipo === "consigliere");
   assert.ok(consigliere?.guiSessionId, JSON.stringify(avvio.dati));
-  // Il messaggio dell'assistente e gia arrivato per intero: se la raccolta
-  // avvenisse su message_end il contributo sarebbe gia qui.
+  // Il messaggio dell'assistente è già arrivato per intero: se la raccolta
+  // avvenisse su message_end il contributo sarebbe già qui.
   const fineMessaggio = await attendiEvento(
     eventi,
     (evento) => evento.type === "message_end" && evento.guiSessionId === consigliere.guiSessionId,
@@ -528,19 +555,19 @@ test("il contributo si raccoglie solo dopo agent_settled", async (t) => {
   assert.match(
     JSON.stringify(fineMessaggio.message?.content || []),
     /ruolo consigliere/,
-    "message_end porta gia il testo della risposta",
+    "message_end porta già il testo della risposta",
   );
   const inCorso = await attendiStato(ambiente, avvio.dati.lavoroId, ["raccolta"], 5000);
   assert.equal(
     eventi.some((evento) => evento.type === "agent_settled" && evento.guiSessionId === consigliere.guiSessionId),
     false,
-    "la prova vale solo finche agent_settled non e ancora arrivato",
+    "la prova vale solo finché agent_settled non è ancora arrivato",
   );
-  assert.equal(inCorso.contributi.length, 0, "il messaggio e gia finito ma agent_settled non e arrivato");
+  assert.equal(inCorso.contributi.length, 0, "il messaggio è già finito ma agent_settled non è arrivato");
   assert.equal(
     inCorso.ruoli.find((ruolo) => ruolo.roleId === consigliere.roleId).stato,
     "in_corso",
-    "il ruolo resta in corso finche il turno non e concluso",
+    "il ruolo resta in corso finché il turno non è concluso",
   );
   await attendiEvento(
     eventi,
@@ -700,7 +727,7 @@ test("la scheda risultato non consuma un posto nel tetto delle sessioni", async 
   assert.equal(finale.lavoro.stato, "bozza_valida");
   assert.equal(ambiente.ponte.sessioni.size, 1, "le sessioni di ruolo si chiudono a bozza pronta");
   const sessioni = (await (await fetch(ambiente.base + "/api/stato")).json()).sessioni;
-  assert.equal(sessioni.length, 2, "sorgente piu scheda Risultato");
+  assert.equal(sessioni.length, 2, "sorgente più scheda Risultato");
   assert.equal(sessioni.some((voce) => voce.id === "consiglio:" + avvio.lavoroId), true);
   for (const nome of ["altra-uno", "altra-due"]) {
     const cartella = join(ambiente.home, nome);
@@ -716,7 +743,7 @@ test("la scheda risultato non consuma un posto nel tetto delle sessioni", async 
 
 test("approva è rifiutata con 409 quando il controllo è fail", async (t) => {
   const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-approva-fail" });
-  ambiente.conf.controllo = { tipo: "eval", esito: "fail", motivi: ["La casella E2 non e dimostrata."] };
+  ambiente.conf.controllo = { tipo: "eval", esito: "fail", motivi: ["La casella E2 non è dimostrata."] };
   const { avvio, finale } = await avviaEAttendi(ambiente);
   assert.equal(finale.lavoro.stato, "bozza_bloccata");
   assert.equal(finale.controllo.esito, "fail");
@@ -797,7 +824,7 @@ test("rifai apre una revisione nuova e conserva la precedente", async (t) => {
 
 test("annullare durante la fusione lascia il lavoro annullato e non esegue i test", async (t) => {
   // L'attesa del limite di richieste ferma il ciclo in un punto preciso, dopo
-  // la raccolta: cosi l'annullamento arriva sempre prima della ripresa e la
+  // la raccolta: così l'annullamento arriva sempre prima della ripresa e la
   // prova non dipende da una corsa fra promesse.
   let sblocca = null;
   const atteseViste = [];
@@ -817,13 +844,13 @@ test("annullare durante la fusione lascia il lavoro annullato e non esegue i tes
   assert.equal(atteseViste.length, 1, "lo scrittore deve essere fermo in attesa del provider");
   const durante = await ambiente.post("/api/consiglio/stato", { lavoroId });
   assert.equal(durante.dati.lavoro.stato, "fusione", "il lavoro e nella fase di fusione");
-  assert.equal(durante.dati.contributi.length, 1, "il contributo del consigliere e gia raccolto");
+  assert.equal(durante.dati.contributi.length, 1, "il contributo del consigliere è già raccolto");
 
   const annulla = await ambiente.post("/api/consiglio/annulla", { lavoroId });
   assert.equal(annulla.risposta.status, 200, JSON.stringify(annulla.dati));
   assert.equal(annulla.dati.stato, "annullato");
 
-  // Il ciclo riprende adesso, a consenso gia revocato: non deve toccare nulla.
+  // Il ciclo riprende adesso, a consenso già revocato: non deve toccare nulla.
   sblocca();
   await pausa(600);
   const dopo = await ambiente.post("/api/consiglio/stato", { lavoroId });
@@ -851,7 +878,7 @@ test("due rifai concorrenti creano una sola revisione", async (t) => {
   const corpo = {
     lavoroId: avvio.lavoroId,
     revisioneAttesa: 1,
-    istruzioni: "riscrivi piu corto",
+    istruzioni: "riscrivi più corto",
     ripristina: false,
   };
   const esiti = await Promise.all([
@@ -933,9 +960,9 @@ test("con albero sporco all'avvio il ripristino riporta lo stato sporco e non HE
   assert.equal(finale.lavoro.git.disponibile, true);
   assert.match(finale.lavoro.consenso.testo, /posso riportare allo stato di adesso/);
   const lavoro = ambiente.ponte.consiglio.lavori.get(avvio.lavoroId);
-  assert.equal(lavoro.gitBase, "abc1234def5678", "la base e lo stash dello stato sporco");
+  assert.equal(lavoro.gitBase, "abc1234def5678", "la base è lo stash dello stato sporco");
   assert.equal(comandi.includes("stash create"), true);
-  assert.equal(comandi.includes("rev-parse HEAD"), false, "con albero sporco HEAD non e la base");
+  assert.equal(comandi.includes("rev-parse HEAD"), false, "con albero sporco HEAD non è la base");
 });
 
 test("solo file non tracciati, la base è HEAD e il ripristino resta possibile", async (t) => {
@@ -990,7 +1017,7 @@ test("un avviso di git su stderr non falsifica la base", async (t) => {
   const { avvio, finale } = await avviaEAttendi(ambiente, { tipo: "codice", consenso: true });
   assert.equal(finale.lavoro.git.disponibile, true, "un avviso su stderr non deve disattivare il ripristino");
   const lavoro = ambiente.ponte.consiglio.lavori.get(avvio.lavoroId);
-  assert.equal(lavoro.gitBase, "feed5678feed", "la base e lo SHA, non la prima parola dell'avviso");
+  assert.equal(lavoro.gitBase, "feed5678feed", "la base è lo SHA, non la prima parola dell'avviso");
 });
 
 test("il comando del consiglio tiene separati stdout e stderr", async (t) => {
@@ -1023,7 +1050,7 @@ test("rifai non tocca un file tracciato che il consiglio non ha dichiarato", asy
       if (riga === "--version") return { codice: 0, uscita: "git version 2.45.0", scaduto: false };
       if (riga === "status --porcelain") return { codice: 0, uscita: "", scaduto: false };
       if (riga === "rev-parse HEAD") return { codice: 0, uscita: "beef1234beef\n", scaduto: false };
-      // Anche se git elencasse piu file, il ripristino resta sull'intersezione.
+      // Anche se git elencasse più file, il ripristino resta sull'intersezione.
       if (argomenti[0] === "ls-files") return { codice: 0, uscita: "a.txt\nb.txt\n", scaduto: false };
       return { codice: 0, uscita: "", scaduto: false };
     },
@@ -1036,7 +1063,7 @@ test("rifai non tocca un file tracciato che il consiglio non ha dichiarato", asy
 
   const { avvio } = await avviaEAttendi(ambiente, { tipo: "codice", consenso: true });
   const lavoro = ambiente.ponte.consiglio.lavori.get(avvio.lavoroId);
-  assert.equal(lavoro.gitBase, "beef1234beef", "con albero pulito la base e HEAD");
+  assert.equal(lavoro.gitBase, "beef1234beef", "con albero pulito la base è HEAD");
 
   const conferma = await ambiente.post("/api/consiglio/rifai", {
     lavoroId: avvio.lavoroId,
@@ -1058,7 +1085,7 @@ test("rifai non tocca un file tracciato che il consiglio non ha dichiarato", asy
   const checkout = comandi.find((voce) => voce[0] === "checkout");
   assert.ok(checkout, "il ripristino confermato usa checkout");
   assert.deepEqual(checkout, ["checkout", "beef1234beef", "--", "a.txt"]);
-  assert.equal(checkout.includes("b.txt"), false, "un file tracciato non dichiarato resta com'e");
+  assert.equal(checkout.includes("b.txt"), false, "un file tracciato non dichiarato resta com'è");
   assert.equal(comandi.some((voce) => voce.includes("--hard") || voce[0] === "clean"), false);
   assert.deepEqual(percorsiDaRipristinare({ dichiarati: ["a.txt"], tracciati: ["a.txt", "b.txt"] }), ["a.txt"]);
   await attendiStato(ambiente, avvio.lavoroId, ["bozza_valida", "bozza_bloccata"]);
@@ -1095,7 +1122,7 @@ test("la chiusura termina il processo dei test e i suoi discendenti", async (t) 
   const { finale } = await avviaEAttendi(ambiente);
   assert.equal(finale.lavoro.stato, "bozza_valida");
   assert.ok(figlio?.pid, "il doppio deve avere registrato un processo");
-  assert.equal(figlio.exitCode, null, "il processo dei test e ancora vivo prima della chiusura");
+  assert.equal(figlio.exitCode, null, "il processo dei test è ancora vivo prima della chiusura");
   const uscita = new Promise((risolvi) => figlio.once("exit", risolvi));
   await ambiente.ponte.chiudiTutto();
   await uscita;
@@ -1110,9 +1137,373 @@ test("senza doppi il ponte usa i moduli dello scrittore e dei controlli", async 
   // Il Pi finto non risponde nel formato a cinque sezioni: il parser dello
   // scrittore deve rifiutarlo e la bozza resta bloccata, non approvabile.
   assert.equal(finale.lavoro.stato, "bozza_bloccata");
-  assert.equal(finale.contributi[0].incluso, true, "il contributo del consigliere e stato raccolto");
+  assert.equal(finale.contributi[0].incluso, true, "il contributo del consigliere è stato raccolto");
   assert.match(finale.lavoro.motivo, /intestazione "### RISULTATO"/);
   assert.equal(finale.azioni.approva, false);
   const lavoro = ambiente.ponte.consiglio.lavori.get(avvio.lavoroId);
   assert.match(lavoro.testoGrezzoScrittore, /ruolo scrittore/, "il testo grezzo dello scrittore resta conservato");
+});
+
+test("gli allegati arrivano ai ruoli per riferimento e non per contenuto", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-allegati" });
+  const segreto = "contenuto riservato del cliente";
+  const improntaAllegato = createHash("sha256").update(segreto, "utf8").digest("hex");
+  const { avvio, finale } = await avviaEAttendi(ambiente, {
+    allegati: [{ percorso: "C:/dati/nota.txt", nome: "nota.txt", contenuto: segreto }],
+  });
+  assert.equal(finale.lavoro.stato, "bozza_valida");
+  const tracce = (await readdir(ambiente.cartellaLavoro))
+    .filter((nome) => nome.startsWith("consiglio-prompt-"));
+  assert.equal(tracce.length, 2, "una traccia dei prompt per ogni sessione di ruolo");
+  let testoRicevuto = "";
+  for (const nome of tracce) {
+    testoRicevuto += await readFile(join(ambiente.cartellaLavoro, nome), "utf8");
+  }
+  assert.match(testoRicevuto, /^### ALLEGATI$/mu, "il consigliere deve vedere la sezione degli allegati");
+  assert.match(testoRicevuto, /C:\/dati\/nota\.txt/, "il percorso arriva al ruolo");
+  assert.equal(testoRicevuto.includes(improntaAllegato), true, "l'impronta arriva al ruolo");
+  assert.equal(testoRicevuto.includes(segreto), false, "il contenuto non deve mai arrivare al ruolo");
+  // Alla fusione i riferimenti arrivano dentro le istruzioni aggiuntive, che è
+  // il campo previsto dal contratto dello scrittore: il ponte non aggiunge
+  // campi né sezioni a un modulo che non è suo.
+  const istruzioniFusione = String(ambiente.conf.ultimoInputFusione.istruzioni || "");
+  assert.match(istruzioniFusione, /^### ALLEGATI$/mu, "anche la fusione riceve i soli riferimenti");
+  assert.match(istruzioniFusione, /C:\/dati\/nota\.txt/);
+  assert.equal(istruzioniFusione.includes(improntaAllegato), true, "l'impronta arriva alla fusione");
+  assert.equal(istruzioniFusione.includes(segreto), false, "alla fusione non arriva il contenuto");
+  assert.equal(
+    Object.hasOwn(ambiente.conf.ultimoInputFusione, "allegati"),
+    false,
+    "il ponte non passa un campo che il contratto dello scrittore non prevede",
+  );
+  assert.deepEqual(finale.lavoro.allegati, [{
+    percorso: "C:/dati/nota.txt",
+    nome: "nota.txt",
+    dimensione: Buffer.byteLength(segreto, "utf8"),
+    impronta: improntaAllegato,
+  }], "lo stato del lavoro espone i soli riferimenti");
+  const suDisco = await readFile(
+    join(ambiente.home, ".pi", "gui", "consigli", avvio.lavoroId + ".json"),
+    "utf8",
+  );
+  assert.equal(suDisco.includes(segreto), false, "il contenuto non finisce nel file del lavoro");
+  assert.equal(suDisco.includes(improntaAllegato), true);
+});
+
+test("un allegato senza percorso ferma l'avvio", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-allegati-rotti" });
+  const esito = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, {
+    allegati: [{ nome: "senza-percorso.txt", contenuto: "testo" }],
+  }));
+  assert.equal(esito.risposta.status, 400, JSON.stringify(esito.dati));
+  assert.match(esito.dati.messaggio, /percorso del file/);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 0);
+  assert.equal(ambiente.ponte.sessioni.size, 1, "nessuna sessione di ruolo aperta");
+});
+
+test("il piano indicato a mano rifiuta la riga di shell e non apre niente", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-piano-shell" });
+  const casi = [
+    ["npm test", /riga di comando da interpretare con la shell/],
+    [{ comando: "npm test" }, /campo comando come riga di shell/],
+    [{ eseguibile: "node && del tutto" }, /caratteri da shell/],
+    [{ eseguibile: "prova.cmd" }, /\.cmd o \.bat/],
+    [{ eseguibile: "node", argomenti: "--test" }, /devono essere una lista/],
+  ];
+  for (const [piano, atteso] of casi) {
+    const esito = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, {
+      tipo: "codice",
+      consenso: true,
+      piano,
+    }));
+    assert.equal(esito.risposta.status, 400, JSON.stringify(esito.dati));
+    assert.equal(esito.dati.codice, "piano-non-valido");
+    assert.match(esito.dati.messaggio, atteso);
+    assert.equal(
+      esito.dati.messaggio,
+      normalizzaPianoManuale(piano, ambiente.cartellaLavoro).motivo,
+      "il motivo arriva dal modulo dei controlli, non da una copia nel ponte",
+    );
+  }
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 0, "nessun lavoro creato");
+  assert.equal(ambiente.ponte.sessioni.size, 1, "nessuna sessione di ruolo aperta");
+  const suTesto = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, {
+    piano: { eseguibile: process.execPath, argomenti: [] },
+  }));
+  assert.equal(suTesto.risposta.status, 400, JSON.stringify(suTesto.dati));
+  assert.match(suTesto.dati.messaggio, /lavoro di solo testo non esegue comandi/);
+});
+
+test("il piano indicato a mano entra nel consenso e nel controllo", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-piano-a-mano" });
+  const piano = { eseguibile: process.execPath, argomenti: ["-e", "process.exit(0)"] };
+  const avvio = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, {
+    tipo: "codice",
+    consenso: true,
+    piano,
+  }));
+  assert.equal(avvio.risposta.status, 202, JSON.stringify(avvio.dati));
+  assert.equal(avvio.dati.piano.origine, "manuale");
+  assert.deepEqual(avvio.dati.piano.argomenti, ["-e", "process.exit(0)"]);
+  assert.equal(avvio.dati.piano.eseguibile, process.execPath);
+  const finale = await attendiStato(ambiente, avvio.dati.lavoroId, ["bozza_valida", "bozza_bloccata"]);
+  assert.equal(finale.lavoro.stato, "bozza_valida", JSON.stringify(finale.lavoro));
+  assert.match(finale.lavoro.consenso.testo, /senza passare da una shell/);
+  assert.match(finale.lavoro.consenso.testo, /-e process\.exit\(0\)/);
+  assert.equal(ambiente.conf.opzioniControllo.piano.origine, "manuale");
+  assert.equal(ambiente.conf.opzioniControllo.piano.cwd, ambiente.cartellaLavoro);
+  assert.equal(ambiente.conf.opzioniControllo.piano.filePiano, null, "un piano a mano non ha un file da congelare");
+});
+
+test("le impronte dei file dichiarati si confrontano in una forma sola", () => {
+  const daiControlli = improntaFileCanonica({
+    dichiarato: "a.txt",
+    percorso: "C:/lavoro/a.txt",
+    fuoriCartella: false,
+    stato: "presente",
+    dimensione: 12,
+    sha256: "ab".repeat(32),
+  });
+  assert.equal(daiControlli.impronta, "ab".repeat(32));
+  assert.equal(daiControlli.percorso, "C:/lavoro/a.txt");
+  const dalRipiego = improntaFileCanonica({ percorso: "a.txt", impronta: "cd".repeat(32) });
+  assert.equal(dalRipiego.impronta, "cd".repeat(32));
+  const assente = improntaFileCanonica({ dichiarato: "b.txt", percorso: "C:/lavoro/b.txt", stato: "assente", sha256: null });
+  assert.equal(assente.impronta, null);
+  assert.equal(improntaFileCanonica(null), null);
+  assert.equal(improntaFileCanonica({ stato: "presente" }), null);
+});
+
+test("i lavori interrotti tornano dal disco con la proposta di ripristino", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-ricarica-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const cartellaLavoro = join(home, "progetto");
+  await mkdir(cartellaLavoro, { recursive: true });
+  const radice = join(home, ".pi", "gui", "consigli");
+  await mkdir(radice, { recursive: true });
+  const adesso = new Date().toISOString();
+  const revisione = { numero: 1, prompt: "sistema il modulo", istruzioni: null, allegati: [] };
+  await writeFile(join(radice, "lavoro-interrotto.json"), JSON.stringify({
+    lavoroId: "lavoro-interrotto",
+    sourceSessionId: "sessione-di-ieri",
+    workspace: cartellaLavoro,
+    tipo: "codice",
+    stato: "verifica",
+    revisione: 1,
+    generazione: 1,
+    seq: 7,
+    creatoIl: adesso,
+    aggiornatoIl: adesso,
+    git: { disponibile: true, motivo: null },
+    gitBase: "abc1234abc1234",
+    revisioni: [revisione],
+    revisioneCorrente: revisione,
+    ruoli: [
+      { roleId: "consigliere-1", tipo: "consigliere", ordine: 1, stato: "completato", guiSessionId: "vecchia-1" },
+      { roleId: "scrittore", tipo: "scrittore", ordine: 2, stato: "in_corso", guiSessionId: "vecchia-2" },
+    ],
+    contributi: [],
+    risultato: { testo: "bozza", provenienza: [], scartati: [], fileModificati: ["a.txt"], eval: [], risultatoHash: "x" },
+    controllo: null,
+    problemi: [],
+  }, null, 2), "utf8");
+  await writeFile(join(radice, "lavoro-chiuso.json"), JSON.stringify({
+    lavoroId: "lavoro-chiuso",
+    stato: "approvato",
+    tipo: "testo",
+    revisione: 1,
+    creatoIl: adesso,
+    aggiornatoIl: adesso,
+    workspace: null,
+    ruoli: [],
+    contributi: [],
+    risultato: { testo: "approvato ieri", provenienza: [], scartati: [], fileModificati: [], eval: [] },
+  }, null, 2), "utf8");
+
+  const comandi = [];
+  // La rilettura del disco interroga git per la proposta di ripristino: qui la
+  // teniamo ferma finché la richiesta di stato è già partita. Così la scheda
+  // può comparire solo se il ponte aspetta la rilettura prima di rispondere,
+  // che è la stessa cosa che vede l'utente quando apre la finestra.
+  let sbloccaGit = () => {};
+  const gitFermo = new Promise((risolvi) => { sbloccaGit = risolvi; });
+  const ponte = creaPonte({
+    home,
+    cliPi: FAKE_PI,
+    autoStopMs: 0,
+    eseguiComandoConsiglio: async (eseguibile, argomenti) => {
+      comandi.push(argomenti);
+      await gitFermo;
+      return { codice: 0, uscita: "a.txt\nb.txt\n", stdout: "a.txt\nb.txt\n", stderr: "", scaduto: false };
+    },
+    caricaSupportoRuntime: async () => ({
+      versione: "0.84.2",
+      getAgentDir: () => join(home, ".pi", "agent"),
+      getShareViewerUrl: () => "https://example.test/share",
+      ProjectTrustStore: class { get() { return null; } set() {} },
+      modelliPredefiniti: { fake: "modello-test" },
+    }),
+  });
+  t.after(async () => {
+    await ponte.chiudiTutto().catch(() => {});
+    if (ponte.server.listening) await new Promise((risolvi) => ponte.server.close(() => risolvi()));
+  });
+  await new Promise((risolvi) => ponte.server.listen(0, "127.0.0.1", risolvi));
+  const base = `http://127.0.0.1:${ponte.server.address().port}`;
+  const statoInVolo = fetch(base + "/api/stato").then((risposta) => risposta.json());
+  await pausa(50);
+  sbloccaGit();
+  const stato = await statoInVolo;
+  const scheda = stato.sessioni.find((voce) => voce.id === "consiglio:lavoro-interrotto");
+  assert.ok(scheda, JSON.stringify(stato.sessioni));
+  assert.equal(scheda.consiglio.stato, "interrotto");
+  assert.equal(scheda.attiva, false);
+  assert.deepEqual(scheda.consiglio.ripristino, { proposto: true, file: ["a.txt"], motivo: null });
+  assert.deepEqual(scheda.consiglio.azioni, { approva: false, rifai: true, annulla: true });
+  assert.equal(
+    stato.sessioni.some((voce) => voce.id === "consiglio:lavoro-chiuso"),
+    false,
+    "un lavoro già chiuso non torna a occupare una scheda",
+  );
+  const leggi = async (lavoroId) => {
+    const risposta = await fetch(base + "/api/consiglio/stato", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-gui-token": stato.tokenApi },
+      body: JSON.stringify({ lavoroId }),
+    });
+    return { risposta, dati: await risposta.json() };
+  };
+  const interrotto = await leggi("lavoro-interrotto");
+  assert.equal(interrotto.risposta.status, 200, JSON.stringify(interrotto.dati));
+  assert.equal(interrotto.dati.lavoro.stato, "interrotto");
+  assert.match(interrotto.dati.lavoro.motivo, /Il ponte si è chiuso/);
+  assert.equal(interrotto.dati.lavoro.ricaricato, true);
+  // Il file su disco si ferma a 7: un seq più alto vuol dire che la ricarica ha
+  // annunciato lo stato con un evento, per un client già collegato.
+  assert.ok(interrotto.dati.seq > 7, "la ricarica annuncia il lavoro ripreso: seq " + interrotto.dati.seq);
+  assert.equal(interrotto.dati.ruoli[0].stato, "completato", "un ruolo già concluso resta com'era");
+  assert.equal(interrotto.dati.ruoli[1].stato, "errore");
+  assert.match(interrotto.dati.ruoli[1].errore, /si è chiuso mentre il ruolo/);
+  const chiuso = await leggi("lavoro-chiuso");
+  assert.equal(chiuso.risposta.status, 200, JSON.stringify(chiuso.dati));
+  assert.equal(chiuso.dati.lavoro.stato, "approvato", "il lavoro concluso resta leggibile");
+
+  assert.equal(comandi.some((voce) => voce[0] === "ls-files"), true, "la proposta guarda i file tracciati");
+  assert.equal(comandi.some((voce) => voce[0] === "checkout"), false, "la proposta non tocca il disco");
+  const suDisco = JSON.parse(await readFile(join(radice, "lavoro-interrotto.json"), "utf8"));
+  assert.equal(suDisco.stato, "interrotto", "lo stato interrotto resta anche dopo una seconda riapertura");
+  assert.equal(suDisco.ruoli[1].stato, "errore");
+});
+
+test("rifai su un lavoro ripreso non riesegue un piano non rivalidato", async (t) => {
+  const adesso = new Date().toISOString();
+  const revisione = { numero: 1, prompt: "sistema il modulo", istruzioni: null, allegati: [] };
+  const scheletro = (lavoroId, workspace, piano) => ({
+    lavoroId,
+    sourceSessionId: "sessione-di-ieri",
+    workspace,
+    tipo: "codice",
+    stato: "bozza_valida",
+    revisione: 1,
+    generazione: 1,
+    seq: 3,
+    creatoIl: adesso,
+    aggiornatoIl: adesso,
+    git: { disponibile: false, motivo: "Git non disponibile in questa prova." },
+    gitBase: null,
+    consenso: { accettato: true, at: adesso, testo: "Consenso raccolto in un'altra sessione del ponte." },
+    piano,
+    revisioni: [revisione],
+    revisioneCorrente: revisione,
+    ruoli: [
+      { roleId: "consigliere-1", tipo: "consigliere", ordine: 1, stato: "completato", guiSessionId: "vecchia-1" },
+      { roleId: "scrittore", tipo: "scrittore", ordine: 2, stato: "completato", guiSessionId: "vecchia-2" },
+    ],
+    contributi: [],
+    risultato: {
+      testo: "bozza di ieri", provenienza: [], scartati: [], fileModificati: [], eval: [], risultatoHash: "x",
+    },
+    controllo: { tipo: "test", esito: "pass", motivi: [], logTroncato: null, impronteFile: [], at: adesso },
+    problemi: [],
+  });
+  const ambiente = await avviaPonteConsiglio(t, {
+    cartella: "consiglio-ripresa-piano",
+    primaDelPonte: async ({ home, cartellaLavoro }) => {
+      const radice = join(home, ".pi", "gui", "consigli");
+      await mkdir(radice, { recursive: true });
+      // Sul disco c'è un piano che oggi non passerebbe il controllo di "avvia":
+      // l'eseguibile porta un carattere da shell. Senza rivalidazione alla
+      // riapertura, Rifai lo rieseguirebbe così come sta scritto nel file.
+      await writeFile(join(radice, "lavoro-manomesso.json"), JSON.stringify(scheletro(
+        "lavoro-manomesso",
+        cartellaLavoro,
+        {
+          origine: "manuale",
+          eseguibile: "cmd.exe & del /q .",
+          argomenti: ["-e", "process.exit(0)"],
+          cwd: cartellaLavoro,
+          filePiano: null,
+          pianoHash: null,
+          comando: "cmd.exe & del /q . -e process.exit(0)",
+        },
+      ), null, 2), "utf8");
+      // Accanto, un piano a mano regolare: la rivalidazione non deve toglierlo.
+      await writeFile(join(radice, "lavoro-sano.json"), JSON.stringify(scheletro(
+        "lavoro-sano",
+        cartellaLavoro,
+        {
+          origine: "manuale",
+          eseguibile: process.execPath,
+          argomenti: ["-e", "process.exit(0)"],
+          cwd: cartellaLavoro,
+          filePiano: null,
+          pianoHash: null,
+          comando: process.execPath + " -e process.exit(0)",
+        },
+      ), null, 2), "utf8");
+    },
+  });
+
+  const manomesso = await ambiente.post("/api/consiglio/stato", { lavoroId: "lavoro-manomesso" });
+  assert.equal(manomesso.risposta.status, 200, JSON.stringify(manomesso.dati));
+  assert.equal(manomesso.dati.lavoro.ricaricato, true);
+  assert.equal(manomesso.dati.lavoro.piano.origine, "assente", "il piano a mano si rivalida alla riapertura");
+  assert.match(manomesso.dati.lavoro.piano.motivo, /non supera il controllo alla riapertura/);
+  assert.match(manomesso.dati.lavoro.piano.motivo, /caratteri da shell/);
+
+  const sano = await ambiente.post("/api/consiglio/stato", { lavoroId: "lavoro-sano" });
+  assert.equal(sano.risposta.status, 200, JSON.stringify(sano.dati));
+  assert.equal(sano.dati.lavoro.piano.origine, "manuale", "un piano regolare torna intero");
+  assert.equal(sano.dati.lavoro.piano.eseguibile, process.execPath);
+  assert.deepEqual(sano.dati.lavoro.piano.argomenti, ["-e", "process.exit(0)"]);
+
+  const senzaConsenso = await ambiente.post("/api/consiglio/rifai", {
+    operationId: "op-" + randomUUID(),
+    lavoroId: "lavoro-manomesso",
+    revisioneAttesa: 1,
+    ripristina: false,
+  });
+  assert.equal(senzaConsenso.risposta.status, 409, JSON.stringify(senzaConsenso.dati));
+  assert.equal(senzaConsenso.dati.codice, "consenso-mancante");
+  assert.match(senzaConsenso.dati.consenso, /Non è stato riconosciuto un comando di test/);
+  assert.equal(ambiente.ponte.consiglio.lavori.get("lavoro-manomesso").revisione, 1, "niente revisione nuova");
+
+  const conConsenso = await ambiente.post("/api/consiglio/rifai", {
+    operationId: "op-" + randomUUID(),
+    lavoroId: "lavoro-manomesso",
+    revisioneAttesa: 1,
+    ripristina: false,
+    consenso: true,
+  });
+  assert.equal(conConsenso.risposta.status, 202, JSON.stringify(conConsenso.dati));
+  const finale = await attendiStato(ambiente, "lavoro-manomesso", ["bozza_valida", "bozza_bloccata"]);
+  assert.equal(finale.lavoro.stato, "bozza_bloccata", JSON.stringify(finale.lavoro));
+  assert.match(finale.controllo.motivi[0], /non supera il controllo alla riapertura/);
+  assert.equal(ambiente.conf.controlloChiamate, 0, "il modulo dei controlli non viene nemmeno chiamato");
+  assert.equal(ambiente.conf.opzioniControllo, null, "nessun comando arriva all'esecuzione");
+  assert.match(
+    finale.lavoro.consenso.testo,
+    /Non è stato riconosciuto un comando di test/,
+    "il consenso appena dato vale per il piano di adesso",
+  );
 });

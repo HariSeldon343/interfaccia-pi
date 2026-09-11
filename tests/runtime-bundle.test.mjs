@@ -138,6 +138,40 @@ test("le risorse del pacchetto includono i moduli del consiglio", async () => {
   }
 });
 
+// I moduli del client non si elencano a mano: l'elenco vero è quello che
+// index.html carica. Un modulo nuovo che qualcuno dimentica di mettere nelle
+// risorse qui diventa rosso, invece di dare 404 soltanto dentro il pacchetto.
+test("ogni modulo del client caricato da index.html viaggia nel pacchetto", async () => {
+  const [config, pacchetto, indice] = await Promise.all([
+    readFile(join(RADICE, "src-tauri", "tauri.conf.json"), "utf8").then(JSON.parse),
+    readFile(join(RADICE, "package.json"), "utf8").then(JSON.parse),
+    readFile(join(RADICE, "app", "public", "index.html"), "utf8"),
+  ]);
+  const controlli = pacchetto.scripts.check.split(" && ");
+  const moduliClient = [...indice.matchAll(/<script\s+src="\/([A-Za-z0-9._-]+\.js)"/gu)].map((voce) => voce[1]);
+  assert.ok(moduliClient.length >= 10, "index.html deve caricare i moduli del client: " + moduliClient.join(", "));
+  assert.ok(
+    moduliClient.includes("consiglio-core.js"),
+    "index.html deve caricare consiglio-core.js: " + moduliClient.join(", "),
+  );
+  for (const modulo of moduliClient) {
+    assert.equal(
+      config.bundle.resources["../app/public/" + modulo],
+      "app/public/" + modulo,
+      "Risorsa del client mancante: " + modulo,
+    );
+    assert.ok(
+      controlli.includes("node --check app/public/" + modulo),
+      "Controllo sintattico mancante: app/public/" + modulo,
+    );
+    assert.equal(
+      await esiste(join(RADICE, "app", "public", modulo)),
+      true,
+      "Modulo del client mancante: " + modulo,
+    );
+  }
+});
+
 test("estrazione: script di verifica e CI preparano il bundle con cache legata ai pin", async () => {
   const pacchetto = JSON.parse(await readFile(join(RADICE, "package.json"), "utf8"));
   assert.equal(pacchetto.scripts["vendor:estrazione"], "node scripts/vendor-estrazione.mjs");

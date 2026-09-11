@@ -1,6 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
 import { join } from "node:path";
-import { closeSync, openSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, openSync, writeFileSync } from "node:fs";
 
 const decoder = new StringDecoder("utf8");
 let buffer = "";
@@ -41,8 +41,74 @@ if (ruoloConsiglio) {
       "utf8",
     );
   } catch {
-    // La traccia e un aiuto ai test, non una condizione di funzionamento.
+    // La traccia è un aiuto ai test, non una condizione di funzionamento.
   }
+}
+
+// Traccia dei prompt ricevuti da un ruolo del consiglio: serve a leggere nel
+// test che cosa è arrivato davvero alla sessione, per esempio gli allegati per
+// riferimento. Come la traccia dell'ambiente è un aiuto ai test.
+function tracciaPrompt(messaggio) {
+  if (!ruoloConsiglio) return;
+  try {
+    appendFileSync(
+      join(process.cwd(), `consiglio-prompt-${sessioneIdAvvio}.txt`),
+      `--- PROMPT ${promptRicevuti} ---\n${String(messaggio ?? "")}\n`,
+      "utf8",
+    );
+  } catch {
+    // La traccia è un aiuto ai test, non una condizione di funzionamento.
+  }
+}
+
+// Uscita dello scrittore nel formato a cinque sezioni che il parser accetta.
+// Gli identificativi dei contributi e il tipo di lavoro si leggono dal prompt
+// ricevuto, come farebbe uno scrittore vero: così la prova di integrazione non
+// inventa nomi che il ponte non ha mandato.
+function uscitaScrittoreValida(messaggio) {
+  const testo = String(messaggio ?? "");
+  const contributi = [...testo.matchAll(/^--- INIZIO CONTRIBUTO (.+) ---$/gmu)]
+    .map((trovato) => trovato[1].trim())
+    .filter(Boolean);
+  const diCodice = /^Tipo di lavoro: codice\.$/mu.test(testo);
+  let fileModificati = ["nessuno"];
+  if (diCodice) {
+    const nome = "nota-del-consiglio.md";
+    try {
+      writeFileSync(join(process.cwd(), nome), "Nota scritta dallo scrittore del consiglio.\n", "utf8");
+      fileModificati = [nome];
+    } catch {
+      // Se non riesco a scrivere resto sul segnaposto: il controllo lo dirà.
+    }
+  }
+  const righe = [
+    "### RISULTATO",
+    `Sintesi del consiglio, scritta dal ruolo scrittore a partire da ${contributi.length || "nessun"} contributo.`,
+    "",
+    "### PROVENIENZA",
+    "| Parte del risultato | Contributo | Cosa ho preso | Perché |",
+    "| --- | --- | --- | --- |",
+  ];
+  for (const id of contributi) {
+    righe.push(`| Sintesi | ${id} | la parte sul rischio | è la sola verificabile |`);
+  }
+  righe.push(
+    "",
+    "### SCARTATI",
+    "| Contributo | Cosa ho lasciato fuori | Perché |",
+    "| --- | --- | --- |",
+  );
+  for (const id of contributi) {
+    righe.push(`| ${id} | le ripetizioni | già dette nel risultato |`);
+  }
+  righe.push("", "### FILE MODIFICATI", ...fileModificati, "", "### EVAL");
+  righe.push(
+    "- [x] E1 la risposta copre la richiesta e ne rispetta i vincoli. Evidenza: il risultato risponde per intero alla richiesta",
+    "- [x] E2 i disaccordi fra contributi sono risolti oppure dichiarati. Evidenza: non ci sono disaccordi fra i contributi ricevuti",
+    "- [x] E3 tutte le parti richieste ci sono, le mancanze sono dichiarate. Evidenza: nessuna parte è rimasta fuori",
+    "- [x] E4 la provenienza corrisponde a contributi reali, niente di inventato. Evidenza: ogni riga cita un contributo ricevuto",
+  );
+  return righe.join("\n");
 }
 
 function reclamaFallimento() {
@@ -210,6 +276,7 @@ function gestisci(comando) {
     // PI reale materializza il JSONL soltanto quando persiste il primo turno.
     if (persistenzaTardiva) closeSync(openSync(fileSessione, "a"));
     promptRicevuti += 1;
+    tracciaPrompt(comando.message);
     const user = { role: "user", content: comando.message, timestamp: Date.now() };
     messages.push(user);
     risposta(comando);
@@ -253,9 +320,11 @@ function gestisci(comando) {
       });
       return;
     }
-    const testo = ruoloConsiglio
-      ? `risposta con città dal ruolo ${ruoloConsiglio} (${sessioneIdAvvio})`
-      : "risposta con città";
+    const testo = marcatore("consiglio-uscita-valida") && ruoloConsiglio === "scrittore"
+      ? uscitaScrittoreValida(comando.message)
+      : (ruoloConsiglio
+        ? `risposta con città dal ruolo ${ruoloConsiglio} (${sessioneIdAvvio})`
+        : "risposta con città");
     messages.push({
       role: "assistant",
       content: [{ type: "text", text: testo }],
@@ -277,9 +346,9 @@ function gestisci(comando) {
     process.stdout.write(riga.subarray(0, posizioneAccento));
     process.stdout.write(riga.subarray(posizioneAccento));
     scrivi({ type: "message_end", message: messages.at(-1) });
-    // Con questo marcatore il messaggio e gia finito ma il turno no: serve a
+    // Con questo marcatore il messaggio è già finito ma il turno no: serve a
     // provare che il contributo si raccoglie soltanto su agent_settled, e a
-    // tenere aperta una finestra in cui il lavoro si puo annullare davvero.
+    // tenere aperta una finestra in cui il lavoro si può annullare davvero.
     if (marcatore("consiglio-settled-lento")) setTimeout(() => scrivi({ type: "agent_settled" }), 1500);
     else scrivi({ type: "agent_settled" });
     return;

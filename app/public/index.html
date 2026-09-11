@@ -129,6 +129,11 @@
             <span class="ico" aria-hidden="true">◎</span>
             <span class="voce-testo"><strong>Ragionamento</strong><small>velocita o accuratezza</small></span>
           </button>
+          <button class="voce" id="btn-consiglio" type="button" data-azione="consiglio"
+                  title="Manda la richiesta a più modelli e fai scrivere una risposta sola">
+            <span class="ico" aria-hidden="true">◈</span>
+            <span class="voce-testo"><strong>Chiedi al consiglio</strong><small>più modelli, una risposta sola da approvare</small></span>
+          </button>
           <button class="voce" id="btn-albero" type="button" data-azione="albero">
             <span class="ico" aria-hidden="true">↶</span>
             <span class="voce-testo"><strong>Cronologia e rami</strong><small>torna a un passaggio precedente</small></span>
@@ -175,6 +180,8 @@
 
     <main class="centro">
       <div class="fascia-estensioni" id="stati-estensioni" hidden></div>
+      <div class="fascia-consiglio" id="fascia-consiglio" hidden role="status"
+           aria-live="polite" aria-label="Stato del ruolo nel consiglio"></div>
       <div class="conversazione" id="conversazione" role="log" aria-label="Conversazione"
            aria-live="polite" aria-relevant="additions" tabindex="0"></div>
       <div class="solo-lettori" id="annuncio-risposta" aria-live="polite" aria-atomic="true"></div>
@@ -329,6 +336,7 @@
   <script src="/attachment-core.js"></script>
   <script src="/library-core.js"></script>
   <script src="/view-core.js"></script>
+  <script src="/consiglio-core.js"></script>
   <script src="/updater-core.js"></script>
   <script src="/startup-core.js"></script>
   <script src="/app.js"></script>

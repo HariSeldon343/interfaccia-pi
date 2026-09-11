@@ -1,11 +1,11 @@
-// Coordinatore del consiglio a piu modelli.
+// Coordinatore del consiglio a più modelli.
 // Apre le sessioni di ruolo, invia il prompt congelato, raccoglie i contributi,
 // gestisce il limite di richieste del provider con una sola ripetizione, congela
 // il piano dei test e conserva il lavoro su disco. La fusione dei contributi e i
 // controlli non vivono qui: arrivano dai punti di aggancio iniettabili.
 
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { improntaTesto, troncaLog } from "./consiglio-store.mjs";
+import { allegatoPerRiferimento, improntaTesto, troncaLog } from "./consiglio-store.mjs";
 import {
   risolviRuoliConsiglio,
   ruoliInOrdine,
@@ -23,6 +23,11 @@ export const VARIABILE_PIANO = "PI_GUI_CONSIGLIO_PIANO";
 export const STATI_IN_CORSO = new Set(["preparazione", "raccolta", "fusione", "verifica"]);
 export const LIMITE_PROMPT = 2 * 1024 * 1024;
 export const LIMITE_ISTRUZIONI = 64 * 1024;
+export const MAX_ALLEGATI = 50;
+export const STATO_INTERROTTO = "interrotto";
+// Stati di ruolo che una riapertura del ponte non deve toccare: il turno era
+// già finito quando il processo è morto.
+export const STATI_RUOLO_CONCLUSI = new Set(["completato", "errore", "scaduto", "annullato"]);
 
 export function erroreConsiglio(codice, messaggio, stato = 400, recuperabile = false) {
   const errore = new Error(messaggio);
@@ -45,7 +50,7 @@ function soloCampi(corpo, ammessi, dove) {
 }
 
 // Pi consegna al ponte soltanto una stringa: i secondi di attesa vanno letti da
-// li. Le tre forme cercate sono quelle che i provider usano davvero.
+// lì. Le tre forme cercate sono quelle che i provider usano davvero.
 export function secondiAttesaDaErrore(testo) {
   const contenuto = String(testo ?? "");
   const forme = [
@@ -78,7 +83,47 @@ export function ambienteRuolo({ ruolo, workspace, filePiano }) {
   };
 }
 
-export function promptConsigliere({ prompt, istruzioni }) {
+// Gli allegati viaggiano per riferimento, mai per contenuto: al ruolo arrivano
+// percorso, dimensione e impronta, e sta a lui aprirli con i propri strumenti se
+// gli servono. Copiarne il testo nel prompt lo duplicherebbe nel file del lavoro
+// e nella cronologia della sessione, che il consenso non promette.
+export function normalizzaAllegati(allegati) {
+  if (!Array.isArray(allegati)) return [];
+  return allegati.map(allegatoPerRiferimento).filter(Boolean);
+}
+
+export function righeAllegati(allegati) {
+  const elenco = normalizzaAllegati(allegati);
+  if (!elenco.length) return [];
+  const righe = [
+    "",
+    "### ALLEGATI",
+    "Sono indicati per riferimento: percorso, dimensione e impronta. Il contenuto non è qui: apri tu i file che ti servono, senza uscire dalla cartella di lavoro.",
+  ];
+  for (const allegato of elenco) {
+    const dettagli = [];
+    if (Number.isFinite(allegato.dimensione)) dettagli.push(`dimensione ${allegato.dimensione} byte`);
+    if (allegato.impronta) dettagli.push(`impronta sha256 ${allegato.impronta}`);
+    righe.push(
+      `- ${allegato.nome || allegato.percorso}: ${allegato.percorso}`
+      + (dettagli.length ? ` (${dettagli.join(", ")})` : ""),
+    );
+  }
+  return righe;
+}
+
+// Lo scrittore riceve gli allegati dalle istruzioni aggiuntive, non da una
+// sezione nuova del suo contratto: il contratto è di P2 e il ponte non lo
+// riscrive. Il testo è lo stesso che vede il consigliere, cioè percorso,
+// dimensione e impronta, mai il contenuto.
+export function istruzioniConAllegati(istruzioni, allegati) {
+  const righe = righeAllegati(allegati);
+  if (!righe.length) return istruzioni == null ? null : String(istruzioni);
+  const base = istruzioni == null ? "" : String(istruzioni);
+  return [base, ...righe].join("\n").trim();
+}
+
+export function promptConsigliere({ prompt, istruzioni, allegati }) {
   const righe = [
     "Rispondi per intero alla richiesta che segue, con le tue parole e senza rimandare ad altri.",
     "Dichiara i dubbi e le parti che non puoi verificare, invece di nasconderli.",
@@ -87,6 +132,7 @@ export function promptConsigliere({ prompt, istruzioni }) {
     String(prompt ?? ""),
   ];
   if (istruzioni) righe.push("", "### ISTRUZIONI AGGIUNTIVE", String(istruzioni));
+  righe.push(...righeAllegati(allegati));
   return righe.join("\n");
 }
 
@@ -105,7 +151,7 @@ export async function risolviNpmCli(execPath, esisteFile) {
   return null;
 }
 
-// Il piano si congela all'avvio e non si rilegge piu: e l'unica difesa contro
+// Il piano si congela all'avvio e non si rilegge più: è l'unica difesa contro
 // uno scrittore che riscrive scripts.test dopo il consenso.
 export async function rilevaPianoTest({
   workspace,
@@ -115,9 +161,29 @@ export async function rilevaPianoTest({
   leggiFile,
   improntaFile,
   percorsoNpmCli = null,
+  pianoManuale = null,
+  normalizzaPianoManuale = null,
 }) {
   if (tipo !== "codice" || !workspace) {
     return { origine: "assente", motivo: "Lavoro di solo testo: non viene eseguito nessun comando." };
+  }
+  // Piano indicato a mano: la normalizzazione è quella del modulo dei controlli,
+  // che pretende eseguibile e argomenti separati e rifiuta una riga di shell.
+  if (pianoManuale !== null && pianoManuale !== undefined) {
+    const esito = typeof normalizzaPianoManuale === "function"
+      ? normalizzaPianoManuale(pianoManuale, workspace)
+      : { piano: null, motivo: "Il modulo dei controlli non è disponibile: il piano indicato a mano non si può normalizzare." };
+    if (!esito?.piano) {
+      return { origine: "assente", manuale: true, motivo: esito?.motivo || "Il piano indicato a mano non è utilizzabile." };
+    }
+    const argomenti = esito.piano.argomenti || [];
+    return {
+      ...esito.piano,
+      origine: "manuale",
+      filePiano: null,
+      pianoHash: null,
+      comando: [esito.piano.eseguibile, ...argomenti].join(" "),
+    };
   }
   const filePiano = join(workspace, "package.json");
   let pacchetto = null;
@@ -163,6 +229,10 @@ export function testoConsenso({ piano, workspace, cartellaConsigli, ripristino }
     righe.push(
       `Al termine il ponte eseguirà questo comando, con i permessi del tuo account e, trattandosi di uno script npm, attraverso il processore comandi di sistema: ${piano.comando}`,
     );
+  } else if (piano?.origine === "manuale") {
+    righe.push(
+      `Al termine il ponte eseguirà il comando che hai indicato tu, con i permessi del tuo account e senza passare da una shell: ${piano.comando}`,
+    );
   } else {
     righe.push(
       `Non è stato riconosciuto un comando di test da eseguire (${piano?.motivo || "motivo non disponibile"}): per un lavoro di codice Approva resta bloccato.`,
@@ -182,9 +252,23 @@ export function testoConsenso({ piano, workspace, cartellaConsigli, ripristino }
 export function azioniPerStato(stato) {
   return {
     approva: stato === "bozza_valida",
-    rifai: ["bozza_valida", "bozza_bloccata", "approvato", "interrotto"].includes(stato),
-    annulla: STATI_IN_CORSO.has(stato) || ["bozza_valida", "bozza_bloccata"].includes(stato),
+    rifai: ["bozza_valida", "bozza_bloccata", "approvato", STATO_INTERROTTO].includes(stato),
+    annulla: STATI_IN_CORSO.has(stato) || ["bozza_valida", "bozza_bloccata", STATO_INTERROTTO].includes(stato),
   };
+}
+
+// Le impronte dei file dichiarati arrivano dal modulo dei controlli, che le
+// registra come {dichiarato, percorso, stato, dimensione, sha256}, oppure dal
+// ripiego interno, che conosce soltanto {percorso, impronta}. Approva le
+// confronta in un modo solo: qui le due forme diventano una.
+export function improntaFileCanonica(voce) {
+  if (!voce || typeof voce !== "object") return null;
+  const percorso = String(voce.percorso || voce.dichiarato || "");
+  if (!percorso) return null;
+  const impronta = typeof voce.impronta === "string"
+    ? voce.impronta
+    : (typeof voce.sha256 === "string" ? voce.sha256 : null);
+  return { ...voce, percorso, impronta };
 }
 
 // Quando il comando distingue i due flussi si legge soltanto stdout: un avviso
@@ -211,7 +295,7 @@ export function percorsiDaRipristinare({ dichiarati, tracciati }) {
     .filter((percorso) => insieme.has(percorso));
 }
 
-// Punti di aggancio predefiniti: finche i moduli dello scrittore e dei controlli
+// Punti di aggancio predefiniti: finché i moduli dello scrittore e dei controlli
 // non esistono, il consiglio resta in bozza bloccata invece di fingere un esito.
 export const fusioneNonDisponibile = {
   componiPrompt() {
@@ -263,6 +347,7 @@ export function creaGestoreConsiglio({
   guardStrumenti = guardiaNonDisponibile,
   attendi = (ms) => new Promise((risolvi) => setTimeout(risolvi, ms)),
   pausaBreve = (ms) => new Promise((risolvi) => setTimeout(risolvi, ms)),
+  normalizzaPianoManuale = null,
   eseguiComando,
   esisteFile,
   leggiFile,
@@ -353,18 +438,18 @@ export function creaGestoreConsiglio({
     emettiStato(lavoro, motivo);
   }
 
-  // Un ciclo di revisione puo restare in volo dopo che l'utente ha premuto
+  // Un ciclo di revisione può restare in volo dopo che l'utente ha premuto
   // Annulla o Rifai: l'annullamento alza la generazione e porta lo stato ad
   // "annullato", Rifai apre la generazione successiva. Dopo di che il ciclo
-  // vecchio non deve piu scrivere nulla, ne lo stato ne i contributi, e
+  // vecchio non deve più scrivere nulla, né lo stato né i contributi, e
   // soprattutto non deve arrivare a eseguire i test in una cartella per cui il
-  // consenso e stato revocato. Ogni transizione passa da qui.
+  // consenso è stato revocato. Ogni transizione passa da qui.
   function revisioneSuperata(lavoro, generazione) {
     return lavoro.stato === "annullato" || lavoro.generazione !== generazione;
   }
 
   // Osservatore degli eventi di una sessione di ruolo. Il ponte lo aggancia a
-  // SessionePi alla creazione: e l'unico canale con cui il consiglio vede
+  // SessionePi alla creazione: è l'unico canale con cui il consiglio vede
   // agent_settled, auto_retry_start e gli errori del provider.
   function osservaEvento(guiSessionId, evento) {
     const attesa = attese.get(guiSessionId);
@@ -542,7 +627,7 @@ export function creaGestoreConsiglio({
 
   async function eseguiControllo(lavoro) {
     const piano = lavoro.piano;
-    if (lavoro.tipo === "codice" && piano?.origine === "npm") {
+    if (lavoro.tipo === "codice" && piano?.filePiano && piano?.pianoHash) {
       const improntaAttuale = await improntaFile(piano.filePiano).catch(() => null);
       if (improntaAttuale !== piano.pianoHash) {
         return {
@@ -555,7 +640,7 @@ export function creaGestoreConsiglio({
         };
       }
     }
-    if (lavoro.tipo === "codice" && piano?.origine !== "npm") {
+    if (lavoro.tipo === "codice" && !["npm", "manuale"].includes(piano?.origine)) {
       return {
         tipo: "test",
         esito: "fail",
@@ -581,7 +666,9 @@ export function creaGestoreConsiglio({
       esito: ["pass", "fail", "assente"].includes(esito?.esito) ? esito.esito : "fail",
       motivi: Array.isArray(esito?.motivi) ? esito.motivi : [],
       logTroncato: esito?.logTroncato == null ? null : troncaLog(esito.logTroncato),
-      impronteFile: Array.isArray(esito?.impronteFile) ? esito.impronteFile : [],
+      impronteFile: (Array.isArray(esito?.impronteFile) ? esito.impronteFile : [])
+        .map(improntaFileCanonica)
+        .filter(Boolean),
       at: ora(),
     };
   }
@@ -613,6 +700,7 @@ export function creaGestoreConsiglio({
       const testoConsiglieri = promptConsigliere({
         prompt: lavoro.revisioneCorrente.prompt,
         istruzioni: lavoro.revisioneCorrente.istruzioni,
+        allegati: lavoro.revisioneCorrente.allegati,
       });
       const consiglieri = lavoro.ruoli.filter((ruolo) => ruolo.tipo === "consigliere");
       const esiti = await Promise.all(
@@ -640,7 +728,10 @@ export function creaGestoreConsiglio({
       const scrittore = lavoro.ruoli.find((ruolo) => ruolo.tipo === "scrittore");
       const promptScrittore = fondiRisultato.componiPrompt({
         prompt: lavoro.revisioneCorrente.prompt,
-        istruzioni: lavoro.revisioneCorrente.istruzioni,
+        istruzioni: istruzioniConAllegati(
+          lavoro.revisioneCorrente.istruzioni,
+          lavoro.revisioneCorrente.allegati,
+        ),
         contributi: validi,
         tipo: lavoro.tipo,
         workspace: lavoro.workspace,
@@ -719,7 +810,7 @@ export function creaGestoreConsiglio({
     let sha = base?.codice === 0 ? shaDaUscita(base) : "";
     // git stash create non salva nulla quando lo sporco sono soltanto file non
     // tracciati: esce con codice 0 e non stampa niente. In quel caso i file
-    // tracciati stanno tutti a HEAD, quindi la base e HEAD e la promessa di
+    // tracciati stanno tutti a HEAD, quindi la base è HEAD e la promessa di
     // ripristino resta valida invece di sparire dal testo del consenso.
     if (alberoSporco && base?.codice === 0 && !sha) {
       base = await testa();
@@ -837,8 +928,19 @@ export function creaGestoreConsiglio({
     }
     const tipo = corpo.tipo === "codice" ? "codice" : corpo.tipo === "testo" ? "testo" : null;
     if (!tipo) throw erroreConsiglio("schema", "Il tipo del lavoro deve essere testo oppure codice.", 400);
-    const allegati = Array.isArray(corpo.allegati) ? corpo.allegati : [];
-    if (allegati.length > 50) throw erroreConsiglio("schema", "Troppi allegati per un solo consiglio.", 400);
+    if (corpo.allegati != null && !Array.isArray(corpo.allegati)) {
+      throw erroreConsiglio("schema", "Gli allegati devono essere una lista.", 400);
+    }
+    const allegatiGrezzi = Array.isArray(corpo.allegati) ? corpo.allegati : [];
+    if (allegatiGrezzi.length > MAX_ALLEGATI) {
+      throw erroreConsiglio("schema", "Troppi allegati per un solo consiglio.", 400);
+    }
+    // Si passa subito alla forma per riferimento: il contenuto eventualmente
+    // inviato serve solo a calcolare l'impronta e non viene conservato.
+    const allegati = normalizzaAllegati(allegatiGrezzi);
+    if (allegati.length !== allegatiGrezzi.length) {
+      throw erroreConsiglio("schema", "Ogni allegato deve indicare il percorso del file.", 400);
+    }
     const sorgente = descriviSessioneSorgente(corpo.sourceSessionId);
     if (!sorgente) throw erroreConsiglio("sessione-assente", "La conversazione sorgente non è aperta.", 404);
     const workspace = sorgente.cartella || null;
@@ -846,9 +948,30 @@ export function creaGestoreConsiglio({
       throw erroreConsiglio("workspace-assente", "Un lavoro di codice richiede una conversazione con cartella di lavoro.", 409);
     }
 
+    if (corpo.piano != null && tipo !== "codice") {
+      throw erroreConsiglio(
+        "schema",
+        "Un lavoro di solo testo non esegue comandi: il piano indicato a mano non si applica.",
+        400,
+      );
+    }
     const piano = await rilevaPianoTest({
-      workspace, tipo, execPath, esisteFile, leggiFile, improntaFile, percorsoNpmCli,
+      workspace,
+      tipo,
+      execPath,
+      esisteFile,
+      leggiFile,
+      improntaFile,
+      percorsoNpmCli,
+      pianoManuale: corpo.piano ?? null,
+      normalizzaPianoManuale,
     });
+    // Un piano indicato a mano che viene rifiutato ferma qui la richiesta:
+    // aprire le sessioni per poi bloccare Approva sarebbe una spesa senza
+    // sbocco.
+    if (piano.manuale && piano.origine === "assente") {
+      throw erroreConsiglio("piano-non-valido", piano.motivo, 400);
+    }
     const git = tipo === "codice" ? await statoGit(workspace) : { disponibile: false, motivo: "Lavoro di solo testo." };
     if (tipo === "codice" && corpo.consenso !== true) {
       throw Object.assign(
@@ -864,6 +987,14 @@ export function creaGestoreConsiglio({
       istruzioni,
       tipo,
       allegati: allegati.map((allegato) => String(allegato?.percorso || "")),
+      // Il piano a mano entra nell'impronta nella sua forma strutturata, non
+      // nella riga ricomposta: "node -e process.exit(0)" come argomento solo e
+      // come due argomenti separati sono due esecuzioni diverse, e appiattirle
+      // in una stringa darebbe replay dove serve un 409. jsonCanonico
+      // serializza array e oggetti in modo stabile.
+      piano: piano.origine === "manuale"
+        ? { origine: piano.origine, eseguibile: piano.eseguibile, argomenti: piano.argomenti || [] }
+        : piano.origine,
     });
     const libera = await acquisisciMutazione();
     let record = null;
@@ -990,15 +1121,25 @@ export function creaGestoreConsiglio({
 
   function pianoPubblico(piano) {
     if (!piano) return null;
-    return piano.origine === "npm"
-      ? {
+    if (piano.origine === "npm") {
+      return {
         origine: piano.origine,
         comando: piano.comando,
         script: piano.script,
         filePiano: piano.filePiano,
         pianoHash: piano.pianoHash,
-      }
-      : { origine: "assente", motivo: piano.motivo };
+      };
+    }
+    if (piano.origine === "manuale") {
+      return {
+        origine: piano.origine,
+        comando: piano.comando,
+        eseguibile: piano.eseguibile,
+        argomenti: piano.argomenti || [],
+        cwd: piano.cwd,
+      };
+    }
+    return { origine: "assente", motivo: piano.motivo };
   }
 
   function ruoloPubblico(ruolo) {
@@ -1033,6 +1174,9 @@ export function creaGestoreConsiglio({
         creatoIl: lavoro.creatoIl,
         aggiornatoIl: lavoro.aggiornatoIl,
         problemi: lavoro.problemi,
+        ripristino: lavoro.ripristino || null,
+        ricaricato: Boolean(lavoro.ricaricato),
+        allegati: normalizzaAllegati(lavoro.revisioneCorrente?.allegati),
       },
       ruoli: lavoro.ruoli.map(ruoloPubblico),
       contributi: lavoro.contributi.map((contributo) => ({
@@ -1092,7 +1236,7 @@ export function creaGestoreConsiglio({
       if (lavoro.risultato?.risultatoHash !== corpo.risultatoHash) {
         throw erroreConsiglio("risultato-cambiato", "Il risultato è cambiato dopo l'ultima lettura: ricarica prima di approvare.", 409);
       }
-      if (lavoro.tipo === "codice" && lavoro.piano?.origine === "npm") {
+      if (lavoro.tipo === "codice" && lavoro.piano?.filePiano && lavoro.piano?.pianoHash) {
         const improntaPiano = await improntaFile(lavoro.piano.filePiano).catch(() => null);
         if (improntaPiano !== lavoro.piano.pianoHash) {
           throw erroreConsiglio("piano-cambiato", "Il piano dei test è cambiato dopo il consenso: il controllo non vale più.", 409);
@@ -1136,7 +1280,11 @@ export function creaGestoreConsiglio({
 
   async function rifai(corpo) {
     if (!oggetto(corpo)) throw erroreConsiglio("schema", "La richiesta di ripetizione non è un oggetto.", 400);
-    soloCampi(corpo, ["operationId", "lavoroId", "revisioneAttesa", "istruzioni", "ripristina", "confermaRipristino"], "ripetizione");
+    soloCampi(
+      corpo,
+      ["operationId", "lavoroId", "revisioneAttesa", "istruzioni", "ripristina", "confermaRipristino", "consenso"],
+      "ripetizione",
+    );
     if (corpo.operationId != null && !operationIdValido(corpo.operationId)) {
       throw erroreConsiglio("schema", "L'identificativo dell'operazione non è valido.", 400);
     }
@@ -1148,12 +1296,35 @@ export function creaGestoreConsiglio({
       // che il primo ha appena aperto. Letti fuori, aprirebbero due revisioni e
       // due gruppi di sessioni sullo stesso lavoro.
       // Prima la revisione: un client rimasto indietro deve sapere che sta
-      // guardando una bozza vecchia, non che il consiglio e occupato.
+      // guardando una bozza vecchia, non che il consiglio è occupato.
       if (Object.hasOwn(corpo, "revisioneAttesa") && corpo.revisioneAttesa !== lavoro.revisione) {
         throw erroreConsiglio("revisione-superata", "La revisione indicata non è più quella corrente.", 409);
       }
       if (STATI_IN_CORSO.has(lavoro.stato)) {
         throw erroreConsiglio("lavoro-in-corso", "Il consiglio sta ancora lavorando: annulla prima di rifare.", 409);
+      }
+      // Un lavoro ripreso dal disco porta un consenso raccolto in un'altra
+      // sessione del ponte, su un piano che nel frattempo è stato riletto da un
+      // file. Prima di riaprire le sessioni, di far modificare i file e di
+      // arrivare di nuovo a eseguire un comando, il consenso si chiede
+      // un'altra volta, con il testo ricalcolato sul piano di adesso.
+      if (lavoro.ricaricato && lavoro.tipo === "codice" && corpo.consenso !== true) {
+        throw Object.assign(
+          erroreConsiglio(
+            "consenso-mancante",
+            "Questo lavoro è ripreso da una sessione precedente del ponte: serve di nuovo il consenso prima di rifare.",
+            409,
+            true,
+          ),
+          {
+            consenso: testoConsenso({
+              piano: lavoro.piano,
+              workspace: lavoro.workspace,
+              cartellaConsigli,
+              ripristino: lavoro.git,
+            }),
+          },
+        );
       }
       const dichiarati = lavoro.risultato?.fileModificati || [];
       let ripristino = { possibile: false, file: [], motivo: "Ripristino non richiesto." };
@@ -1204,6 +1375,24 @@ export function creaGestoreConsiglio({
       lavoro.attese = [];
       lavoro.stato = "preparazione";
       lavoro.motivo = null;
+      // Una revisione nuova cancella la proposta di ripristino letta dal disco:
+      // da qui in avanti il lavoro è di questa sessione del ponte.
+      lavoro.ripristino = null;
+      // Il consenso appena dato vale per il piano di adesso: si riscrive, così
+      // il testo che l'utente rilegge in "stato" è quello che ha accettato.
+      if (lavoro.ricaricato && lavoro.tipo === "codice") {
+        lavoro.consenso = {
+          accettato: true,
+          at: ora(),
+          testo: testoConsenso({
+            piano: lavoro.piano,
+            workspace: lavoro.workspace,
+            cartellaConsigli,
+            ripristino: lavoro.git,
+          }),
+        };
+      }
+      lavoro.ricaricato = false;
       prenotati += posti;
       await conserva(lavoro);
       try {
@@ -1249,7 +1438,7 @@ export function creaGestoreConsiglio({
       return { stato: 200, corpo: { stato: lavoro.stato, ruoli: lavoro.ruoli.map(ruoloPubblico) } };
     }
     // Prima cosa: il ciclo in volo deve sapere subito che questa revisione non
-    // vale piu, altrimenti riprende dall'attesa e riscrive lo stato.
+    // vale più, altrimenti riprende dall'attesa e riscrive lo stato.
     lavoro.generazione = (lavoro.generazione || 1) + 1;
     for (const ruolo of lavoro.ruoli) {
       if (!["completato", "errore"].includes(ruolo.stato)) ruolo.stato = "annullato";
@@ -1316,12 +1505,135 @@ export function creaGestoreConsiglio({
     };
   }
 
+  // Proposta di ripristino per un lavoro che non è arrivato in fondo: soltanto
+  // l'intersezione fra i file dichiarati e quelli tracciati, come per Rifai.
+  // Nessun comando che scrive: qui si guarda e si propone.
+  async function proponiRipristino(lavoro) {
+    const dichiarati = lavoro.risultato?.fileModificati || [];
+    if (!dichiarati.length) {
+      return { proposto: false, file: [], motivo: "Il consiglio non ha dichiarato file modificati." };
+    }
+    const esito = await ripristinaFile(lavoro, dichiarati).catch((errore) => ({
+      possibile: false,
+      file: [],
+      motivo: String(errore?.message || errore),
+    }));
+    if (!esito.possibile || !esito.file?.length) {
+      return {
+        proposto: false,
+        file: esito.file || [],
+        motivo: esito.motivo || "Non ci sono file tracciati da riportare indietro.",
+      };
+    }
+    return { proposto: true, file: esito.file, motivo: null };
+  }
+
+  // Il piano di un lavoro ripreso arriva dal file su disco, e da quando è stato
+  // scritto nessuno l'ha più guardato. Quello npm porta con sé il file che lo
+  // definisce e la sua impronta, che prima dello spawn viene ricontrollata;
+  // quello indicato a mano non ha né file né impronta, quindi l'unico controllo
+  // che ha mai avuto è quello di "avvia". Qui si rifà: se non passa, il piano
+  // sparisce, Approva resta bloccato e nessun comando viene eseguito. Al
+  // normalizzatore si passano soltanto eseguibile e argomenti, non il piano
+  // intero: la riga "comando" è una comodità che il ponte aggiunge per il testo
+  // del consenso, e ripresentarla la farebbe rifiutare come riga di shell.
+  function rivalidaPianoRipreso(piano, workspace) {
+    if (!piano || piano.origine !== "manuale") return piano;
+    const esito = typeof normalizzaPianoManuale === "function"
+      ? normalizzaPianoManuale({ eseguibile: piano.eseguibile, argomenti: piano.argomenti }, workspace)
+      : { piano: null, motivo: "il modulo dei controlli non è disponibile" };
+    if (!esito?.piano) {
+      return {
+        origine: "assente",
+        manuale: true,
+        motivo: `Il piano indicato a mano non supera il controllo alla riapertura (${esito?.motivo || "motivo non disponibile"}): nessun comando viene eseguito e Approva resta bloccato.`,
+      };
+    }
+    const argomenti = esito.piano.argomenti || [];
+    return {
+      ...esito.piano,
+      origine: "manuale",
+      filePiano: null,
+      pianoHash: null,
+      comando: [esito.piano.eseguibile, ...argomenti].join(" "),
+    };
+  }
+
+  // Alla riapertura del ponte i lavori tornano dal disco. Quelli che erano in
+  // corso non possono riprendere: i processi che li portavano avanti sono morti
+  // con il ponte. Tornano come "interrotto", con la proposta di ripristino
+  // quando lo scrittore aveva già dichiarato dei file.
+  async function eseguiRicarica(opzioni) {
+    await applicaRitenzione(opzioni || {});
+    const daDisco = await archivio.elenca();
+    const ricaricati = [];
+    for (const dati of daDisco) {
+      if (!dati?.lavoroId || lavori.has(dati.lavoroId)) continue;
+      const interrotto = STATI_IN_CORSO.has(String(dati.stato || ""));
+      const lavoro = {
+        ...dati,
+        generazione: Number.isInteger(dati.generazione) ? dati.generazione : 1,
+        seq: Number.isInteger(dati.seq) ? dati.seq : 0,
+        revisioni: Array.isArray(dati.revisioni) ? dati.revisioni : [],
+        contributi: Array.isArray(dati.contributi) ? dati.contributi : [],
+        attese: Array.isArray(dati.attese) ? dati.attese : [],
+        problemi: Array.isArray(dati.problemi) ? dati.problemi : [],
+        ruoli: (Array.isArray(dati.ruoli) ? dati.ruoli : []).map((ruolo) => {
+          const concluso = STATI_RUOLO_CONCLUSI.has(String(ruolo?.stato || ""));
+          return {
+            ...ruolo,
+            sessione: null,
+            stato: concluso ? ruolo.stato : "errore",
+            errore: concluso
+              ? (ruolo.errore ?? null)
+              : "Il ponte si è chiuso mentre il ruolo stava rispondendo.",
+          };
+        }),
+        ricaricato: true,
+      };
+      if (lavoro.tipo === "codice") lavoro.piano = rivalidaPianoRipreso(lavoro.piano, lavoro.workspace);
+      if (interrotto) {
+        lavoro.stato = STATO_INTERROTTO;
+        lavoro.motivo = "Il ponte si è chiuso mentre il consiglio stava lavorando: la revisione non è arrivata in fondo.";
+        lavoro.ripristino = await proponiRipristino(lavoro);
+      }
+      lavori.set(lavoro.lavoroId, lavoro);
+      ricaricati.push({ lavoroId: lavoro.lavoroId, stato: lavoro.stato });
+      // Un client già collegato non riceve un secondo snapshot: senza questo
+      // evento la scheda del lavoro interrotto comparirebbe solo dopo un F5.
+      if (interrotto) {
+        emettiStato(lavoro, lavoro.motivo);
+        await conserva(lavoro).catch(() => {});
+      }
+    }
+    return ricaricati;
+  }
+
+  let ricaricaIniziale = null;
+
+  function ricaricaDaDisco(opzioni = {}) {
+    const esecuzione = eseguiRicarica(opzioni);
+    // Chi aspetta "pronto" vuole sapere che la rilettura è finita, non che è
+    // andata bene: se fallisce, lo stato parte senza i lavori ripresi invece di
+    // rifiutare in faccia a una richiesta HTTP.
+    ricaricaIniziale = esecuzione.then((esito) => esito, () => []);
+    return esecuzione;
+  }
+
+  function pronto() {
+    return ricaricaIniziale || Promise.resolve([]);
+  }
+
   // La scheda "Risultato" nasce qui e viaggia nello snapshot del ponte: se
   // vivesse solo nel browser sparirebbe al primo aggiornamento di pagina.
+  // Dei lavori ripresi dal disco compaiono soltanto quelli interrotti: le bozze
+  // e gli approvati di ieri restano leggibili con "stato", senza riempire di
+  // schede la barra di oggi.
   function schede() {
     const voci = [];
     for (const lavoro of lavori.values()) {
       if (lavoro.stato === "annullato") continue;
+      if (lavoro.ricaricato && lavoro.stato !== STATO_INTERROTTO) continue;
       voci.push({
         id: PREFISSO_SCHEDA_RISULTATO + lavoro.lavoroId,
         nomeSessione: NOME_SCHEDA_RISULTATO,
@@ -1348,6 +1660,7 @@ export function creaGestoreConsiglio({
           controllo: lavoro.controllo
             ? { tipo: lavoro.controllo.tipo, esito: lavoro.controllo.esito, motivi: lavoro.controllo.motivi }
             : null,
+          ripristino: lavoro.ripristino || null,
           azioni: azioniPerStato(lavoro.stato),
         },
       });
@@ -1384,6 +1697,8 @@ export function creaGestoreConsiglio({
     sessioneDiRuolo,
     osservaEvento,
     applicaRitenzione,
+    ricaricaDaDisco,
+    pronto,
     postiPrenotati: () => prenotati,
     statoPubblico,
   };

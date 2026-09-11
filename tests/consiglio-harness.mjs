@@ -1,4 +1,4 @@
-// Banco di prova a mano per il consiglio a piu modelli.
+// Banco di prova a mano per il consiglio a più modelli.
 // Avvia un ponte isolato con home temporanea e il Pi finto di questi test,
 // stampa l'indirizzo da aprire nel browser e lascia il ponte in ascolto.
 //
@@ -7,7 +7,7 @@
 //   node tests/consiglio-harness.mjs --scenario=429-esaurisce-ritentativi
 //   node tests/consiglio-harness.mjs --scenario=pass --prova    (esegue e esce)
 //
-// Limite dichiarato: qui il provider non esiste, il modello e il Pi finto di
+// Limite dichiarato: qui il provider non esiste, il modello è il Pi finto di
 // tests/fake-pi.mjs. Lo scenario del 429 riproduce un provider che resta in
 // errore oltre i ritentativi interni di pi, non una vera chiamata HTTP.
 
@@ -115,7 +115,7 @@ if (avvioSessione.stato !== 200) {
 const avvio = await post("/api/consiglio/avvia", {
   operationId: "harness-" + randomUUID(),
   sourceSessionId: avvioSessione.dati.id,
-  prompt: "Spiega in dieci righe che cosa cambia con il consiglio a piu modelli.",
+  prompt: "Spiega in dieci righe che cosa cambia con il consiglio a più modelli.",
   tipo: "testo",
 });
 

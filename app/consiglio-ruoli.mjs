@@ -1,6 +1,6 @@
 // Ruoli del consiglio: regola di default sul catalogo, validazione della
-// configurazione salvata e risoluzione delle coppie provider piu modello.
-// Nessun identificativo di modello e scritto qui: il catalogo arriva sempre
+// configurazione salvata e risoluzione delle coppie provider più modello.
+// Nessun identificativo di modello è scritto qui: il catalogo arriva sempre
 // dalla risposta di pi.
 
 export const SCHEMA_CONSIGLIO = 1;
@@ -28,7 +28,7 @@ export function chiaveModello(modello) {
 }
 
 // Il catalogo arriva da get_available_models: teniamo soltanto i campi che
-// servono ai ruoli e conserviamo l'ordine di pi, che e stabile.
+// servono ai ruoli e conserviamo l'ordine di pi, che è stabile.
 export function normalizzaCatalogo(modelli) {
   if (!Array.isArray(modelli)) return [];
   const visti = new Set();
@@ -138,8 +138,8 @@ function nelCatalogo(catalogo, modello) {
 }
 
 // Regola di default dichiarata nel progetto: nessun modello, avvio disabilitato;
-// un modello, lo stesso per i due ruoli in sessioni distinte; due o piu modelli,
-// lo scrittore prende quello della conversazione sorgente se c'e, il consigliere
+// un modello, lo stesso per i due ruoli in sessioni distinte; due o più modelli,
+// lo scrittore prende quello della conversazione sorgente se c'è, il consigliere
 // il primo diverso dallo scrittore.
 export function modelliPredefinitiConsiglio({ catalogo = [], modelloSorgente = null } = {}) {
   const elenco = normalizzaCatalogo(catalogo);
