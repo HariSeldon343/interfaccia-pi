@@ -5,6 +5,7 @@ import {
   INTESTAZIONI_USCITA,
   analizzaUscitaScrittore,
   componiPromptScrittore,
+  senzaRigheMarker,
 } from "../app/consiglio-scrittore.mjs";
 
 const CONTRIBUTI = [
@@ -187,4 +188,16 @@ test("del testo prima della prima intestazione produce fail", () => {
   const esito = analizzaUscitaScrittore(uscita, CONTRIBUTI);
   assert.equal(esito.ok, false);
   assert.ok(esito.motivi.some((motivo) => motivo.includes("prima della prima intestazione")));
+});
+
+test("le righe marker delle skill (ottimizzazione: OK, orchestrazione: OK) non bloccano la lettura, nemmeno dopo l'ultima casella EVAL", () => {
+  const conMarker = "ottimizzazione: OK\n" + USCITA_COMPLETA + "\n**orchestrazione: OK**\n";
+  const esito = analizzaUscitaScrittore(conMarker, CONTRIBUTI);
+  assert.equal(esito.ok, true, JSON.stringify(esito.motivi));
+  assert.equal(esito.risultato.eval.length, 4);
+  assert.ok(!esito.risultato.testo.includes("ottimizzazione: OK"));
+  // La regola accetta solo la riga intera: una riga con testo aggiunto resta contenuto e, in EVAL, blocca.
+  const conTestoAggiunto = USCITA_COMPLETA + "\norchestrazione: OK, tutto a posto\n";
+  assert.equal(analizzaUscitaScrittore(conTestoAggiunto, CONTRIBUTI).ok, false);
+  assert.equal(senzaRigheMarker("a\n`orchestrazione: ok.`\nb"), "a\nb");
 });

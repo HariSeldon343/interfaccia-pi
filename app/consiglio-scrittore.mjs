@@ -49,6 +49,21 @@ const INTESTAZIONI_SCARTATI = ["contributo", "cosa ho lasciato fuori", "perche"]
 const SEGNAPOSTO_VUOTO = new Set(["nessuno", "nessuna", "nessun contributo", "niente", "-", "--", "n/a"]);
 const LIMITE_CITAZIONE = 80;
 
+// Righe che alcune skill globali di Pi aggiungono in testa o in coda a ogni
+// risposta ("ottimizzazione: OK", "orchestrazione: OK", anche in grassetto o
+// in codice). Non sono contenuto: la GUI le toglie prima di mostrare una
+// risposta (view-core.js) e qui si tolgono prima di leggere le sezioni, altrimenti
+// una riga del genere dopo l'ultima casella EVAL bloccherebbe la bozza. La regola
+// accetta solo la riga intera, senza testo aggiunto: nessun contenuto può passare da qui.
+const RIGA_MARKER_METODO = /^\s*(?:`|\*\*|__)?(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:`|\*\*|__)?\s*$/i;
+
+export function senzaRigheMarker(testo) {
+  return String(testo ?? "")
+    .split(/\r?\n/)
+    .filter((riga) => !RIGA_MARKER_METODO.test(riga))
+    .join("\n");
+}
+
 function senzaAccenti(valore) {
   return String(valore ?? "")
     .normalize("NFD")
@@ -280,7 +295,7 @@ function fallita(motivi, grezzo) {
 export function analizzaUscitaScrittore(testo, contributi) {
   const grezzo = typeof testo === "string" ? testo : String(testo ?? "");
   const idNoti = identificativiNoti(contributi);
-  const righe = grezzo.split(/\r?\n/);
+  const righe = senzaRigheMarker(grezzo).split(/\r?\n/);
 
   const posizione = new Map();
   const duplicate = new Set();
