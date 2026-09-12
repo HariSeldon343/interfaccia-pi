@@ -173,6 +173,28 @@ export function verificaDestinazionePercorso(assoluto, reale, piattaforma) {
   throw errore(`Percorso reindirizzato o punto di ripristino: ${assoluto}`);
 }
 
+// L'accettazione sintattica di un alias 8.3 richiede che ogni componente
+// divergente sia una voce reale, non un collegamento o una giunzione.
+export async function verificaDestinazionePercorsoReale(assoluto, reale, piattaforma) {
+  verificaDestinazionePercorso(assoluto, reale, piattaforma);
+  if (piattaforma !== "win32") return;
+  const dichiarato = win32.normalize(assoluto);
+  const destinazione = win32.normalize(reale).toLowerCase();
+  if (dichiarato.toLowerCase() === destinazione) return;
+  const radice = win32.parse(dichiarato).root;
+  const parti = dichiarato.slice(radice.length).split(win32.sep);
+  const partiReali = destinazione.slice(win32.parse(destinazione).root.length).split(win32.sep);
+  let corrente = radice;
+  for (let i = 0; i < parti.length; i += 1) {
+    corrente = win32.join(corrente, parti[i]);
+    if (parti[i].toLowerCase() === partiReali[i]) continue;
+    let info;
+    try { info = await lstat(corrente); }
+    catch { throw errore(`Percorso reindirizzato o punto di ripristino: ${assoluto}`); }
+    if (info.isSymbolicLink()) throw errore(`Percorso reindirizzato o punto di ripristino: ${assoluto}`);
+  }
+}
+
 // lstat su ogni antenato impedisce di raggiungere un payload attraverso una
 // giunzione. La destinazione reale deve coincidere, anche in presenza di alias 8.3.
 export async function verificaPercorsoRegolare(percorso, { directory = false } = {}) {

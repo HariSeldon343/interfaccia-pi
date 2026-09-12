@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve, isAbsolute } from "node:path";
 import CORE from "./public/library-core.js";
 import { creaSerializzatore, scriviFileAtomico } from "./persistenza-atomica.mjs";
 import { documentoTestuale } from "./estrazione.mjs";
+import { verificaDestinazionePercorsoReale } from "./estensioni-manifest.mjs";
 
 const serializzaLibrerie = creaSerializzatore();
 const CATEGORIE = new Set(["normativa", "audit", "client-evidence", "linee-guida", "web-clip", "documenti"]);
@@ -86,10 +87,12 @@ export function creaGestoreLibreria({ home, estrai, iniziaPreparazione = () => (
       if (assente && errore.code === "ENOENT") return null;
       throw errore;
     }
-    if (info.isSymbolicLink() || (tipo === "directory" && !info.isDirectory()) || (tipo === "file" && !info.isFile())
-      || chiavePercorso(await realpath(percorso)) !== chiavePercorso(percorso)) {
+    if (info.isSymbolicLink() || (tipo === "directory" && !info.isDirectory()) || (tipo === "file" && !info.isFile())) {
       throw erroreHttp("Percorso della libreria non sicuro: " + percorso, 409);
     }
+    const reale = await realpath(percorso);
+    try { await verificaDestinazionePercorsoReale(resolve(percorso), reale, process.platform); }
+    catch { throw erroreHttp("Percorso della libreria non sicuro: " + percorso, 409); }
     return info;
   }
 

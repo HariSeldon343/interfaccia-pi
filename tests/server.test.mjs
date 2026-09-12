@@ -5623,20 +5623,28 @@ test("il cleanup parte col ponte e rimuove un pending orfano senza attendere un 
     ttlFileAllegatoPendenteMs: 50,
     intervalloPuliziaFileAllegatiMs: 10_000,
   });
-  const scadenza = Date.now() + 1000;
+  // Il ponte elimina prima l'allegato e poi il manifesto: si attende che manchino entrambi.
+  const inizioAttesa = Date.now();
+  const scadenza = inizioAttesa + 10_000;
   while (Date.now() < scadenza) {
-    try {
-      await stat(vecchio.percorso);
-      await attendi(20);
-    } catch (errore) {
-      if (errore?.code === "ENOENT") break;
-      throw errore;
+    let entrambiRimossi = true;
+    for (const percorso of [vecchio.percorso, join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)]) {
+      try {
+        await stat(percorso);
+        entrambiRimossi = false;
+      } catch (errore) {
+        if (errore?.code !== "ENOENT") throw errore;
+      }
     }
+    if (entrambiRimossi) break;
+    await attendi(20);
   }
-  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" },
+    `Allegato orfano ancora presente dopo ${Date.now() - inizioAttesa} ms di attesa (limite: 10000 ms)`);
   await assert.rejects(
     stat(join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)),
     { code: "ENOENT" },
+    `Manifesto orfano ancora presente dopo ${Date.now() - inizioAttesa} ms di attesa (limite: 10000 ms)`,
   );
 });
 
@@ -5657,21 +5665,28 @@ test("il timer TTL raccoglie un pending scaduto anche se la sessione resta attiv
     data: "eA==",
   })).dati.allegato;
 
-  const scadenza = Date.now() + 1000;
+  const inizioAttesa = Date.now();
+  const scadenza = inizioAttesa + 10_000;
   while (Date.now() < scadenza) {
-    try {
-      await stat(vecchio.percorso);
-      await attendi(20);
-    } catch (errore) {
-      if (errore?.code === "ENOENT") break;
-      throw errore;
+    let entrambiRimossi = true;
+    for (const percorso of [vecchio.percorso, join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)]) {
+      try {
+        await stat(percorso);
+        entrambiRimossi = false;
+      } catch (errore) {
+        if (errore?.code !== "ENOENT") throw errore;
+      }
     }
+    if (entrambiRimossi) break;
+    await attendi(20);
   }
   assert.equal(ambiente.ponte.sessioni.has(avvio.dati.id), true);
-  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" });
+  await assert.rejects(stat(vecchio.percorso), { code: "ENOENT" },
+    `Allegato pendente ancora presente dopo ${Date.now() - inizioAttesa} ms di attesa (limite: 10000 ms)`);
   await assert.rejects(
     stat(join(dirname(vecchio.percorso), `${vecchio.id}.pending.json`)),
     { code: "ENOENT" },
+    `Manifesto pendente ancora presente dopo ${Date.now() - inizioAttesa} ms di attesa (limite: 10000 ms)`,
   );
 });
 

@@ -9,7 +9,7 @@ import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm, stat } from "n
 import { request as richiestaHttp } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { verificaPacchettoEstensione, versioneHostCompatibile } from "./estensioni-manifest.mjs";
+import { verificaDestinazionePercorsoReale, verificaPacchettoEstensione, versioneHostCompatibile } from "./estensioni-manifest.mjs";
 import { VERSIONE_HOST } from "./versione-host.mjs";
 
 export const INTERVALLO_HOST = Object.freeze({ minInclusa: "2.9.0", maxEsclusa: "3.0.0" });
@@ -203,7 +203,13 @@ export async function preparaMigrazioneSistemaGuidato({ guiDirectory, dataRoot =
   // Scansione completa prima della copia: nessun collegamento o giunzione viene seguito.
   async function visita(corrente, voci) {
     const info = await lstat(corrente);
-    if (info.isSymbolicLink() || resolve(await realpath(corrente)).toLowerCase() !== resolve(corrente).toLowerCase()) {
+    if (info.isSymbolicLink()) {
+      throw erroreGestore(`Copia di sicurezza non sicura: ${relative(sorgente, corrente) || "radice dati"}`, "SG_BACKUP_INVALID");
+    }
+    const reale = await realpath(corrente);
+    try {
+      await verificaDestinazionePercorsoReale(resolve(corrente), resolve(reale), process.platform);
+    } catch {
       throw erroreGestore(`Copia di sicurezza non sicura: ${relative(sorgente, corrente) || "radice dati"}`, "SG_BACKUP_INVALID");
     }
     if (info.isDirectory()) {

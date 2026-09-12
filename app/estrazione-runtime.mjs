@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
+import { verificaDestinazionePercorsoReale } from "./estensioni-manifest.mjs";
 
 export const SPEC_ESTRAZIONE = Object.freeze({
   schema: 1,
@@ -52,9 +53,12 @@ export async function inventarioEstrazione(radice) {
 export async function verificaBundleEstrazione(bundleRoot) {
   const radice = resolve(bundleRoot);
   const infoRadice = await lstat(radice).catch(() => null);
-  if (!infoRadice?.isDirectory() || infoRadice.isSymbolicLink() || await realpath(radice) !== radice) {
+  if (!infoRadice?.isDirectory() || infoRadice.isSymbolicLink()) {
     throw new Error("Bundle estrazione assente o collegato: eseguire npm run vendor:estrazione");
   }
+  const radiceReale = await realpath(radice);
+  try { await verificaDestinazionePercorsoReale(radice, radiceReale, process.platform); }
+  catch { throw new Error("Bundle estrazione assente o collegato: eseguire npm run vendor:estrazione"); }
   const percorsoManifest = join(radice, "manifest.json");
   const info = await lstat(percorsoManifest).catch(() => null);
   if (!info?.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 1024 * 1024) {

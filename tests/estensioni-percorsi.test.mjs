@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { percorsoEstensioneValido, verificaDestinazionePercorso, verificaPercorsoRegolare } from "../app/estensioni-manifest.mjs";
+import { percorsoEstensioneValido, verificaDestinazionePercorso, verificaDestinazionePercorsoReale, verificaPercorsoRegolare } from "../app/estensioni-manifest.mjs";
+import { preparaMigrazioneSistemaGuidato } from "../app/sistema-guidato-manager.mjs";
 
 async function fixture(t) {
   const radice = await mkdtemp(join(tmpdir(), "pi-estensioni-percorsi-"));
@@ -93,6 +94,97 @@ test("la forma corta 8.3 di un antenato Windows esistente ammette il file regola
   const cartellaCorta = join(corta, relative(lunga, await realpath(cartella)));
   assert.equal((await verificaPercorsoRegolare(cartellaCorta, { directory: true })).isDirectory(), true);
   assert.equal((await verificaPercorsoRegolare(join(cartellaCorta, "prova.txt"))).isFile(), true);
+});
+
+test("la migrazione scansiona e copia una radice dati con un antenato Windows in forma corta 8.3", {
+  skip: process.platform !== "win32" && "I nomi corti 8.3 richiedono Windows",
+}, async (t) => {
+  // L'alias deve appartenere a un antenato esistente: la creazione di nuovi nomi
+  // corti può essere disattivata sul volume dei runner.
+  const lunga = await realpath(tmpdir());
+  const esito = await eseguiCmd(["for", "%I", "in", `("${lunga}")`, "do", "@echo", "%~sI"]);
+  assert.equal(esito.code, 0, esito.stderr);
+  const corta = esito.stdout;
+  assert.ok(corta, "cmd deve restituire il percorso");
+  if (resolve(corta).toLowerCase() === resolve(lunga).toLowerCase()) {
+    const motivo = "Nessuna forma corta 8.3 disponibile per tmpdir() o i suoi antenati esistenti";
+    if (process.env.CI !== undefined) assert.fail(motivo);
+    t.skip(motivo);
+    return;
+  }
+  assert.equal((await realpath(corta)).toLowerCase(), lunga.toLowerCase());
+  const { cartella } = await fixture(t);
+  await mkdir(join(cartella, "sottocartella"));
+  await writeFile(join(cartella, "sottocartella", "dati.txt"), "Dati sintetici più recenti.");
+  const dataRoot = join(corta, relative(lunga, await realpath(cartella)));
+  assert.notEqual(resolve(dataRoot).toLowerCase(), (await realpath(dataRoot)).toLowerCase());
+  const risultato = await preparaMigrazioneSistemaGuidato({
+    dataRoot, confermata: true, arrestaBackend: async () => {},
+  });
+  assert.equal(risultato.annullata, false);
+  assert.ok(risultato.backup, "La scansione deve consentire la copia di sicurezza");
+  assert.equal(await readFile(join(risultato.backup, "prova.txt"), "utf8"), "Contenuto sintetico.");
+  assert.equal(await readFile(join(risultato.backup, "sottocartella", "dati.txt"), "utf8"), "Dati sintetici più recenti.");
+});
+
+test("una giunzione Windows con nome in forma 8.3 viene rifiutata come antenato del file e della radice dati", {
+  skip: process.platform !== "win32" && "Le giunzioni richiedono Windows",
+}, async (t) => {
+  const { radice, cartella } = await fixture(t);
+  await mkdir(join(cartella, "interna"));
+  await writeFile(join(cartella, "interna", "dati.txt"), "Dati sintetici sotto la giunzione.");
+  const giunzione = join(radice, "PROVA~1");
+  let esito;
+  try { esito = await eseguiCmd(["mklink", "/J", `"${giunzione}"`, `"${cartella}"`]); }
+  catch (causa) {
+    const motivo = `mklink /J non disponibile: ${causa.code || causa.message}`;
+    if (process.env.CI !== undefined) assert.fail(motivo);
+    t.skip(motivo);
+    return;
+  }
+  if (esito.code !== 0) {
+    const motivo = `mklink /J non disponibile (uscita ${esito.code}): ${esito.stderr || esito.stdout}`;
+    if (process.env.CI !== undefined) assert.fail(motivo);
+    t.skip(motivo);
+    return;
+  }
+  const assoluto = resolve(join(giunzione, "prova.txt"));
+  const reale = await realpath(assoluto);
+  assert.notEqual(assoluto.toLowerCase(), reale.toLowerCase());
+  assert.doesNotThrow(() => verificaDestinazionePercorso(assoluto, reale, "win32"));
+  await assert.rejects(async () => verificaDestinazionePercorsoReale(assoluto, reale, "win32"), {
+    code: "ESTENSIONE_NON_VALIDA", message: `Percorso reindirizzato o punto di ripristino: ${assoluto}`,
+  });
+  const prima = await readdir(radice);
+  const primaDestinazione = await readdir(cartella);
+  let copie = 0;
+  await assert.rejects(preparaMigrazioneSistemaGuidato({
+    dataRoot: join(giunzione, "interna"), confermata: true, arrestaBackend: async () => {},
+    copiaFile: async () => { copie += 1; },
+  }), { code: "SG_BACKUP_INVALID", message: /Copia di sicurezza non sicura:/u });
+  assert.equal(copie, 0, "La giunzione in forma 8.3 deve essere rifiutata prima di iniziare la copia");
+  assert.deepEqual(await readdir(radice), prima, "Non deve comparire una copia di sicurezza nella radice temporanea");
+  assert.deepEqual(await readdir(cartella), primaDestinazione, "Non deve comparire una copia di sicurezza accanto alla radice dati");
+});
+
+test("la migrazione rifiuta una giunzione Windows nella radice dati con SG_BACKUP_INVALID", {
+  skip: process.platform !== "win32" && "Le giunzioni richiedono Windows",
+}, async (t) => {
+  const { radice, cartella } = await fixture(t);
+  await mkdir(join(cartella, "interna"));
+  const giunzione = join(radice, "giunzione");
+  const esito = await eseguiCmd(["mklink", "/J", `"${giunzione}"`, `"${cartella}"`]);
+  assert.equal(esito.code, 0, esito.stderr || esito.stdout);
+  const prima = await readdir(radice);
+  let copie = 0;
+  for (const dataRoot of [radice, giunzione, join(giunzione, "interna")]) {
+    await assert.rejects(preparaMigrazioneSistemaGuidato({
+      dataRoot, confermata: true, arrestaBackend: async () => {},
+      copiaFile: async () => { copie += 1; },
+    }), { code: "SG_BACKUP_INVALID", message: /Copia di sicurezza non sicura:/u });
+  }
+  assert.equal(copie, 0, "La giunzione deve essere rifiutata prima di iniziare la copia");
+  assert.deepEqual(await readdir(radice), prima);
 });
 
 test("una giunzione Windows viene rifiutata anche quando è un antenato del file", {
