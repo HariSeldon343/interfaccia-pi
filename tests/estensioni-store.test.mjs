@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
@@ -97,7 +98,8 @@ test("LOCALAPPDATA normalizza il profilo reindirizzato senza fidarsi dei link ne
   const alias = join(radice, "profilo-alias");
   await mkdir(reale);
   await symlink(reale, alias, process.platform === "win32" ? "junction" : "dir");
-  const attesa = join(await realpath(reale), "AppData", "Local", "it.amodeo.interfaccia-pi", "estensioni");
+  // Stessa risoluzione usata dal codice (realpath non nativo): niente espansione dei nomi corti 8.3, che sui runner GitHub differisce dalla forma nativa.
+  const attesa = join(realpathSync(reale), "AppData", "Local", "it.amodeo.interfaccia-pi", "estensioni");
   const calcola = () => radiceProgrammiEstensioni({ platform: "win32", env: { LOCALAPPDATA: join(alias, "AppData", "Local") } });
   assert.equal(calcola(), attesa);
   const altrove = join(radice, "altrove");

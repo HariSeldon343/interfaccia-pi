@@ -1,7 +1,7 @@
 import { createHash, verify } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
-import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, parse, relative, resolve, sep, win32 } from "node:path";
 import { chiaveEstensione, PORTACHIAVI_ESTENSIONI } from "./estensioni-chiavi.mjs";
 import { VERSIONE_HOST } from "./versione-host.mjs";
 
@@ -154,8 +154,27 @@ export function validaManifestoEstensione(manifesto, {
   return { manifesto, chiave, limiti: tetti };
 }
 
+// Confronto puro di due percorsi già assoluti: solo su Windows ammette
+// l'espansione 8.3, senza cambiare radice, numero o altre componenti.
+export function verificaDestinazionePercorso(assoluto, reale, piattaforma) {
+  const windows = piattaforma === "win32";
+  const dichiarato = windows ? win32.normalize(assoluto).toLowerCase() : assoluto;
+  const destinazione = windows ? win32.normalize(reale).toLowerCase() : reale;
+  if (dichiarato === destinazione) return;
+  if (windows) {
+    const radice = win32.parse(dichiarato).root;
+    const radiceReale = win32.parse(destinazione).root;
+    const parti = dichiarato.slice(radice.length).split(win32.sep);
+    const partiReali = destinazione.slice(radiceReale.length).split(win32.sep);
+    const nomeCorto = /^[^\\/]{1,8}~\d{1,3}(\.[^\\/]{1,3})?$/i;
+    if (radice === radiceReale && parti.length === partiReali.length
+      && parti.every((parte, indice) => parte === partiReali[indice] || nomeCorto.test(parte))) return;
+  }
+  throw errore(`Percorso reindirizzato o punto di ripristino: ${assoluto}`);
+}
+
 // lstat su ogni antenato impedisce di raggiungere un payload attraverso una
-// giunzione. realpath intercetta anche redirezioni del filesystem/reparse point.
+// giunzione. La destinazione reale deve coincidere, anche in presenza di alias 8.3.
 export async function verificaPercorsoRegolare(percorso, { directory = false } = {}) {
   const assoluto = resolve(percorso);
   const radice = parse(assoluto).root;
@@ -179,8 +198,7 @@ export async function verificaPercorsoRegolare(percorso, { directory = false } =
   let reale;
   try { reale = await realpath(assoluto); }
   catch { throw errore(`Impossibile verificare la destinazione del percorso: ${percorso}`); }
-  const normalizza = (valore) => process.platform === "win32" ? resolve(valore).toLowerCase() : resolve(valore);
-  if (normalizza(reale) !== normalizza(assoluto)) throw errore(`Percorso reindirizzato o punto di ripristino: ${percorso}`);
+  verificaDestinazionePercorso(assoluto, reale, process.platform);
   return info;
 }
 

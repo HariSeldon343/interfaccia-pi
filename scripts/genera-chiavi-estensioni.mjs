@@ -12,7 +12,19 @@ import { leggiFileRegolare } from "../app/estensioni-manifest.mjs";
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const eseguiFile = promisify(execFile);
 
-async function proteggiPermessiChiave(handle, destinazione) {
+function codaDiagnostica(valore, limite) {
+  const righe = String(valore ?? "").trimEnd().split(/\r?\n/u).slice(-8).join("\n");
+  let coda = "";
+  // Si limita anche la rappresentazione JSON, senza spezzare caratteri Unicode.
+  for (const carattere of Array.from(righe).reverse()) {
+    if (Buffer.byteLength(JSON.stringify(carattere + coda), "utf8") > limite) break;
+    coda = carattere + coda;
+  }
+  return coda;
+}
+
+// Il terzo parametro esegui consente di sostituire l'esecutore PowerShell nelle prove.
+export async function proteggiPermessiChiave(handle, destinazione, esegui = eseguiFile) {
   await handle.chmod(0o600);
   if (process.platform !== "win32") return;
   // chmod non governa la DACL di Windows. Il file è ancora vuoto: si sostituisce
@@ -22,29 +34,58 @@ async function proteggiPermessiChiave(handle, destinazione) {
   const script = `
 $ErrorActionPreference = 'Stop'
 $percorso = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${percorsoBase64}'))
-$sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$diritti = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete
-$acl = [Security.AccessControl.FileSecurity]::new()
+$identita = [Security.Principal.WindowsIdentity]::GetCurrent()
+$sid = $identita.User
+$proprietarioPredefinito = $identita.Owner
+$diritti = [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::Synchronize
+function Nuova-AclPrivata {
+  $acl = [Security.AccessControl.FileSecurity]::new()
+  $acl.SetAccessRuleProtection($true, $false)
+  $regola = [Security.AccessControl.FileSystemAccessRule]::new($sid, $diritti, [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($regola)
+  return $acl
+}
+$acl = Nuova-AclPrivata
 $acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
-$regola = [Security.AccessControl.FileSystemAccessRule]::new($sid, $diritti, [Security.AccessControl.AccessControlType]::Allow)
-$acl.AddAccessRule($regola)
-Set-Acl -LiteralPath $percorso -AclObject $acl
+try {
+  Set-Acl -LiteralPath $percorso -AclObject $acl
+} catch {
+  # Un token elevato può avere come proprietario predefinito Administrators.
+  # Un oggetto nuovo modifica solo la DACL, senza riproporre il proprietario.
+  $erroreProprietario = $_.Exception.Message
+  try {
+    Set-Acl -LiteralPath $percorso -AclObject (Nuova-AclPrivata)
+  } catch {
+    throw "DACL privata non applicata: $($_.Exception.Message); tentativo con proprietario: $erroreProprietario"
+  }
+}
 $letta = Get-Acl -LiteralPath $percorso
 $regole = @($letta.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
-$attesi = [int]$diritti -bor [int][Security.AccessControl.FileSystemRights]::Synchronize
-if (-not $letta.AreAccessRulesProtected -or $letta.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or $regole.Count -ne 1) { throw 'ACL privata non verificata' }
+$proprietario = $letta.GetOwner([Security.Principal.SecurityIdentifier]).Value
+if (-not $letta.AreAccessRulesProtected -or ($proprietario -ne $sid.Value -and $proprietario -ne $proprietarioPredefinito.Value) -or $regole.Count -ne 1) { throw 'ACL privata non verificata' }
 $r = $regole[0]
-if ($r.IdentityReference.Value -ne $sid.Value -or $r.IsInherited -or $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or [int]$r.FileSystemRights -ne $attesi) { throw 'Permessi privati non verificati' }
+if ($r.IdentityReference.Value -ne $sid.Value -or $r.IsInherited -or $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or [int]$r.FileSystemRights -ne [int]$diritti) { throw 'Permessi privati non verificati' }
+if ($proprietario -ne $sid.Value) { Write-Output "chiave protetta dalla sola DACL, proprietario $proprietario" }
 `;
   const windows = process.env.SystemRoot;
-  if (!windows || !isAbsolute(windows)) throw new Error("La cartella di Windows non è disponibile per proteggere la chiave privata");
   try {
-    await eseguiFile(join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+    if (!windows || !isAbsolute(windows)) {
+      throw Object.assign(new Error("La cartella di Windows non è disponibile per proteggere la chiave privata"), {
+        code: "SYSTEMROOT_NON_VALIDO", stderr: "La cartella di Windows non è disponibile per proteggere la chiave privata",
+      });
+    }
+    const { stdout } = await esegui(join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
     ], { shell: false, windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024 });
-  } catch {
-    throw Object.assign(new Error("Impossibile restringere e verificare i permessi della chiave privata su Windows; nessun byte privato è stato scritto"), { code: "ESTENSIONE_PERMESSI" });
+    if (stdout) process.stdout.write(stdout);
+  } catch (errore) {
+    // Il comando non riceve la chiave; solo codice e code dei due flussi, entro 2 KB.
+    const cause = {
+      code: typeof errore.code === "number" ? errore.code : codaDiagnostica(errore.code, 128),
+      stdout: codaDiagnostica(errore.stdout, 900),
+      stderr: codaDiagnostica(errore.stderr, 900),
+    };
+    throw Object.assign(new Error("Impossibile restringere e verificare i permessi della chiave privata su Windows; nessun byte privato è stato scritto", { cause }), { code: "ESTENSIONE_PERMESSI" });
   }
 }
 

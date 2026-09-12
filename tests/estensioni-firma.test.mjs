@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash, createPrivateKey, createPublicKey, verify } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generaChiaviEstensioni, leggiChiavePrivataEstensioni, scriviChiavePrivataProtetta } from "../scripts/genera-chiavi-estensioni.mjs";
+import { promisify } from "node:util";
+import { generaChiaviEstensioni, leggiChiavePrivataEstensioni, proteggiPermessiChiave, scriviChiavePrivataProtetta } from "../scripts/genera-chiavi-estensioni.mjs";
 import { firmaPacchettoEstensione } from "../scripts/firma-pacchetto-estensione.mjs";
 import { controllaPacchettoOpzionale, creaPacchettoSistemaGuidato } from "../scripts/vendor-sistema-guidato.mjs";
 import { NOME_FIRMA, NOME_MANIFESTO, verificaPacchettoEstensione } from "../app/estensioni-manifest.mjs";
@@ -40,6 +42,166 @@ test("la protezione dei permessi precede i byte privati e il suo errore impedisc
   const negato = Object.assign(new Error("Permessi negati nella prova"), { code: "EPERM" });
   await assert.rejects(scriviChiavePrivataProtetta(handle, "destinazione sintetica", "byte sintetici", async () => { throw negato; }), { code: "EPERM" });
   assert.deepEqual(eventi, []);
+});
+
+test("l'errore PowerShell conserva uscita e ultime righe entro 2 KB senza scrivere byte privati", {
+  skip: process.platform !== "win32" && "La protezione DACL richiede Windows",
+}, async () => {
+  const eventi = [];
+  const privata = "byte privati sintetici da non esporre";
+  const handle = {
+    chmod: async (modo) => eventi.push(["chmod", modo]),
+    writeFile: async () => eventi.push(["scrittura"]),
+    sync: async () => eventi.push(["sync"]),
+  };
+  const guasto = Object.assign(new Error(privata), {
+    code: 23,
+    stdout: ["inizio da scartare", ...Array(12).fill("à\t".repeat(400)), "ultima riga stdout: è fallito"].join("\n"),
+    stderr: ["inizio da scartare", ...Array(12).fill("è\0".repeat(400)), "ultima riga stderr: accesso negato"].join("\n"),
+  });
+  const esegui = async (_eseguibile, argomenti) => {
+    const script = Buffer.from(argomenti.at(-1), "base64").toString("utf16le");
+    assert.equal(script.includes(privata), false);
+    throw guasto;
+  };
+  await assert.rejects(scriviChiavePrivataProtetta(handle, "destinazione sintetica", privata,
+    (file, destinazione) => proteggiPermessiChiave(file, destinazione, esegui)), (errore) => {
+    assert.equal(errore.code, "ESTENSIONE_PERMESSI");
+    assert.equal(errore.cause.code, 23);
+    assert.match(errore.cause.stdout, /ultima riga stdout: è fallito$/u);
+    assert.match(errore.cause.stderr, /ultima riga stderr: accesso negato$/u);
+    const diagnostica = JSON.stringify(errore.cause);
+    assert.ok(Buffer.byteLength(diagnostica, "utf8") <= 2048);
+    assert.doesNotMatch(diagnostica, /inizio da scartare|\uFFFD/u);
+    assert.equal(diagnostica.includes(privata), false);
+    return true;
+  });
+  assert.deepEqual(eventi, [["chmod", 0o600]]);
+});
+
+test("un SystemRoot inesistente rende diagnosticabile il mancato avvio e impedisce la scrittura privata", {
+  skip: process.platform !== "win32" && "La protezione DACL richiede Windows",
+}, async () => {
+  const windows = process.env.SystemRoot;
+  const eventi = [];
+  const handle = {
+    chmod: async () => eventi.push("chmod"),
+    writeFile: async () => eventi.push("scrittura"),
+    sync: async () => eventi.push("sync"),
+  };
+  try {
+    process.env.SystemRoot = join(REPOSITORY, "cartella-windows-assente-nella-prova");
+    await assert.rejects(scriviChiavePrivataProtetta(handle, "destinazione sintetica", "byte privati sintetici"), (errore) => {
+      assert.equal(errore.code, "ESTENSIONE_PERMESSI");
+      assert.equal(errore.cause.code, "ENOENT");
+      assert.equal(errore.cause.stdout, "");
+      assert.equal(errore.cause.stderr, "");
+      return true;
+    });
+  } finally {
+    if (windows === undefined) delete process.env.SystemRoot;
+    else process.env.SystemRoot = windows;
+  }
+  assert.deepEqual(eventi, ["chmod"]);
+});
+
+test("la DACL privata è applicata e riletta anche quando Set-Acl rifiuta il cambio di proprietario", {
+  skip: process.platform !== "win32" && "La protezione DACL richiede Windows",
+}, async (t) => {
+  const radice = await temporanea(t);
+  const percorso = join(radice, "privata-fallback.pem");
+  const handle = await open(percorso, "wx", 0o600);
+  const esegui = async (eseguibile, argomenti, opzioni) => {
+    const script = Buffer.from(argomenti.at(-1), "base64").toString("utf16le");
+    const prova = String.raw`
+$script:tentativiAcl = 0
+function Set-Acl {
+  param($LiteralPath, $AclObject)
+  $script:tentativiAcl++
+  if ($script:tentativiAcl -eq 1) { throw 'Cambio di proprietario negato nella prova' }
+  Microsoft.PowerShell.Security\Set-Acl -LiteralPath $LiteralPath -AclObject $AclObject
+}
+${script}
+if ($script:tentativiAcl -ne 2) { throw 'Fallback DACL non esercitato' }
+`;
+    return promisify(execFile)(eseguibile, [...argomenti.slice(0, -1), Buffer.from(prova, "utf16le").toString("base64")], opzioni);
+  };
+  try {
+    await scriviChiavePrivataProtetta(handle, percorso, "byte sintetici dopo la verifica DACL",
+      (file, destinazione) => proteggiPermessiChiave(file, destinazione, esegui));
+  } finally {
+    await handle.close();
+  }
+  assert.equal(await readFile(percorso, "utf8"), "byte sintetici dopo la verifica DACL");
+});
+
+test("la verifica rifiuta una DACL con due regole lasciando il file privato vuoto", {
+  skip: process.platform !== "win32" && "La protezione DACL richiede Windows",
+}, async (t) => {
+  const radice = await temporanea(t);
+  const percorso = join(radice, "privata-dacl-non-valida.pem");
+  const handle = await open(percorso, "wx", 0o600);
+  const esegui = async (eseguibile, argomenti, opzioni) => {
+    const script = Buffer.from(argomenti.at(-1), "base64").toString("utf16le");
+    const prova = String.raw`
+function Get-Acl {
+  param($LiteralPath)
+  $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+  $altroSid = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
+  $altraRegola = [Security.AccessControl.FileSystemAccessRule]::new($altroSid, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($altraRegola)
+  if (@($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])).Count -ne 2) { throw 'DACL sintetica a due regole non costruita' }
+  return $acl
+}
+${script}
+`;
+    return promisify(execFile)(eseguibile, [...argomenti.slice(0, -1), Buffer.from(prova, "utf16le").toString("base64")], opzioni);
+  };
+  try {
+    await assert.rejects(scriviChiavePrivataProtetta(handle, percorso, "byte privati sintetici",
+      (file, destinazione) => proteggiPermessiChiave(file, destinazione, esegui)), (errore) => {
+      assert.equal(errore.code, "ESTENSIONE_PERMESSI");
+      assert.match(errore.cause.stderr, /ACL privata non verificata/u);
+      return true;
+    });
+    assert.equal((await handle.stat()).size, 0);
+  } finally {
+    await handle.close();
+  }
+  assert.equal((await readFile(percorso)).length, 0);
+});
+
+test("l'avviso sulla sola DACL indica il SID del proprietario alternativo verificato", {
+  skip: process.platform !== "win32" && "La protezione DACL richiede Windows",
+}, async (t) => {
+  const radice = await temporanea(t);
+  const percorso = join(radice, "privata-proprietario-alternativo.pem");
+  const handle = await open(percorso, "wx", 0o600);
+  const messaggi = [];
+  const scrivi = t.mock.method(process.stdout, "write", (testo) => { messaggi.push(String(testo)); return true; });
+  const esegui = async (eseguibile, argomenti, opzioni) => {
+    const script = Buffer.from(argomenti.at(-1), "base64").toString("utf16le");
+    const prova = String.raw`
+function Get-Acl {
+  param($LiteralPath)
+  $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+  $script:proprietarioPredefinito = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+  $acl.SetOwner($script:proprietarioPredefinito)
+  return $acl
+}
+${script}
+`;
+    return promisify(execFile)(eseguibile, [...argomenti.slice(0, -1), Buffer.from(prova, "utf16le").toString("base64")], opzioni);
+  };
+  try {
+    await scriviChiavePrivataProtetta(handle, percorso, "byte sintetici dopo l'avviso",
+      (file, destinazione) => proteggiPermessiChiave(file, destinazione, esegui));
+  } finally {
+    scrivi.mock.restore();
+    await handle.close();
+  }
+  assert.equal(messaggi.join("").replace(/\r\n/gu, "\n"), "chiave protetta dalla sola DACL, proprietario S-1-5-32-544\n");
+  assert.equal(await readFile(percorso, "utf8"), "byte sintetici dopo l'avviso");
 });
 
 test("la coppia Ed25519 resta nel percorso privato esplicito e restituisce solo la voce pubblica", async (t) => {
