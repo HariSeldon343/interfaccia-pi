@@ -13,14 +13,23 @@ const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const eseguiFile = promisify(execFile);
 
 function codaDiagnostica(valore, limite) {
-  const righe = String(valore ?? "").trimEnd().split(/\r?\n/u).slice(-8).join("\n");
-  let coda = "";
+  const righe = String(valore ?? "").trimEnd().split(/\r?\n/u);
+  const testo = righe.join("\n");
+  if (righe.length <= 8 && Buffer.byteLength(JSON.stringify(testo), "utf8") <= limite) return testo;
+  const separatore = "\n[…]\n";
+  const spazio = Math.floor((limite - Buffer.byteLength(JSON.stringify(separatore), "utf8")) / 2);
   // Si limita anche la rappresentazione JSON, senza spezzare caratteri Unicode.
-  for (const carattere of Array.from(righe).reverse()) {
-    if (Buffer.byteLength(JSON.stringify(carattere + coda), "utf8") > limite) break;
+  let testa = "";
+  for (const carattere of righe.slice(0, 4).join("\n")) {
+    if (Buffer.byteLength(JSON.stringify(testa + carattere), "utf8") > spazio) break;
+    testa += carattere;
+  }
+  let coda = "";
+  for (const carattere of Array.from(righe.slice(-4).join("\n")).reverse()) {
+    if (Buffer.byteLength(JSON.stringify(carattere + coda), "utf8") > spazio) break;
     coda = carattere + coda;
   }
-  return coda;
+  return testa + separatore + coda;
 }
 
 // Il terzo parametro esegui consente di sostituire l'esecutore PowerShell nelle prove.
@@ -33,7 +42,10 @@ export async function proteggiPermessiChiave(handle, destinazione, esegui = eseg
   const percorsoBase64 = Buffer.from(destinazione, "utf8").toString("base64");
   const script = `
 $ErrorActionPreference = 'Stop'
+$passo = 'acl'
+try {
 $percorso = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${percorsoBase64}'))
+$info = [IO.FileInfo]::new($percorso)
 $identita = [Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identita.User
 $proprietarioPredefinito = $identita.Owner
@@ -46,28 +58,51 @@ function Nuova-AclPrivata {
   return $acl
 }
 $acl = Nuova-AclPrivata
-$acl.SetOwner($sid)
+$passo = 'proprietario'
 try {
-  Set-Acl -LiteralPath $percorso -AclObject $acl
+  $acl.SetOwner($sid)
+  $info.SetAccessControl($acl)
 } catch {
   # Un token elevato può avere come proprietario predefinito Administrators.
   # Un oggetto nuovo modifica solo la DACL, senza riproporre il proprietario.
   $erroreProprietario = $_.Exception.Message
+  $passo = 'ripiego'
   try {
-    Set-Acl -LiteralPath $percorso -AclObject (Nuova-AclPrivata)
+    $info.SetAccessControl((Nuova-AclPrivata))
   } catch {
     throw "DACL privata non applicata: $($_.Exception.Message); tentativo con proprietario: $erroreProprietario"
   }
 }
-$letta = Get-Acl -LiteralPath $percorso
+$passo = 'rilettura'
+try {
+  $letta = $info.GetAccessControl([Security.AccessControl.AccessControlSections]::All)
+} catch {
+  # All comprende la SACL: un utente ordinario può non avere SeSecurityPrivilege.
+  # In quel solo caso si rileggono comunque proprietario, gruppo e DACL completi.
+  $causa = $_.Exception
+  while ($null -ne $causa.InnerException) { $causa = $causa.InnerException }
+  if ($causa -isnot [Security.AccessControl.PrivilegeNotHeldException] -or $causa.PrivilegeName -ne 'SeSecurityPrivilege') { throw }
+  $sezioni = [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Group -bor [Security.AccessControl.AccessControlSections]::Access
+  $letta = $info.GetAccessControl($sezioni)
+}
+$passo = 'verifica'
 $regole = @($letta.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
 $proprietario = $letta.GetOwner([Security.Principal.SecurityIdentifier]).Value
 if (-not $letta.AreAccessRulesProtected -or ($proprietario -ne $sid.Value -and $proprietario -ne $proprietarioPredefinito.Value) -or $regole.Count -ne 1) { throw 'ACL privata non verificata' }
 $r = $regole[0]
 if ($r.IdentityReference.Value -ne $sid.Value -or $r.IsInherited -or $r.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or [int]$r.FileSystemRights -ne [int]$diritti) { throw 'Permessi privati non verificati' }
+[Console]::Out.WriteLine("VERIFICA proprietario=$proprietario regole=$($regole.Count)")
 if ($proprietario -ne $sid.Value) { Write-Output "chiave protetta dalla sola DACL, proprietario $proprietario" }
+} catch {
+  [Console]::Error.WriteLine("PASSO=$passo " + $_.Exception.GetType().FullName + ": " + $_.Exception.Message)
+  exit 3
+}
 `;
   const windows = process.env.SystemRoot;
+  // Windows PowerShell ricostruisce i propri percorsi dei moduli, anche se il
+  // processo chiamante proviene da PowerShell 7. I nomi Windows ignorano il caso.
+  const env = Object.fromEntries(Object.entries(process.env)
+    .filter(([nome]) => !/^(?:PSModulePath|PSExecutionPolicyPreference)$/iu.test(nome)));
   try {
     if (!windows || !isAbsolute(windows)) {
       throw Object.assign(new Error("La cartella di Windows non è disponibile per proteggere la chiave privata"), {
@@ -76,10 +111,10 @@ if ($proprietario -ne $sid.Value) { Write-Output "chiave protetta dalla sola DAC
     }
     const { stdout } = await esegui(join(windows, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
-    ], { shell: false, windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024 });
+    ], { env, shell: false, windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024 });
     if (stdout) process.stdout.write(stdout);
   } catch (errore) {
-    // Il comando non riceve la chiave; solo codice e code dei due flussi, entro 2 KB.
+    // Il comando non riceve la chiave; solo codice, testa e coda dei flussi, entro 2 KB.
     const cause = {
       code: typeof errore.code === "number" ? errore.code : codaDiagnostica(errore.code, 128),
       stdout: codaDiagnostica(errore.stdout, 900),
