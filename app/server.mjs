@@ -8662,6 +8662,7 @@ $processo.WaitForExit()
         return json(risposta, {
           servizio: FIRMA_PONTE,
           versione: VERSIONE_PONTE,
+          versioneHost: VERSIONE_HOST,
           tokenApi,
           cliPiTrovata: Boolean(cliPi),
           sessioni: statoSessioni(),

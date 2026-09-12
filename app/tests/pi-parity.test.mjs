@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const AUTH = require("../public/auth-flow-core.js");
 const PALETTE = require("../public/palette-core.js");
 
-test("la testata compatta limita lo stato reale e il composer rende espliciti i file", async () => {
+test("le tre zone conservano stato accessibile e controlli del composer anche in poco spazio", async () => {
   const [html, stile] = await Promise.all([
     readFile(join(QUI, "../public/index.html"), "utf8"),
     readFile(join(QUI, "../public/stile.css"), "utf8"),
@@ -30,12 +30,28 @@ test("la testata compatta limita lo stato reale e il composer rende espliciti i 
   );
   assert.match(html, /id="azione-allega-file"/);
   assert.match(html, /id="scegli-file"[^>]*\bmultiple\b/);
-  assert.match(stile, /\.controlli-testata\s*>\s*\.stato\s*\{[\s\S]*?max-width:\s*118px/);
-  assert.doesNotMatch(
-    stile.slice(stile.indexOf("Interfaccia 2.5.1")),
-    /\.barra\s*>\s*\.stato/,
-    "il limite responsive deve corrispondere alla gerarchia DOM reale",
-  );
+  const laterale = html.match(/<aside\b[^>]*id="pannello-laterale"[^>]*>([\s\S]*?)<\/aside>/)?.[1];
+  assert.ok(laterale, "la navigazione offre una zona riconoscibile");
+  assert.match(laterale, /id="lista-conversazioni"/);
+  assert.match(laterale, /id="stato"[^>]*role="status"[^>]*aria-live="polite"/,
+    "lo stato del ponte resta annunciato nella navigazione");
+  assert.match(html, /id="conversazione"[^>]*role="log"/);
+  const composer = html.slice(html.indexOf('id="composer-shell"'), html.indexOf('class="sotto-scrittura"'));
+  for (const id of ["input", "btn-allega", "btn-modello", "btn-ragionamento", "btn-apri-cartella", "btn-invia", "btn-ferma"]) {
+    assert.match(composer, new RegExp('id="' + id + '"'), id + " resta nel composer");
+    assert.equal([...html.matchAll(new RegExp('id="' + id + '"', "g"))].length, 1, id + " esiste una volta sola");
+  }
+  assert.match(html, /id="btn-menu"[^>]*aria-controls="pannello-laterale"[^>]*aria-expanded="(?:true|false)"/);
+  assert.match(stile, /\.corpo\s*\{[^}]*display:\s*grid/);
+  assert.match(stile, /\.centro\s*\{[^}]*display:\s*grid/);
+  assert.match(stile, /\.riga-comandi\s*\{[^}]*flex-wrap:\s*wrap/);
+  for (const regola of stile.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const [ , selettori, proprieta ] = regola;
+    if (/#btn-(?:modello|ragionamento)\b/.test(selettori)) {
+      assert.doesNotMatch(proprieta, /(?:display:\s*none|visibility:\s*hidden)/,
+        "modello e ragionamento non spariscono alle soglie responsive");
+    }
+  }
   const compatto = stile.slice(stile.lastIndexOf("@media (max-width: 650px)"));
   assert.match(compatto, /#suggerimento\s*\{[\s\S]*?display:\s*block/,
     "l'hint file deve restare disponibile anche quando lo spazio si riduce");
@@ -206,9 +222,40 @@ test("un reload durante lo streaming non presenta una falsa conversazione vuota"
   assert.match(javascript, /Cronologia salvata visibile/);
   assert.match(javascript, /consentiParziale:\s*!leggiCronologiaCompleta/);
   assert.match(javascript, /sessione\.messaggiSincronizzati\s*=\s*!parziale/);
-  assert.match(javascript, /Gia aperta · Pi sta lavorando/);
+  // Il laterale sostituisce il dialogo delle salvate: dopo il ripristino
+  // mostra una sola riga per il file e dichiara che il processo sta lavorando.
+  const navigazione = require("../public/navigazione-core.js");
+  const crea = (tag, classe = "", testo = "") => ({
+    tag, classe, textContent: testo, children: [], dataset: {}, attributi: {},
+    classList: { add() {} },
+    append(...figli) { this.children.push(...figli); },
+    appendChild(figlio) { this.children.push(figlio); return figlio; },
+    replaceChildren(...figli) { this.children = figli; },
+    setAttribute(nome, valore) { this.attributi[nome] = valore; },
+  });
+  const elenco = crea("div");
+  const sessione = { id: "stream", nomeSessione: "Lavoro ripristinato", inEsecuzione: true,
+    attiva: true, avvioCompletato: true, fileSessione: "/archivio/lavoro.jsonl", senzaCartella: true };
+  const disegno = javascript.match(/^function disegnaNavigazione\(\) \{[\s\S]*?^\}/m)?.[0];
+  assert.ok(disegno, "il frontend deve disegnare le conversazioni nel laterale");
+  new Function("DOM", "APP", "NAVIGAZIONE", "NAVIGAZIONE_CORE", "document", "crea",
+    disegno + "\ndisegnaNavigazione();")(
+    { listaConversazioni: elenco, btnCaricaAltre: {}, statoConversazioni: {} },
+    { sessioni: new Map([[sessione.id, sessione]]), attivaId: sessione.id },
+    { salvate: [{ percorso: sessione.fileSessione, nome: sessione.nomeSessione }], ricerca: "" },
+    navigazione, { activeElement: null }, crea,
+  );
+  const discendenti = (nodo) => [nodo, ...nodo.children.flatMap(discendenti)];
+  const righe = discendenti(elenco).filter((nodo) => nodo.classe === "riga-conversazione");
+  assert.equal(righe.length, 1, "la conversazione aperta non si duplica fra le salvate");
+  assert.equal(righe[0].dataset.rigaId, sessione.id);
+  const stato = discendenti(righe[0]).find((nodo) => nodo.classe === "conversazione-stato");
+  assert.match(stato.textContent, /già aperta/);
+  assert.match(stato.textContent, /sta lavorando/);
+  const voce = discendenti(righe[0]).find((nodo) => nodo.classe === "conversazione-voce");
+  assert.ok(voce.attributi["aria-label"].includes(stato.textContent), "lo stato visibile è anche accessibile");
   assert.match(stile, /\.cronologia-in-attesa\s*\{/);
-  assert.match(stile, /\.sessione-gia-aperta\s*\{/);
+  assert.match(stile, /\.riga-conversazione\[data-stato="al-lavoro"\] \.conversazione-stato/);
 });
 
 test("tutti i comandi built-in del Pi installato hanno una strategia GUI", async () => {

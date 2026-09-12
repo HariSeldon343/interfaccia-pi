@@ -72,11 +72,22 @@ export async function avviaProvaIsolata(argomenti = process.argv.slice(2)) {
     if (typeof scenario.prepara !== "function") throw new Error(`Lo scenario «${opzioni.scenario}» non espone la funzione prepara.`);
     const fixture = await scenario.prepara(contesto);
     // L'importazione del ponte avviene rigorosamente dopo l'isolamento.
-    const { creaPonte } = await import("../app/server.mjs");
+    const { creaPonte, caricaCatalogoBuiltinPi } = await import("../app/server.mjs");
     ponte = creaPonte({
       home, cliPi, portachiavi, ambienteEstensioni: env,
       radiceSenzaCartella: join(temporanea, "senza-cartella"),
       elencaDiscendenti: async () => [], terminaDiscendenti: async () => true,
+      // Come nei test del primo avvio, la cronologia della fixture arriva dal
+      // processo fake: tests/fake-pi.mjs non contiene i moduli di un runtime Pi.
+      caricaCronologia: async ({ sessione }) => {
+        const dati = await sessione.inviaEAttendi({ type: "get_messages" });
+        return dati.messages || [];
+      },
+      // Il catalogo è dato puro del runtime già distribuito, come nei test
+      // server; leggerlo non avvia la CLI reale e conserva la verifica versione.
+      caricaCatalogoBuiltin: () => caricaCatalogoBuiltinPi(
+        join(radice, "vendor", "pi-runtime", "pi", "dist", "cli.js"),
+      ),
       caricaSupportoRuntime: async () => ({ versione: "0.84.2", modelliPredefiniti: {},
         getAgentDir: () => join(home, ".pi", "agent"), getShareViewerUrl: () => "https://example.test/share",
         ProjectTrustStore: class { get() { return false; } set() {} },

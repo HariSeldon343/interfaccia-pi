@@ -3676,7 +3676,7 @@ test("desktop, launcher e ponte condividono porta e protocollo correnti", async 
   assert.match(frontend, /sessione\.handoffInCorso = true/);
   assert.match(frontend, /!sessione\.handoffInCorso/);
   assert.match(frontend, /sessione\.chiusuraInCorso = true/);
-  assert.match(frontend, /La bozza e cambiata: la chiusura e stata annullata/);
+  assert.match(frontend, /La bozza è cambiata: la chiusura è stata annullata/);
   assert.match(rust, /const PORTA: u16 = 4666/);
   assert.match(rust, /versione.*== 8/);
   assert.match(rust, /X-Pi-Gui-Client: launcher-tauri/);

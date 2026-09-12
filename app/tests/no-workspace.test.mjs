@@ -84,13 +84,13 @@ test("la radice tecnica e stabile e non confonde percorsi esterni", () => {
   assert.equal(percorsoInRadiceSenzaCartella(dirname(radice), radice), false);
 });
 
-test("la UI offre una nuova scheda nel contesto corrente o senza cartella", async () => {
+test("la UI offre una nuova conversazione nel contesto corrente o senza cartella", async () => {
   const [html, javascript] = await Promise.all([
     readFile(join(PUBLIC, "index.html"), "utf8"),
     readFile(join(PUBLIC, "app.js"), "utf8"),
   ]);
-  assert.match(html, /id="btn-nuova-chat"/);
-  assert.match(html, /Nuova scheda/);
+  assert.match(html, /id="btn-nuova-conversazione"/);
+  assert.match(html, /Nuova conversazione/);
   assert.match(javascript, /function avviaNuovaSchedaNelContestoCorrente\(\)/);
   assert.match(javascript, /avviaSessione\(corrente\.cartella, \{ forzaNuova: true \}\)/);
   assert.match(javascript, /avviaSessione\(null, \{ senzaCartella: true, forzaNuova: true \}\)/);

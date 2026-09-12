@@ -17,7 +17,7 @@ test("l'explorer espone Desktop, Documenti, Download, Home e unita", () => {
   }
   assert.match(frontend, /function puntiRapidiExplorer\(/);
   assert.match(frontend, /dati\?\.radici\s*\|\|\s*APP\.radici/);
-  assert.match(frontend, /aggiungiGruppoPuntiExplorer\(stato,\s*["']Unita["']/);
+  assert.match(frontend, /aggiungiGruppoPuntiExplorer\(stato,\s*["']Unità["']/);
   assert.match(frontend, /preferitaExplorer\(["']Desktop["'],\s*["']Scrivania["']\)/);
   assert.match(frontend, /OneDrive["'],\s*["']Desktop/,
     "Desktop deve avere anche un fallback per le cartelle reindirizzate in OneDrive");
