@@ -15,6 +15,7 @@ import {
   RITENZIONE_LAVORI_MS,
 } from "../app/consiglio-store.mjs";
 import {
+  creaGestoreConsiglio,
   improntaFileCanonica,
   percorsiDaRipristinare,
   rilevaPianoTest,
@@ -22,6 +23,317 @@ import {
   sembraLimiteRichieste,
 } from "../app/consiglio.mjs";
 import { normalizzaPianoManuale } from "../app/consiglio-controlli.mjs";
+import { applicaOperazionePreimpostazioni, inizializzaPreimpostazioni } from "../app/consiglio-preimpostazioni.mjs";
+
+async function elencoAgenti(ambiente) {
+  return (await ambiente.ponte.consiglio.preimpostazioni(null, { sourceSessionId: ambiente.sorgenteId })).corpo;
+}
+
+async function configuraAgenti(ambiente, { nome = "Due assegnazioni", inversa = false, tipo = "testo", soloScrittore = false } = {}) {
+  const elenco = await elencoAgenti(ambiente);
+  assert.equal(elenco.catalogo.length, 2, "con un solo modello la prova del congelamento non sarebbe significativa");
+  const coppia = (indice) => ({ provider: elenco.catalogo[indice].provider, modelId: elenco.catalogo[indice].modelId });
+  const ordine = soloScrittore ? ["scrittore"] : ["consigliere-1", "scrittore"];
+  const esito = await ambiente.ponte.consiglio.preimpostazioni({
+    azione: "crea", versioneArchivioAttesa: elenco.archivio.versioneArchivio,
+    preimpostazione: { nome, tipo, istruzioni: "Mantieni i dubbi e le priorità.", ordine,
+      livello: Object.fromEntries(ordine.map((id) => [id, id === "scrittore" ? "high" : "low"])),
+      assegnazioni: Object.fromEntries(ordine.map((id) => [id, coppia((id === "scrittore") !== inversa ? 1 : 0)])),
+    },
+  });
+  return esito.corpo.archivio.preimpostazioni.at(-1);
+}
+
+const riferimentoAgenti = (voce) => ({ id: voce.id, versione: voce.versione });
+
+test("il gestore riceve le preimpostazioni dal ponte e non legge il disco da solo", async () => {
+  let archivio = inizializzaPreimpostazioni();
+  let letture = 0;
+  let scritture = 0;
+  const gestore = creaGestoreConsiglio({
+    acquisisciMutazione: async () => () => {},
+    leggiPreimpostazioni: async () => { letture += 1; return structuredClone(archivio); },
+    salvaPreimpostazioni: async (operazione) => { scritture += 1; return archivio = applicaOperazionePreimpostazioni(archivio, operazione); },
+    catalogoModelli: async () => [], descriviSessioneSorgente: () => null,
+    leggiConfigurazioneRuoli: () => { throw new Error("Non leggere ruoli globali"); },
+    leggiFile: () => { throw new Error("Non leggere file"); },
+  });
+  const letto = await gestore.preimpostazioni();
+  assert.deepEqual(letto.corpo.archivio, archivio);
+  assert.equal(letture, 1);
+  const voce = archivio.preimpostazioni[1];
+  const salvato = await gestore.preimpostazioni({ azione: "predefinita", id: voce.id, versioneAttesa: voce.versione, versioneArchivioAttesa: archivio.versioneArchivio });
+  assert.equal(salvato.corpo.archivio.predefinita, voce.id);
+  assert.equal(scritture, 1);
+  assert.equal(letture, 1);
+});
+
+test("l'endpoint delle preimpostazioni rifiuta campi non previsti e risponde 409 sulla versione superata", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { senzaSorgente: true });
+  const via = "/api/consiglio/preimpostazioni";
+  const headers = { "x-pi-gui-token": ambiente.stato.tokenApi };
+  assert.equal((await fetch(ambiente.base + via)).status, 403);
+  assert.equal((await fetch(ambiente.base + via, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 403);
+  const risposta = await fetch(ambiente.base + via, { headers });
+  assert.equal(risposta.status, 200);
+  const iniziale = await risposta.json();
+  assert.deepEqual(iniziale.catalogo, []);
+  assert.equal(iniziale.risoluzioni.every((voce) => !voce.avvioPossibile), true);
+  assert.equal((await fetch(ambiente.base + via + "?intruso=true", { headers })).status, 400);
+  assert.equal((await fetch(ambiente.base + via, { method: "DELETE", headers })).status, 405);
+  for (const corpo of [null, [], { azione: "crea", versioneArchivioAttesa: 1, preimpostazione: { nome: "Incompleta" } }]) {
+    assert.equal((await ambiente.post(via, corpo)).risposta.status, 400);
+  }
+  const archivio = iniziale.archivio;
+  const voce = archivio.preimpostazioni[0];
+  const operazione = { azione: "predefinita", id: voce.id, versioneAttesa: voce.versione, versioneArchivioAttesa: archivio.versioneArchivio };
+  const file = join(ambiente.home, ".pi", "gui", "preimpostazioni-agenti.json");
+  const prima = await readFile(file, "utf8");
+  assert.equal((await ambiente.post(via, { ...operazione, consenso: true })).risposta.status, 400);
+  assert.equal(await readFile(file, "utf8"), prima);
+  assert.equal((await ambiente.post(via, operazione)).risposta.status, 200);
+  const scritto = await readFile(file, "utf8");
+  const conflitto = await ambiente.post(via, operazione);
+  assert.equal(conflitto.risposta.status, 409, JSON.stringify(conflitto.dati));
+  assert.equal(conflitto.dati.codice, "preimpostazione-conflitto");
+  assert.equal(await readFile(file, "utf8"), scritto);
+});
+
+test("l'avvio con preimpostazione congela le assegnazioni e senza il campo si comporta come prima", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const preset = await configuraAgenti(ambiente);
+  const { avvio, finale } = await avviaEAttendi(ambiente, { preimpostazione: riferimentoAgenti(preset), istruzioni: "Un testo estraneo non sostituisce le istruzioni salvate." });
+  assert.deepEqual(finale.ruoli.map((voce) => voce.modello), [preset.assegnazioni["consigliere-1"].modelId, preset.assegnazioni.scrittore.modelId]);
+  assert.notEqual(finale.ruoli[0].modello, finale.ruoli[1].modello);
+  assert.deepEqual(finale.lavoro.preimpostazione, { ...riferimentoAgenti(preset), nome: preset.nome });
+  assert.deepEqual(ambiente.ponte.consiglio.schede().find((voce) => voce.consiglio.lavoroId === avvio.lavoroId).consiglio.preimpostazione, finale.lavoro.preimpostazione);
+  const disco = JSON.parse(await readFile(join(ambiente.home, ".pi", "gui", "consigli", avvio.lavoroId + ".json"), "utf8"));
+  assert.deepEqual(disco.preimpostazione, preset);
+  assert.deepEqual(disco.assegnazioniCongelate.map((ruolo) => ruolo.thinking), ["low", "high"]);
+  assert.deepEqual(disco.assegnazioniCongelate.map((ruolo) => ruolo.roleId), preset.ordine);
+  assert.equal(disco.revisioni[0].istruzioni, preset.istruzioni);
+  const legacy = await ambiente.ponte.consiglio.ruoli(null, { sourceSessionId: ambiente.sorgenteId });
+  const tradizionale = await avviaEAttendi(ambiente);
+  assert.equal(tradizionale.finale.lavoro.preimpostazione, null);
+  assert.deepEqual(tradizionale.finale.ruoli.map((voce) => voce.modello), [legacy.corpo.effettive.consiglieri[0].modello, legacy.corpo.effettive.scrittore.modello]);
+});
+
+test("due avvii concorrenti con preset diversi non aprono lavori misti e il replay di un lavoro concluso risponde senza riaprire nulla", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const a = await configuraAgenti(ambiente, { nome: "Primo" });
+  const b = await configuraAgenti(ambiente, { nome: "Secondo", inversa: true });
+  const corpi = [a, b].map((voce) => corpoAvvio(ambiente, { preimpostazione: riferimentoAgenti(voce) }));
+  const avvii = await Promise.all(corpi.map((corpo) => ambiente.post("/api/consiglio/avvia", corpo)));
+  for (const [indice, esito] of avvii.entries()) {
+    assert.equal(esito.risposta.status, 202, JSON.stringify(esito.dati));
+    const preset = [a, b][indice];
+    assert.deepEqual(esito.dati.ruoli.map((voce) => voce.modello), preset.ordine.map((id) => preset.assegnazioni[id].modelId));
+    await attendiStato(ambiente, esito.dati.lavoroId, ["bozza_valida"]);
+  }
+  assert.notEqual(avvii[0].dati.lavoroId, avvii[1].dati.lavoroId);
+  const elenco = await elencoAgenti(ambiente);
+  await ambiente.ponte.consiglio.preimpostazioni({ azione: "elimina", id: a.id, versioneAttesa: a.versione, versioneArchivioAttesa: elenco.archivio.versioneArchivio });
+  const prima = ambiente.ponte.sessioni.size;
+  const replay = await ambiente.post("/api/consiglio/avvia", corpi[0]);
+  assert.equal(replay.risposta.status, 202, JSON.stringify(replay.dati));
+  assert.equal(replay.dati.lavoroId, avvii[0].dati.lavoroId);
+  assert.equal(ambiente.ponte.sessioni.size, prima);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 2);
+  const diverso = await ambiente.post("/api/consiglio/avvia", { ...corpi[0], preimpostazione: riferimentoAgenti(b) });
+  assert.equal(diverso.risposta.status, 409);
+  assert.equal(ambiente.ponte.sessioni.size, prima);
+});
+
+test("rifai riusa le assegnazioni congelate e non rilegge i ruoli globali", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const preset = await configuraAgenti(ambiente);
+  const { avvio, finale } = await avviaEAttendi(ambiente, { preimpostazione: riferimentoAgenti(preset) });
+  const ruoli = await ambiente.ponte.consiglio.ruoli(null, { sourceSessionId: ambiente.sorgenteId });
+  const globale = await ambiente.ponte.consiglio.ruoli({ expectedVersion: ruoli.corpo.version,
+    consiglieri: Array.from({ length: 4 }, (_, i) => ({ roleId: `nuovo-${i}`, thinking: null, model: preset.assegnazioni.scrittore })),
+    scrittore: { roleId: "scrittore", thinking: "minimal", model: preset.assegnazioni["consigliere-1"] },
+  }, { sourceSessionId: ambiente.sorgenteId });
+  assert.equal(globale.corpo.effettive.consiglieri.length, 4);
+  const elenco = await elencoAgenti(ambiente);
+  await ambiente.ponte.consiglio.preimpostazioni({ azione: "elimina", id: preset.id, versioneAttesa: preset.versione, versioneArchivioAttesa: elenco.archivio.versioneArchivio });
+  const rifatto = await ambiente.post("/api/consiglio/rifai", { lavoroId: avvio.lavoroId, revisioneAttesa: 1 });
+  assert.equal(rifatto.risposta.status, 202, JSON.stringify(rifatto.dati));
+  const seconda = await attendiStato(ambiente, avvio.lavoroId, ["bozza_valida"]);
+  assert.deepEqual(seconda.ruoli.map(({ roleId, modello, ordine }) => ({ roleId, modello, ordine })), finale.ruoli.map(({ roleId, modello, ordine }) => ({ roleId, modello, ordine })));
+  assert.equal(seconda.ruoli.length, 2);
+  assert.deepEqual(ambiente.ponte.consiglio.lavori.get(avvio.lavoroId).ruoli.map((voce) => voce.thinking), ["low", "high"]);
+  assert.equal(ambiente.ponte.consiglio.postiPrenotati(), 0);
+});
+
+test("preimpostazione superata o posti insufficienti non aprono nessuna sessione", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 4 });
+  const preset = await configuraAgenti(ambiente);
+  const prima = ambiente.ponte.sessioni.size;
+  const superata = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, { preimpostazione: { id: preset.id, versione: preset.versione + 1 } }));
+  assert.equal(superata.risposta.status, 409);
+  assert.equal(superata.dati.codice, "versione-superata");
+  const pieno = await ambiente.post("/api/consiglio/avvia", corpoAvvio(ambiente, { preimpostazione: { id: "tre-consiglieri", versione: 1 } }));
+  assert.equal(pieno.risposta.status, 409);
+  assert.equal(pieno.dati.codice, "posti-insufficienti");
+  assert.equal(ambiente.ponte.sessioni.size, prima);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 0);
+});
+
+test("il piano cambiato durante il consenso della preimpostazione blocca prima delle aperture", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const preset = await configuraAgenti(ambiente, { tipo: "codice" });
+  const file = join(ambiente.cartellaLavoro, "package.json");
+  await writeFile(file, JSON.stringify({ scripts: { test: "node --test" } }));
+  const corpo = corpoAvvio(ambiente, { tipo: "codice", preimpostazione: riferimentoAgenti(preset) });
+  const conferma = await ambiente.post("/api/consiglio/avvia", corpo);
+  assert.equal(conferma.risposta.status, 409);
+  assert.equal(conferma.dati.codice, "consenso-mancante");
+  await writeFile(file, JSON.stringify({ scripts: { test: "node --test test-nuovo.mjs" } }));
+  const cambiato = await ambiente.post("/api/consiglio/avvia", { ...corpo, consenso: true });
+  assert.equal(cambiato.risposta.status, 409, JSON.stringify(cambiato.dati));
+  assert.equal(cambiato.dati.codice, "consenso-superato");
+  assert.equal(ambiente.ponte.sessioni.size, 1);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 0);
+});
+
+test("una preimpostazione solo scrittore apre un solo ruolo e rifai prenota un solo posto", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 2 });
+  const preset = await configuraAgenti(ambiente, { nome: "Solo scrittore", soloScrittore: true });
+  const { avvio, finale } = await avviaEAttendi(ambiente, { preimpostazione: riferimentoAgenti(preset) });
+  assert.equal(finale.lavoro.stato, "bozza_valida");
+  assert.equal(finale.ruoli.length, 1);
+  assert.equal(finale.ruoli[0].tipo, "scrittore");
+  assert.equal(ambiente.conf.componiChiamate, 1);
+  const rifatto = await ambiente.post("/api/consiglio/rifai", { lavoroId: avvio.lavoroId, revisioneAttesa: 1 });
+  assert.equal(rifatto.risposta.status, 202, JSON.stringify(rifatto.dati));
+  await attendiStato(ambiente, avvio.lavoroId, ["bozza_valida"]);
+  assert.equal(ambiente.ponte.consiglio.postiPrenotati(), 0);
+});
+
+test("la migrazione del ponte conserva i ruoli 2.8 e non rinasce dopo una modifica", async (t) => {
+  const configurazione = { schemaVersion: 1, version: 3,
+    consiglieri: [{ roleId: "consigliere-1", model: null, thinking: "medium" }],
+    scrittore: { roleId: "scrittore", model: null, thinking: "medium" },
+  };
+  const ambiente = await avviaPonteConsiglio(t, { senzaSorgente: true, primaDelPonte: async ({ home }) => {
+    await mkdir(join(home, ".pi", "gui"), { recursive: true });
+    await writeFile(join(home, ".pi", "gui", "impostazioni.json"), JSON.stringify({ consiglio: configurazione }));
+  } });
+  const primo = await elencoAgenti(ambiente);
+  assert.equal(primo.archivio.preimpostazioni[0].nome, "Il mio consiglio");
+  assert.equal(primo.archivio.predefinita, primo.archivio.preimpostazioni[0].id);
+  assert.deepEqual(JSON.parse(await readFile(join(ambiente.home, ".pi", "gui", "impostazioni.json"), "utf8")).consiglio, configurazione);
+  assert.deepEqual((await elencoAgenti(ambiente)).archivio, primo.archivio);
+});
+
+test("il modello assente blocca la preimpostazione e il catalogo cambiato invalida il consenso", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const preset = await configuraAgenti(ambiente, { tipo: "codice" });
+  const corpo = corpoAvvio(ambiente, { tipo: "codice", preimpostazione: riferimentoAgenti(preset) });
+  const conferma = await ambiente.post("/api/consiglio/avvia", corpo);
+  assert.equal(conferma.dati.codice, "consenso-mancante");
+  const s = ambiente.ponte.sessioni.get(ambiente.sorgenteId);
+  const invia = s.inviaEAttendi.bind(s);
+  let inverti = false;
+  s.inviaEAttendi = async (comando, ...resto) => {
+    const esito = await invia(comando, ...resto);
+    if (comando.type !== "get_available_models") return esito;
+    return { ...esito, models: inverti ? [...esito.models].reverse() : esito.models.slice(0, 1) };
+  };
+  const mancante = await elencoAgenti(ambiente);
+  const risolto = mancante.risoluzioni.find((voce) => voce.id === preset.id);
+  assert.equal(risolto.avvioPossibile, false);
+  assert.equal(risolto.effettive.scrittore.modello, null, "nessuna sostituzione silenziosa");
+  const rifiuto = await ambiente.post("/api/consiglio/avvia", { ...corpo, consenso: true });
+  assert.equal(rifiuto.risposta.status, 409);
+  assert.equal(rifiuto.dati.codice, "ruoli-non-risolvibili");
+  inverti = true;
+  const elenco = await elencoAgenti(ambiente);
+  const automatico = elenco.archivio.preimpostazioni.find((voce) => voce.id === "rapido");
+  const { id, versione, ...campi } = automatico;
+  await ambiente.ponte.consiglio.preimpostazioni({ azione: "modifica", id, versioneAttesa: versione, versioneArchivioAttesa: elenco.archivio.versioneArchivio,
+    preimpostazione: { ...campi, tipo: "codice" } });
+  const richiesta = corpoAvvio(ambiente, { tipo: "codice", preimpostazione: { id, versione: versione + 1 } });
+  assert.equal((await ambiente.post("/api/consiglio/avvia", richiesta)).dati.codice, "consenso-mancante");
+  s.modello = preset.assegnazioni.scrittore.modelId;
+  const cambiato = await ambiente.post("/api/consiglio/avvia", { ...richiesta, consenso: true });
+  assert.equal(cambiato.dati.codice, "consenso-superato", JSON.stringify(cambiato.dati));
+  assert.equal(ambiente.ponte.sessioni.size, 1);
+  assert.equal(ambiente.ponte.consiglio.lavori.size, 0);
+});
+
+test("il consenso conserva il piano mostrato e un gitBase volatile non lo invalida", async (t) => {
+  let versioneStash = 0;
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6,
+    eseguiComandoConsiglio: async (_, args) => {
+      if (args.join(" ") === "--version") return { codice: 0, uscita: "git version finto" };
+      if (args.join(" ") === "status --porcelain") return { codice: 0, uscita: " M esempio.txt" };
+      if (args.join(" ") === "stash create") return { codice: 0, uscita: ++versioneStash === 1 ? "abc123456" : "def123456" };
+      return { codice: 0, uscita: "" };
+    },
+  });
+  await mkdir(join(ambiente.cartellaLavoro, ".git"));
+  const preset = await configuraAgenti(ambiente, { tipo: "codice" });
+  const corpo = corpoAvvio(ambiente, { tipo: "codice", preimpostazione: riferimentoAgenti(preset) });
+  const prima = await ambiente.post("/api/consiglio/avvia", { ...corpo, consenso: true });
+  assert.equal(prima.dati.codice, "consenso-mancante", "un preset di codice pretende prima la conferma mostrata");
+  const avvio = await ambiente.post("/api/consiglio/avvia", { ...corpo, consenso: true });
+  assert.equal(avvio.risposta.status, 202, JSON.stringify(avvio.dati));
+  await attendiStato(ambiente, avvio.dati.lavoroId, ["bozza_bloccata"]);
+});
+
+test("il livello automatico effettivo resta congelato anche cambiando quello della sorgente", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6 });
+  const { avvio, finale } = await avviaEAttendi(ambiente, { preimpostazione: { id: "rapido", versione: 1 } });
+  assert.deepEqual(finale.ruoli.map((voce) => voce.thinking), ["medium", "medium"]);
+  ambiente.ponte.sessioni.get(ambiente.sorgenteId).ragionamento = "off";
+  const rifatto = await ambiente.post("/api/consiglio/rifai", { lavoroId: avvio.lavoroId, revisioneAttesa: 1 });
+  assert.equal(rifatto.risposta.status, 202, JSON.stringify(rifatto.dati));
+  const seconda = await attendiStato(ambiente, avvio.lavoroId, ["bozza_valida"]);
+  assert.deepEqual(seconda.ruoli.map((voce) => voce.thinking), ["medium", "medium"]);
+});
+
+test("il livello automatico nullo resta nel file e nelle sessioni di ruolo anche dopo Rifai", async (t) => {
+  const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-catalogo-due", maxSessioni: 6, senzaRagionamento: true });
+  const sorgente = ambiente.ponte.sessioni.get(ambiente.sorgenteId);
+  assert.equal(sorgente.ragionamento, null, "il processo sorgente non espone un livello di ragionamento");
+  const elenco = await elencoAgenti(ambiente);
+  const preset = elenco.archivio.preimpostazioni.find((voce) => voce.id === "rapido");
+  assert.deepEqual(preset.livello, { "consigliere-1": null, scrittore: null });
+  // A fine revisione il ponte rimuove le sessioni chiuse: conserviamo gli stessi oggetti per verificarli.
+  const sessioniRuolo = new Map();
+  const aggiungiSessione = ambiente.ponte.sessioni.set.bind(ambiente.ponte.sessioni);
+  t.mock.method(ambiente.ponte.sessioni, "set", (id, sessione) => {
+    sessioniRuolo.set(id, sessione);
+    return aggiungiSessione(id, sessione);
+  });
+  const { avvio, finale } = await avviaEAttendi(ambiente, { preimpostazione: riferimentoAgenti(preset) });
+  const file = join(ambiente.home, ".pi", "gui", "consigli", avvio.lavoroId + ".json");
+  const verificaLivelliNulli = async (stato, revisione) => {
+    assert.equal(stato.lavoro.revisione, revisione);
+    assert.deepEqual(stato.ruoli.map((voce) => voce.roleId), preset.ordine);
+    assert.deepEqual(stato.ruoli.map((voce) => voce.thinking), [null, null]);
+    for (const ruolo of stato.ruoli) {
+      const sessione = sessioniRuolo.get(ruolo.guiSessionId);
+      assert.ok(sessione, "la sessione del ruolo esiste: " + ruolo.roleId);
+      assert.equal(sessione.ragionamento, null, "il ruolo conserva il livello nullo: " + ruolo.roleId);
+    }
+    const disco = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(disco.revisione, revisione);
+    assert.deepEqual(disco.preimpostazione.livello, preset.livello);
+    assert.deepEqual(disco.assegnazioniCongelate.map((ruolo) => ruolo.thinking), [null, null]);
+    assert.deepEqual(disco.ruoli.map((ruolo) => ruolo.thinking), [null, null]);
+  };
+  await verificaLivelliNulli(finale, 1);
+  sorgente.ragionamento = "high";
+  const rifatto = await ambiente.post("/api/consiglio/rifai", { lavoroId: avvio.lavoroId, revisioneAttesa: 1 });
+  assert.equal(rifatto.risposta.status, 202, JSON.stringify(rifatto.dati));
+  const seconda = await attendiStato(ambiente, avvio.lavoroId, ["bozza_valida"]);
+  assert.equal(sorgente.ragionamento, "high");
+  const sessioniPrecedenti = new Set(finale.ruoli.map((ruolo) => ruolo.guiSessionId));
+  assert.equal(seconda.ruoli.every((ruolo) => !sessioniPrecedenti.has(ruolo.guiSessionId)), true);
+  await verificaLivelliNulli(seconda, 2);
+});
 
 // La cartella temporanea in forma canonica (lunga): il ponte canonicalizza i percorsi con realpath e
 // sui runner Windows di GitHub tmpdir() restituisce la forma corta RUNNER~1, che non combacerebbe.
@@ -45,6 +357,7 @@ async function avviaPonteConsiglio(t, {
   cartella = "consiglio-base",
   autoStopMs = 0,
   senzaSorgente = false,
+  senzaRagionamento = false,
   senzaDoppi = false,
   primaDelPonte = null,
   ...opzioni
@@ -55,6 +368,14 @@ async function avviaPonteConsiglio(t, {
   // Serve a chi deve trovare qualcosa già sul disco quando il ponte nasce, per
   // esempio i lavori del consiglio che la riapertura deve rileggere.
   if (primaDelPonte) await primaDelPonte({ home, cartellaLavoro });
+  let cliPi = FAKE_PI;
+  if (senzaRagionamento) {
+    const finto = await readFile(FAKE_PI, "utf8");
+    const livelloFinto = 'thinkingLevel: "medium"';
+    assert.equal(finto.split(livelloFinto).length, 2, "il finto dichiara un solo livello da sostituire");
+    cliPi = join(home, "fake-pi-senza-ragionamento.mjs");
+    await writeFile(cliPi, finto.replace(livelloFinto, "thinkingLevel: null"), "utf8");
+  }
   const conf = {
     controllo: { tipo: "eval", esito: "pass", motivi: [] },
     fileModificati: [],
@@ -69,7 +390,7 @@ async function avviaPonteConsiglio(t, {
   };
   const ponte = creaPonte({
     home,
-    cliPi: FAKE_PI,
+    cliPi,
     maxSessioni,
     autoStopMs,
     bloccaComandiEstensione: false,
@@ -1421,8 +1742,8 @@ test("rifai su un lavoro ripreso non riesegue un piano non rivalidato", async (t
     revisioni: [revisione],
     revisioneCorrente: revisione,
     ruoli: [
-      { roleId: "consigliere-1", tipo: "consigliere", ordine: 1, stato: "completato", guiSessionId: "vecchia-1" },
-      { roleId: "scrittore", tipo: "scrittore", ordine: 2, stato: "completato", guiSessionId: "vecchia-2" },
+      { roleId: "consigliere-1", tipo: "consigliere", ordine: 1, stato: "completato", guiSessionId: "vecchia-1", provider: "fake", modello: "modello-test", thinking: null },
+      { roleId: "scrittore", tipo: "scrittore", ordine: 2, stato: "completato", guiSessionId: "vecchia-2", provider: "fake", modello: "modello-test", thinking: null },
     ],
     contributi: [],
     risultato: {

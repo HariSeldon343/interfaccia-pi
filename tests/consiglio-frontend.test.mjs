@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSIGLIO = require(join(RADICE, "app", "public", "consiglio-core.js"));
+const ALLEGATI = require(join(RADICE, "app", "public", "attachment-core.js"));
 const frontend = await readFile(join(RADICE, "app", "public", "app.js"), "utf8");
 
 // Estrae il corpo di una funzione reale di app.js: le prove sul DOM girano sul
@@ -582,6 +583,178 @@ test("il consenso si chiede una volta sola e riusa lo stesso operationId", async
   });
   assert.equal(rifiutato.avviato, false);
   assert.equal(rifiutato.codice, "consenso-rifiutato");
+});
+
+// Forme restituite da /api/allega-file (server.mjs) e aggiunte da
+// indicizzaIngressiLibreria (app.js): il caricamento vive fuori dal workspace.
+const CARICAMENTO_CONSIGLIO = {
+  tipo: "file", id: "12345678-1234-4234-8234-123456789012", token: "12345678-1234-4234-8234-123456789013",
+  ownerSessionId: "sorgente", nome: "caricato.txt", mimeType: "text/plain", dimensione: 21,
+  percorso: "C:/profilo/.pi/gui/allegati/" + "a".repeat(64) + "/12345678-1234-4234-8234-123456789012-caricato.txt",
+};
+const LIBRERIA_CONSIGLIO = {
+  tipo: "file", origineLibreria: true, nome: "rapporto.pdf.testo.md", mimeType: "text/markdown", dimensione: 47,
+  percorso: "C:/profilo/.pi/gui/libreria/raw/documenti/rapporto.pdf.testo.md",
+  percorsoIndice: "C:/profilo/.pi/gui/libreria/.ingest-index.json",
+};
+
+test("un allegato non ammesso blocca l'avvio con il motivo e non viene mai ignorato", async () => {
+  const bozza = "Confronta le informazioni allegate.";
+  const riferimento = { tipo: "file", nome: "nota.md", percorso: "C:/lavoro/nota.md", dimensione: 21 };
+  const immagine = { nome: "schermata.png", mimeType: "image/png", data: "cHJvdmE=" };
+  assert.equal(ALLEGATI.allegatoImmagine(immagine), true, "la fixture usa la forma immagine reale, senza tipo");
+  assert.equal(ALLEGATI.allegatoFile(CARICAMENTO_CONSIGLIO), true, "la fixture usa la forma di un caricamento reale");
+  const rifiutati = [
+    [immagine, /è un'immagine/u],
+    [CARICAMENTO_CONSIGLIO, /caricamento esterno/u],
+    [{ tipo: "file", nome: "vicino.md", percorso: "C:/lavoro-altro/vicino.md" }, /cartella di lavoro/u],
+    [{ tipo: "file", nome: "uscita.md", percorso: "C:/lavoro/../fuori/uscita.md" }, /cartella di lavoro/u],
+    [{ tipo: "file", nome: "flusso.md", percorso: "C:/lavoro/nota.md:flusso" }, /cartella di lavoro/u],
+    [{ tipo: "file", nome: "ambiguo.md", percorso: "C:/lavoro./ambiguo.md" }, /cartella di lavoro/u],
+    [{ tipo: "file", nome: "binario.pdf", percorso: "C:/lavoro/binario.pdf", mimeType: "application/pdf" }, /non è un riferimento a un file di testo/u],
+    [{ ...LIBRERIA_CONSIGLIO, percorso: "C:/fuori/nota.md" }, /radice della libreria/u],
+    [{ ...LIBRERIA_CONSIGLIO, percorsoIndice: "C:/profilo/.pi/gui/libreria/../.ingest-index.json" }, /radice della libreria/u],
+    [{ tipo: "testo", nome: "testo senza percorso", testo: "Non copiare questo contenuto nel prompt." }, /cartella di lavoro/u],
+    [{ nome: "sconosciuto" }, /cartella di lavoro/u],
+  ];
+  for (const [rifiutato, motivo] of rifiutati) {
+    const sessione = { bozza, allegati: [riferimento, rifiutato], allegatiLibreria: [] };
+    const prima = structuredClone(sessione);
+    let chiamate = 0;
+    let consensi = 0;
+    const esito = await CONSIGLIO.avviaConsiglio({
+      sourceSessionId: "sorgente", prompt: sessione.bozza, workspace: "C:/lavoro",
+      allegati: sessione.allegati, allegatiLibreria: sessione.allegatiLibreria,
+      tipo: "codice", operationId: "op-allegato-non-ammesso",
+      chiama: async () => { chiamate += 1; return { ok: true }; },
+      chiediConsenso: async () => { consensi += 1; return true; },
+    });
+    assert.equal(esito.avviato, false, rifiutato.nome);
+    assert.equal(esito.codice, "allegato-non-ammesso");
+    assert.ok(esito.messaggio.includes(rifiutato.nome), "il messaggio identifica il chip che blocca");
+    assert.match(esito.messaggio, motivo);
+    assert.ok(esito.messaggio.includes(`"${rifiutato.nome}"`), "il nome del chip usa virgolette dritte");
+    assert.match(esito.messaggio, /La bozza e tutti gli allegati sono conservati/u);
+    assert.equal(chiamate, 0, "nessun avvio parziale, neppure con un primo allegato ammesso");
+    assert.equal(consensi, 0, "il blocco precede anche il consenso");
+    assert.deepEqual(sessione, prima, "bozza, chip e dati per l'invio ordinario restano intatti");
+  }
+});
+
+test("file testuali e voci reali della libreria arrivano solo per riferimento senza contenuti o credenziali", async () => {
+  const allegati = [
+    { tipo: "file", nome: "nota.md", percorso: "C:\\Lavoro\\nota.md", mimeType: "text/markdown", dimensione: 35, impronta: "hash-sintetico", token: "segreto", ownerSessionId: "sorgente" },
+  ];
+  const libreria = [
+    { ...LIBRERIA_CONSIGLIO },
+    { ...LIBRERIA_CONSIGLIO, nome: "seconda.md", percorso: "C:/lavoro/raw/documenti/seconda.md", percorsoIndice: "C:/lavoro/.ingest-index.json", dimensione: 7 },
+  ];
+  const prima = structuredClone({ allegati, libreria });
+  const chiamate = [];
+  const esito = await CONSIGLIO.avviaConsiglio({
+    sourceSessionId: "sorgente", prompt: "Confronta.", workspace: "C:/lavoro",
+    allegati, allegatiLibreria: libreria, operationId: "op-allegati-ammessi",
+    chiama: async (via, corpo) => { chiamate.push({ via, corpo }); return { ok: true, dati: { lavoroId: "L1" } }; },
+  });
+  assert.equal(esito.avviato, true);
+  assert.equal(chiamate.length, 1);
+  assert.equal(chiamate[0].corpo.prompt, "Confronta.");
+  assert.deepEqual(chiamate[0].corpo.allegati, [
+    { percorso: "C:\\Lavoro\\nota.md", nome: "nota.md", dimensione: 35, impronta: "hash-sintetico" },
+    { percorso: LIBRERIA_CONSIGLIO.percorso, nome: LIBRERIA_CONSIGLIO.nome, dimensione: 47 },
+    { percorso: "C:/lavoro/raw/documenti/seconda.md", nome: "seconda.md", dimensione: 7 },
+  ]);
+  assert.equal(JSON.stringify(chiamate).includes("segreto"), false);
+  assert.deepEqual({ allegati, libreria }, prima);
+  assert.equal(CONSIGLIO.preparaAllegatiConsiglio({ allegati }).ok, false, "senza cartella un riferimento ordinario non è ammesso");
+  assert.equal(CONSIGLIO.preparaAllegatiConsiglio({ allegatiLibreria: [LIBRERIA_CONSIGLIO] }).ok, true, "la voce di libreria conserva il riferimento anche senza cartella");
+  assert.equal(CONSIGLIO.preparaAllegatiConsiglio({ workspace: "/lavoro", allegati: [{ percorso: "/Lavoro/nota.md" }] }).ok, false, "i percorsi POSIX rispettano le maiuscole");
+  assert.equal(CONSIGLIO.preparaAllegatiConsiglio({ workspace: "\\\\host\\condivisa", allegati: [{ percorso: "\\\\HOST\\condivisa\\nota.md" }] }).ok, true);
+});
+
+test("anche un allegato con testo incorporato conserva soltanto i metadati del riferimento", async () => {
+  const contenuto = "Contenuto sintetico riservato al file.";
+  const chiamate = [];
+  const esito = await CONSIGLIO.avviaConsiglio({
+    sourceSessionId: "sorgente", prompt: "Confronta.", workspace: "C:/lavoro", operationId: "op-solo-riferimento",
+    allegati: [{ tipo: "testo", nome: "nota.txt", percorso: "C:/lavoro/nota.txt", testo: contenuto, text: contenuto, contenuto }],
+    chiama: async (via, corpo) => { chiamate.push(corpo); return { ok: true }; },
+  });
+  assert.equal(esito.avviato, true);
+  assert.equal(chiamate[0].prompt, "Confronta.");
+  assert.deepEqual(chiamate[0].allegati, [{ percorso: "C:/lavoro/nota.txt", nome: "nota.txt" }]);
+  assert.equal(JSON.stringify(chiamate).includes(contenuto), false, "il contenuto non finisce né nel prompt né nei metadati");
+});
+
+test("la preimpostazione e gli allegati restano congelati durante il consenso e il campo resta facoltativo", async () => {
+  const preimpostazione = { id: "rapido", versione: 3, nome: "Rapido" };
+  const allegati = [{ tipo: "file", nome: "nota.md", percorso: "C:/lavoro/nota.md" }];
+  const chiamate = [];
+  await CONSIGLIO.avviaConsiglio({
+    sourceSessionId: "sorgente", prompt: "Richiesta sintetica.", tipo: "codice",
+    operationId: "op-preset-consenso", preimpostazione, allegati, workspace: "C:/lavoro",
+    chiama: async (via, corpo) => {
+      chiamate.push(structuredClone(corpo));
+      return chiamate.length === 1
+        ? { ok: false, codice: "consenso-mancante", consenso: CONSENSO_CON_GIT }
+        : { ok: true, dati: { lavoroId: "L1" } };
+    },
+    chiediConsenso: async () => {
+      preimpostazione.versione = 4;
+      preimpostazione.id = "altro";
+      allegati[0].percorso = "C:/fuori/nota.md";
+      return true;
+    },
+  });
+  assert.equal(chiamate.length, 2);
+  assert.deepEqual(chiamate[0].preimpostazione, { id: "rapido", versione: 3 });
+  assert.deepEqual(chiamate[1], { ...chiamate[0], consenso: true });
+  const compatibili = [];
+  await CONSIGLIO.avviaConsiglio({
+    sourceSessionId: "sorgente", prompt: "Richiesta senza preset.", operationId: "op-compatibile",
+    chiama: async (via, corpo) => { compatibili.push(corpo); return { ok: true }; },
+  });
+  assert.deepEqual(compatibili, [{ sourceSessionId: "sorgente", prompt: "Richiesta senza preset.", operationId: "op-compatibile", tipo: "testo" }]);
+});
+
+test("anche l'ingresso precedente verifica il contesto degli allegati collegato dal montaggio", async () => {
+  let richieste = 0;
+  let sblocca;
+  const coda = new Promise((resolve) => { sblocca = resolve; });
+  const chiama = async () => { richieste += 1; return { ok: true }; };
+  const scollega = CONSIGLIO.collegaContestoAllegatiConsiglio(chiama, async (sourceSessionId) => {
+    assert.equal(sourceSessionId, "sorgente");
+    await coda;
+    return { workspace: "C:/lavoro", allegati: [{ nome: "immagine.png", mimeType: "image/png", data: "cHJvdmE=" }] };
+  });
+  const avvio = CONSIGLIO.avviaConsiglio({ sourceSessionId: "sorgente", prompt: "Bozza intatta.", operationId: "op-legacy", chiama });
+  assert.equal(richieste, 0, "il vecchio ingresso attende la lettura degli allegati");
+  sblocca();
+  assert.equal((await avvio).codice, "allegato-non-ammesso");
+  assert.equal(richieste, 0);
+  scollega();
+  assert.equal((await CONSIGLIO.avviaConsiglio({ sourceSessionId: "sorgente", prompt: "Bozza intatta.", operationId: "op-legacy-libero", chiama })).avviato, true);
+  assert.equal(richieste, 1, "lo smontaggio rimuove soltanto il proprio lettore");
+});
+
+test("nome e versione della preimpostazione congelata restano nello stato e nella vista dopo Rifai", () => {
+  const preimpostazione = { id: "rapido", nome: "Rapido", versione: 3 };
+  const dettaglio = { ...DETTAGLIO, lavoro: { ...DETTAGLIO.lavoro, preimpostazione } };
+  const prima = CONSIGLIO.applicaDettaglioConsiglio(CONSIGLIO.statoIniziale(), dettaglio).stato;
+  assert.deepEqual(prima.lavori.L1.preimpostazione, preimpostazione);
+  preimpostazione.nome = "Nome cambiato nell'archivio";
+  preimpostazione.versione = 4;
+  const congelata = { id: "rapido", nome: "Rapido", versione: 3 };
+  assert.deepEqual(prima.lavori.L1.preimpostazione, congelata, "lo stato non condivide l'oggetto ricevuto dal ponte");
+  const dopo = CONSIGLIO.registraNuovaRevisione(prima, { lavoroId: "L1", revisione: 2 });
+  const superata = CONSIGLIO.applicaDettaglioConsiglio(dopo, dettaglio);
+  assert.equal(superata.applicato, false, "una risposta della revisione precedente resta scartata");
+  assert.deepEqual(CONSIGLIO.vistaRisultato(superata.stato.lavori.L1).preimpostazione, congelata);
+  const snapshot = CONSIGLIO.applicaSnapshotConsiglio(CONSIGLIO.statoIniziale(), [{
+    id: "consiglio:L1", consiglio: { lavoroId: "L1", revisione: 2, seq: 14, preimpostazione: congelata },
+  }]);
+  assert.deepEqual(snapshot.lavori.L1.preimpostazione, congelata, "anche uno snapshot che espone i metadati li conserva");
+  assert.equal(CONSIGLIO.vistaRisultato(statoCompleto().lavori.L1).preimpostazione, null, "i lavori precedenti restano senza preimpostazione");
 });
 
 // --- Passo 6: Approva ---

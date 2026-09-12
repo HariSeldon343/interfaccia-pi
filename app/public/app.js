@@ -12162,6 +12162,15 @@ document.addEventListener("pointerdown", (evento) => {
     chiudiPaletteComandi();
   }
 });
+// Contratto P2/P3: il modulo crea btn-agenti dopo btn-allega, con due controlli.
+try { globalThis.PiGuiAgentiCore?.montaAgenti?.(DOM.composerShell, {
+  input: DOM.input, osservaStato: DOM.conversazione, consiglio: CONSIGLIO_CORE, chiama: chiamaConsiglio,
+  sessioneAttiva, sessioni: APP.sessioni, online: () => APP.bridgeOnline,
+  aggiornaInterfaccia: aggiornaInterfacciaAttiva, aggiornaDalPonte, attivaSessione,
+  chiediConsenso: chiediConsensoConsiglio, disegnaRuoli: disegnaPannelloRuoliConsiglio,
+  toast, composizioneInCorso: () => composizioneInputInCorso,
+  finestraAperta: () => Boolean(APP.modale), paletteAperta: () => APP.paletteComandi.aperta,
+}); } catch (errore) { console.error(errore); }
 DOM.btnInvia.onclick = invia;
 DOM.btnStatoAttivita.onclick = mostraStatoAttivita;
 DOM.modoCoda.addEventListener("change", async () => {

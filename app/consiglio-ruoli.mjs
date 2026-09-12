@@ -99,7 +99,7 @@ function validaRuolo(valore, dove, roleIdAtteso = null) {
   return { roleId, model: validaModelloAssegnato(valore.model, dove), thinking };
 }
 
-export function validaConfigurazioneConsiglio(valore) {
+export function validaConfigurazioneConsiglio(valore, { consentiSoloScrittore = false } = {}) {
   if (!oggetto(valore)) throw erroreConsiglio("La configurazione del consiglio non è un oggetto.");
   for (const chiave of Object.keys(valore)) {
     if (!["schemaVersion", "version", "consiglieri", "scrittore"].includes(chiave)) {
@@ -115,7 +115,7 @@ export function validaConfigurazioneConsiglio(valore) {
     throw erroreConsiglio("Il numero di versione della configurazione del consiglio non è valido.");
   }
   if (!Array.isArray(valore.consiglieri)
-    || valore.consiglieri.length < MIN_CONSIGLIERI
+    || valore.consiglieri.length < (consentiSoloScrittore ? 0 : MIN_CONSIGLIERI)
     || valore.consiglieri.length > MAX_CONSIGLIERI) {
     throw erroreConsiglio(`I consiglieri devono essere da ${MIN_CONSIGLIERI} a ${MAX_CONSIGLIERI}.`);
   }
@@ -154,17 +154,18 @@ export function modelliPredefinitiConsiglio({ catalogo = [], modelloSorgente = n
   return { scrittore, consigliere, avvioPossibile: true };
 }
 
-function ruoloEffettivo({ ruolo, tipo, ordine, catalogo, predefinito, problemi }) {
+function ruoloEffettivo({ ruolo, tipo, ordine, catalogo, predefinito, problemi, sostituisciMancanti }) {
   const assegnato = ruolo.model ? nelCatalogo(catalogo, ruolo.model) : null;
   if (ruolo.model && !assegnato) {
     problemi.push({
       roleId: ruolo.roleId,
       codice: "modello-non-disponibile",
       modello: chiaveModello(ruolo.model),
-      messaggio: `Il modello ${chiaveModello(ruolo.model)} assegnato a ${ruolo.roleId} non è più disponibile: il ruolo torna al modello predefinito.`,
+      messaggio: `Il modello ${chiaveModello(ruolo.model)} assegnato a ${ruolo.roleId} non è più disponibile: `
+        + (sostituisciMancanti ? "il ruolo torna al modello predefinito." : "scegli esplicitamente un modello o Automatico in Gestisci."),
     });
   }
-  const scelto = assegnato || predefinito;
+  const scelto = assegnato || (ruolo.model && !sostituisciMancanti ? null : predefinito);
   return {
     roleId: ruolo.roleId,
     tipo,
@@ -182,8 +183,10 @@ export function risolviRuoliConsiglio({
   configurazione = configurazioneConsiglioPredefinita(),
   catalogo = [],
   modelloSorgente = null,
+  consentiSoloScrittore = false,
+  sostituisciMancanti = true,
 } = {}) {
-  const valida = validaConfigurazioneConsiglio(configurazione);
+  const valida = validaConfigurazioneConsiglio(configurazione, { consentiSoloScrittore });
   const elenco = normalizzaCatalogo(catalogo);
   const predefiniti = modelliPredefinitiConsiglio({ catalogo: elenco, modelloSorgente });
   const problemi = [];
@@ -194,6 +197,7 @@ export function risolviRuoliConsiglio({
     catalogo: elenco,
     predefinito: predefiniti.consigliere,
     problemi,
+    sostituisciMancanti,
   }));
   const scrittore = ruoloEffettivo({
     ruolo: valida.scrittore,
@@ -202,6 +206,7 @@ export function risolviRuoliConsiglio({
     catalogo: elenco,
     predefinito: predefiniti.scrittore,
     problemi,
+    sostituisciMancanti,
   });
   const senzaModello = [...consiglieri, scrittore].filter((ruolo) => !ruolo.modello);
   if (!elenco.length) {

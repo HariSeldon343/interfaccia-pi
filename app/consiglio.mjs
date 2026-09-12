@@ -7,10 +7,12 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { allegatoPerRiferimento, improntaTesto, troncaLog } from "./consiglio-store.mjs";
 import {
+  normalizzaCatalogo,
   risolviRuoliConsiglio,
   ruoliInOrdine,
   validaConfigurazioneConsiglio,
 } from "./consiglio-ruoli.mjs";
+import { configurazioneDaPreimpostazione, validaArchivioPreimpostazioni } from "./consiglio-preimpostazioni.mjs";
 
 export const ATTESA_PREDEFINITA_429_MS = 20_000;
 export const TIMEOUT_RUOLO_MS = 20 * 60 * 1000;
@@ -341,6 +343,8 @@ export function creaGestoreConsiglio({
   catalogoModelli,
   leggiConfigurazioneRuoli,
   salvaConfigurazioneRuoli,
+  leggiPreimpostazioni,
+  salvaPreimpostazioni,
   emetti,
   fondiRisultato = fusioneNonDisponibile,
   verificaControlli = controlliNonDisponibili,
@@ -363,6 +367,7 @@ export function creaGestoreConsiglio({
 } = {}) {
   const lavori = new Map();
   const attese = new Map();
+  const consensiInAttesa = new Map();
   let prenotati = 0;
 
   function ora() {
@@ -719,7 +724,7 @@ export function creaGestoreConsiglio({
         });
       }
       const validi = contributiValidi(lavoro);
-      if (!validi.length) {
+      if (consiglieri.length && !validi.length) {
         await concludi("bozza_bloccata", "Nessun consigliere ha prodotto un contributo valido.");
         return;
       }
@@ -885,6 +890,13 @@ export function creaGestoreConsiglio({
       });
       ruolo.sessione = sessione;
       ruolo.guiSessionId = sessione.id;
+      // Se il livello Automatico non era leggibile dalla sorgente, registriamo
+      // quello effettivo riportato da Pi per riutilizzarlo in Rifai.
+      if (ruolo.thinking === null && typeof sessione.ragionamento === "string" && sessione.ragionamento) {
+        ruolo.thinking = sessione.ragionamento;
+        const congelato = lavoro.assegnazioniCongelate?.find((voce) => voce.roleId === ruolo.roleId);
+        if (congelato) congelato.thinking = ruolo.thinking;
+      }
       prenotati = Math.max(0, prenotati - 1);
       emettiRuolo(lavoro, ruolo);
     }
@@ -911,10 +923,77 @@ export function creaGestoreConsiglio({
     return risolti;
   }
 
+  function risolviPreimpostazione(preimpostazione, catalogo, sorgente) {
+    const risolti = risolviRuoliConsiglio({
+      configurazione: configurazioneDaPreimpostazione(preimpostazione),
+      catalogo,
+      modelloSorgente: sorgente?.provider && sorgente?.modello
+        ? { provider: sorgente.provider, modelId: sorgente.modello } : null,
+      consentiSoloScrittore: true,
+      sostituisciMancanti: false,
+    });
+    for (const ruolo of ruoliInOrdine(risolti.effettive)) {
+      if (ruolo.thinking === null && sorgente?.ragionamento) ruolo.thinking = sorgente.ragionamento;
+    }
+    return risolti;
+  }
+
+  async function leggiArchivioAgenti() {
+    if (typeof leggiPreimpostazioni !== "function") {
+      throw erroreConsiglio("preimpostazioni-non-disponibili", "Le preimpostazioni non sono disponibili in questo ponte.", 503);
+    }
+    return validaArchivioPreimpostazioni(await leggiPreimpostazioni());
+  }
+
+  async function preimpostazioni(corpo = null, { sourceSessionId = null } = {}) {
+    const libera = await acquisisciMutazione();
+    try {
+      const archivioAgenti = corpo === null ? await leggiArchivioAgenti()
+        : validaArchivioPreimpostazioni(await salvaPreimpostazioni(corpo));
+      const catalogo = await catalogoModelli(sourceSessionId).catch(() => []);
+      const sorgente = descriviSessioneSorgente(sourceSessionId);
+      const risoluzioni = archivioAgenti.preimpostazioni.map((voce) => ({
+        id: voce.id,
+        versione: voce.versione,
+        ...risolviPreimpostazione(voce, catalogo, sorgente),
+      }));
+      return { stato: 200, corpo: {
+        archivio: archivioAgenti,
+        catalogo: normalizzaCatalogo(catalogo),
+        risoluzioni,
+        cartellaLavori: cartellaConsigli,
+      } };
+    } finally {
+      libera();
+    }
+  }
+
+  async function ruoliCongelati(lavoro) {
+    // Anche i lavori 2.8 conservano le assegnazioni nei ruoli su disco.
+    const ruoli = lavoro.assegnazioniCongelate || lavoro.ruoli;
+    const configurazione = {
+      schemaVersion: 1, version: 0,
+      consiglieri: ruoli.filter((voce) => voce.tipo === "consigliere").map(configurazioneRuolo),
+      scrittore: configurazioneRuolo(ruoli.find((voce) => voce.tipo === "scrittore")),
+    };
+    function configurazioneRuolo(voce) {
+      if (!voce?.provider || !voce?.modello) {
+        throw erroreConsiglio("ruoli-non-risolvibili", "Il lavoro non contiene assegnazioni congelate utilizzabili.", 409);
+      }
+      return { roleId: voce.roleId, model: { provider: voce.provider, modelId: voce.modello }, thinking: voce.thinking ?? null };
+    }
+    const catalogo = await catalogoModelli(lavoro.sourceSessionId).catch(() => []);
+    const risolti = risolviRuoliConsiglio({ configurazione, catalogo, consentiSoloScrittore: true, sostituisciMancanti: false });
+    if (!risolti.avvioPossibile) {
+      throw erroreConsiglio("ruoli-non-risolvibili", risolti.problemi[0]?.messaggio || "Le assegnazioni congelate non sono disponibili.", 409);
+    }
+    return risolti;
+  }
+
   async function avvia(corpo) {
     if (!oggetto(corpo)) throw erroreConsiglio("schema", "La richiesta di avvio non è un oggetto.", 400);
     soloCampi(corpo, [
-      "operationId", "sourceSessionId", "prompt", "allegati", "tipo", "istruzioni", "consenso", "piano",
+      "operationId", "sourceSessionId", "prompt", "allegati", "tipo", "istruzioni", "consenso", "piano", "preimpostazione",
     ], "avvio");
     const operationId = operationIdValido(corpo.operationId);
     if (!operationId) throw erroreConsiglio("schema", "L'identificativo dell'operazione non è valido.", 400);
@@ -922,12 +1001,23 @@ export function creaGestoreConsiglio({
     if (!prompt.trim() || Buffer.byteLength(prompt, "utf8") > LIMITE_PROMPT) {
       throw erroreConsiglio("schema", "La richiesta da mandare al consiglio non è valida.", 400);
     }
-    const istruzioni = corpo.istruzioni == null ? null : String(corpo.istruzioni);
+    let istruzioni = corpo.istruzioni == null ? null : String(corpo.istruzioni);
     if (istruzioni !== null && Buffer.byteLength(istruzioni, "utf8") > LIMITE_ISTRUZIONI) {
       throw erroreConsiglio("schema", "Le istruzioni aggiuntive sono troppo lunghe.", 400);
     }
     const tipo = corpo.tipo === "codice" ? "codice" : corpo.tipo === "testo" ? "testo" : null;
     if (!tipo) throw erroreConsiglio("schema", "Il tipo del lavoro deve essere testo oppure codice.", 400);
+    let riferimento = null;
+    if (Object.hasOwn(corpo, "preimpostazione")) {
+      if (!oggetto(corpo.preimpostazione)) throw erroreConsiglio("schema", "La preimpostazione deve indicare identificativo e versione.", 400);
+      soloCampi(corpo.preimpostazione, ["id", "versione"], "preimpostazione");
+      const { id, versione } = corpo.preimpostazione;
+      if (typeof id !== "string" || !/^[a-z0-9][a-z0-9-]{0,79}$/u.test(id)
+        || !Number.isSafeInteger(versione) || versione < 1) {
+        throw erroreConsiglio("schema", "L'identificativo o la versione della preimpostazione non è valido.", 400);
+      }
+      riferimento = { id, versione };
+    }
     if (corpo.allegati != null && !Array.isArray(corpo.allegati)) {
       throw erroreConsiglio("schema", "Gli allegati devono essere una lista.", 400);
     }
@@ -941,13 +1031,6 @@ export function creaGestoreConsiglio({
     if (allegati.length !== allegatiGrezzi.length) {
       throw erroreConsiglio("schema", "Ogni allegato deve indicare il percorso del file.", 400);
     }
-    const sorgente = descriviSessioneSorgente(corpo.sourceSessionId);
-    if (!sorgente) throw erroreConsiglio("sessione-assente", "La conversazione sorgente non è aperta.", 404);
-    const workspace = sorgente.cartella || null;
-    if (tipo === "codice" && !workspace) {
-      throw erroreConsiglio("workspace-assente", "Un lavoro di codice richiede una conversazione con cartella di lavoro.", 409);
-    }
-
     if (corpo.piano != null && tipo !== "codice") {
       throw erroreConsiglio(
         "schema",
@@ -955,52 +1038,23 @@ export function creaGestoreConsiglio({
         400,
       );
     }
-    const piano = await rilevaPianoTest({
-      workspace,
-      tipo,
-      execPath,
-      esisteFile,
-      leggiFile,
-      improntaFile,
-      percorsoNpmCli,
-      pianoManuale: corpo.piano ?? null,
-      normalizzaPianoManuale,
-    });
-    // Un piano indicato a mano che viene rifiutato ferma qui la richiesta:
-    // aprire le sessioni per poi bloccare Approva sarebbe una spesa senza
-    // sbocco.
-    if (piano.manuale && piano.origine === "assente") {
-      throw erroreConsiglio("piano-non-valido", piano.motivo, 400);
-    }
-    const git = tipo === "codice" ? await statoGit(workspace) : { disponibile: false, motivo: "Lavoro di solo testo." };
-    if (tipo === "codice" && corpo.consenso !== true) {
-      throw Object.assign(
-        erroreConsiglio("consenso-mancante", "Serve il consenso prima di avviare un consiglio che modifica i file.", 409, true),
-        { consenso: testoConsenso({ piano, workspace, cartellaConsigli, ripristino: git }) },
-      );
-    }
-
+    // Impronta della richiesta, indipendente dal catalogo e dai file attuali:
+    // il replay resta leggibile anche dopo l'eliminazione della preimpostazione.
     const impronta = improntaOperazione({
       kind: "consiglio-avvia",
-      sourceSessionId: sorgente.id,
+      sourceSessionId: corpo.sourceSessionId,
       prompt,
       istruzioni,
       tipo,
-      allegati: allegati.map((allegato) => String(allegato?.percorso || "")),
-      // Il piano a mano entra nell'impronta nella sua forma strutturata, non
-      // nella riga ricomposta: "node -e process.exit(0)" come argomento solo e
-      // come due argomenti separati sono due esecuzioni diverse, e appiattirle
-      // in una stringa darebbe replay dove serve un 409. jsonCanonico
-      // serializza array e oggetti in modo stabile.
-      piano: piano.origine === "manuale"
-        ? { origine: piano.origine, eseguibile: piano.eseguibile, argomenti: piano.argomenti || [] }
-        : piano.origine,
+      allegati,
+      piano: corpo.piano ?? null,
+      ...(riferimento ? { preimpostazione: riferimento } : {}),
     });
     const libera = await acquisisciMutazione();
     let record = null;
     try {
       const esistente = trovaOperazioneRegistrata({
-        sessionId: sorgente.id,
+        sessionId: corpo.sourceSessionId,
         operationId,
         fingerprint: impronta,
       });
@@ -1010,7 +1064,57 @@ export function creaGestoreConsiglio({
           corpo: esistente.ackBody || { ok: true, replay: true },
         };
       }
-      const risolti = await preparaRuoli({ sourceSessionId: sorgente.id, workspace });
+      const sorgente = descriviSessioneSorgente(corpo.sourceSessionId);
+      if (!sorgente) throw erroreConsiglio("sessione-assente", "La conversazione sorgente non è aperta.", 404);
+      const workspace = sorgente.cartella || null;
+      if (tipo === "codice" && !workspace) {
+        throw erroreConsiglio("workspace-assente", "Un lavoro di codice richiede una conversazione con cartella di lavoro.", 409);
+      }
+      let preimpostazione = null;
+      let risolti;
+      if (riferimento) {
+        const salvate = await leggiArchivioAgenti();
+        preimpostazione = salvate.preimpostazioni.find((voce) => voce.id === riferimento.id);
+        if (!preimpostazione || preimpostazione.versione !== riferimento.versione) {
+          throw erroreConsiglio("versione-superata", "La preimpostazione è cambiata o è stata eliminata: ricaricala prima di avviare.", 409);
+        }
+        if (tipo !== preimpostazione.tipo) {
+          throw erroreConsiglio("preimpostazione-cambiata", "Il tipo mostrato non corrisponde alla preimpostazione: ricaricala prima di avviare.", 409);
+        }
+        istruzioni = preimpostazione.istruzioni || null;
+        const catalogo = await catalogoModelli(sorgente.id).catch(() => []);
+        risolti = risolviPreimpostazione(preimpostazione, catalogo, sorgente);
+        if (!risolti.avvioPossibile) {
+          throw erroreConsiglio("ruoli-non-risolvibili", risolti.problemi[0]?.messaggio || "Non ci sono modelli utilizzabili per questa preimpostazione.", 409);
+        }
+      } else {
+        risolti = await preparaRuoli({ sourceSessionId: sorgente.id, workspace });
+      }
+      const piano = await rilevaPianoTest({
+        workspace, tipo, execPath, esisteFile, leggiFile, improntaFile, percorsoNpmCli,
+        pianoManuale: corpo.piano ?? null, normalizzaPianoManuale,
+      });
+      if (piano.manuale && piano.origine === "assente") {
+        throw erroreConsiglio("piano-non-valido", piano.motivo, 400);
+      }
+      const git = tipo === "codice" ? await statoGit(workspace) : { disponibile: false, motivo: "Lavoro di solo testo." };
+      const chiaveConsenso = JSON.stringify([sorgente.id, operationId]);
+      // gitBase può essere uno stash con SHA nuovo a parità di file: il consenso
+      // riguarda la possibilità di ripristino mostrata, non i metadati del commit.
+      const configurazioneConsenso = improntaOperazione({ impronta, workspace, preimpostazione, ruoli: risolti.effettive, piano,
+        git: { disponibile: git.disponibile, motivo: git.motivo } });
+      if (tipo === "codice" && (corpo.consenso !== true || (riferimento && !consensiInAttesa.has(chiaveConsenso)))) {
+        // Dimensione limitata: una finestra annullata non conserva memoria senza fine.
+        if (consensiInAttesa.size >= 100) consensiInAttesa.delete(consensiInAttesa.keys().next().value);
+        consensiInAttesa.set(chiaveConsenso, configurazioneConsenso);
+        throw Object.assign(
+          erroreConsiglio("consenso-mancante", "Serve il consenso prima di avviare un consiglio che modifica i file.", 409, true),
+          { consenso: testoConsenso({ piano, workspace, cartellaConsigli, ripristino: git }) },
+        );
+      }
+      if (consensiInAttesa.has(chiaveConsenso) && consensiInAttesa.get(chiaveConsenso) !== configurazioneConsenso) {
+        throw erroreConsiglio("consenso-superato", "La preimpostazione, i modelli o il piano sono cambiati durante il consenso: avvia di nuovo e rileggi la conferma.", 409);
+      }
       const posti = risolti.effettive.consiglieri.length + 1;
       if (postiLiberi() < posti) {
         throw erroreConsiglio(
@@ -1049,6 +1153,8 @@ export function creaGestoreConsiglio({
         sourceSessionId: sorgente.id,
         workspace,
         tipo,
+        preimpostazione,
+        assegnazioniCongelate: ruoliInOrdine(risolti.effettive).map((ruolo) => ({ ...ruolo })),
         stato: "preparazione",
         revisione: 1,
         // Segna il ciclo di revisione in corso: Annulla e Rifai la alzano, e il
@@ -1109,7 +1215,9 @@ export function creaGestoreConsiglio({
         piano: pianoPubblico(lavoro.piano),
         ruoli: lavoro.ruoli.map(ruoloPubblico),
         problemi: lavoro.problemi,
+        preimpostazione: preimpostazione ? { id: preimpostazione.id, nome: preimpostazione.nome, versione: preimpostazione.versione } : null,
       };
+      consensiInAttesa.delete(chiaveConsenso);
       completaOperazione(record, { success: true, data: esito }, { ackBody: esito, httpStatus: 202 });
       emettiStato(lavoro);
       void eseguiRevisione(lavoro);
@@ -1151,6 +1259,7 @@ export function creaGestoreConsiglio({
       modello: ruolo.modello,
       nomeModello: ruolo.nomeModello,
       guiSessionId: ruolo.guiSessionId,
+      thinking: ruolo.thinking,
       stato: ruolo.stato,
       tentativo: ruolo.tentativo,
       attesaFinoA: ruolo.attesaFinoA,
@@ -1165,6 +1274,9 @@ export function creaGestoreConsiglio({
         sourceSessionId: lavoro.sourceSessionId,
         workspace: lavoro.workspace,
         tipo: lavoro.tipo,
+        preimpostazione: lavoro.preimpostazione ? {
+          id: lavoro.preimpostazione.id, nome: lavoro.preimpostazione.nome, versione: lavoro.preimpostazione.versione,
+        } : null,
         stato: lavoro.stato,
         revisione: lavoro.revisione,
         motivo: lavoro.motivo,
@@ -1345,7 +1457,8 @@ export function creaGestoreConsiglio({
           ripristino = { ...ripristino, ...await eseguiRipristino(lavoro, ripristino.file) };
         }
       }
-      const posti = lavoro.ruoli.length || 2;
+      const risolti = await ruoliCongelati(lavoro);
+      const posti = ruoliInOrdine(risolti.effettive).length;
       await chiudiRuoli(lavoro);
       if (postiLiberi() < posti) {
         throw erroreConsiglio(
@@ -1355,7 +1468,6 @@ export function creaGestoreConsiglio({
           true,
         );
       }
-      const risolti = await preparaRuoli(lavoro);
       const revisione = {
         numero: lavoro.revisione + 1,
         prompt: lavoro.revisioni[0].prompt,
@@ -1656,6 +1768,9 @@ export function creaGestoreConsiglio({
           revisione: lavoro.revisione,
           seq: lavoro.seq,
           tipo: lavoro.tipo,
+          preimpostazione: lavoro.preimpostazione ? {
+            id: lavoro.preimpostazione.id, nome: lavoro.preimpostazione.nome, versione: lavoro.preimpostazione.versione,
+          } : null,
           motivo: lavoro.motivo,
           controllo: lavoro.controllo
             ? { tipo: lavoro.controllo.tipo, esito: lavoro.controllo.esito, motivi: lavoro.controllo.motivi }
@@ -1692,6 +1807,7 @@ export function creaGestoreConsiglio({
     rifai,
     annulla,
     ruoli,
+    preimpostazioni,
     schede,
     lavoriInCorso,
     sessioneDiRuolo,

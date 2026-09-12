@@ -6037,6 +6037,10 @@ export function creaPonte({
   const fileRecenti = join(config, "recenti.json");
   const fileImpostazioni = join(config, "impostazioni.json");
   const serializzaImpostazioni = creaSerializzatore();
+  const filePreimpostazioni = join(config, "preimpostazioni-agenti.json");
+  const serializzaPreimpostazioni = creaSerializzatore();
+  // Importazione nel punto di proprietà P2: nessuna dipendenza dal disco nel coordinatore.
+  const moduloPreimpostazioni = () => import("./consiglio-preimpostazioni.mjs");
   let impostazioni = { sogliaCompattazionePercento: SOGLIA_COMPATTAZIONE_PREDEFINITA };
   const impostazioniPronte = (async () => {
     try {
@@ -6071,6 +6075,20 @@ export function creaPonte({
       }
       impostazioni = fuse;
       return { ...impostazioni };
+    });
+  }
+  async function aggiornaPreimpostazioni(operazione = null) {
+    await impostazioniPronte;
+    return serializzaPreimpostazioni(filePreimpostazioni, async () => {
+      if (chiusuraDefinitiva) throw erroreConsiglio("chiusura", "Il ponte si sta chiudendo.", 503);
+      const modulo = await moduloPreimpostazioni();
+      const precedente = await modulo.leggiArchivioPreimpostazioni(filePreimpostazioni);
+      const iniziale = modulo.inizializzaPreimpostazioni(precedente, impostazioni.consiglio || null);
+      const nuova = operazione === null ? iniziale : modulo.applicaOperazionePreimpostazioni(iniziale, operazione);
+      if (precedente === null || operazione !== null) {
+        await modulo.scriviArchivioPreimpostazioni(filePreimpostazioni, nuova);
+      }
+      return nuova;
     });
   }
   const fileOperazioniCondivisione = join(config, "share-operations-v1.json");
@@ -6474,7 +6492,10 @@ export function creaPonte({
     apriSessioneRuolo: (dati) => apriSessioneRuoloConsiglio(dati),
     chiudiSessioneRuolo: (sessione) => chiudiSessioneRuoloConsiglio(sessione),
     leggiUltimaRisposta: (sessione) => ultimaRispostaConsiglio(sessione),
-    descriviSessioneSorgente,
+    descriviSessioneSorgente: (id) => {
+      const sorgente = descriviSessioneSorgente(id);
+      return sorgente ? { ...sorgente, ragionamento: sessioni.get(id)?.ragionamento || null } : null;
+    },
     catalogoModelli: (sourceSessionId) => catalogoModelliConsiglio(sourceSessionId),
     leggiConfigurazioneRuoli: async () => {
       await impostazioniPronte;
@@ -6484,6 +6505,8 @@ export function creaPonte({
       const salvate = await salvaImpostazioniGui({ consiglio: configurazione });
       return salvate.consiglio;
     },
+    leggiPreimpostazioni: () => aggiornaPreimpostazioni(),
+    salvaPreimpostazioni: (operazione) => aggiornaPreimpostazioni(operazione),
     emetti: (evento) => emetti(evento),
     fondiRisultato,
     verificaControlli: verificaControlli || verificaControlliConsiglio,
@@ -8444,7 +8467,7 @@ $processo.WaitForExit()
         return;
       }
 
-      const metodoAtteso = ["/api/impostazioni", "/api/consiglio/ruoli"].includes(via)
+      const metodoAtteso = ["/api/impostazioni", "/api/consiglio/ruoli", "/api/consiglio/preimpostazioni"].includes(via)
         ? "GET, POST" : via === "/api/estensioni" || vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
       if (via.startsWith("/api/") && !metodoAtteso) {
         return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Operazione non trovata" }, 404);
@@ -8980,8 +9003,20 @@ $processo.WaitForExit()
           );
         }
         const azione = via.slice("/api/consiglio/".length);
+        if (azione === "preimpostazioni") {
+          const rifiuto = postAutorizzato({ headers: { ...richiesta.headers, "content-type": "application/json" } });
+          if (rifiuto) return json(risposta, { errore: rifiuto }, 403);
+          if ([...url.searchParams.keys()].some((campo) => campo !== "sessionId")
+            || url.searchParams.getAll("sessionId").length > 1) {
+            return json(risposta, { codice: "schema", messaggio: "L'elenco delle preimpostazioni accetta soltanto sessionId.", recuperabile: false }, 400);
+          }
+        }
         const corpo = post ? await leggiCorpo(richiesta) : null;
         return rispostaConsiglio(risposta, () => {
+          if (azione === "preimpostazioni" && post && (!corpo || typeof corpo !== "object" || Array.isArray(corpo))) {
+            throw erroreConsiglio("schema", "L'operazione sulle preimpostazioni deve essere un oggetto.", 400);
+          }
+          if (azione === "preimpostazioni") return consiglio.preimpostazioni(corpo, { sourceSessionId: url.searchParams.get("sessionId") });
           if (azione === "avvia") return consiglio.avvia(corpo);
           if (azione === "stato") return consiglio.stato(corpo);
           if (azione === "approva") return consiglio.approva(corpo);

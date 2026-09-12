@@ -86,6 +86,7 @@
       revisione: 0,
       stato: "preparazione",
       tipo: null,
+      preimpostazione: null,
       motivo: null,
       workspace: null,
       sourceSessionId: null,
@@ -120,6 +121,10 @@
     return false;
   }
 
+  function metadatiPreimpostazione(voce) {
+    return voce ? { id: voce.id, nome: voce.nome, versione: voce.versione } : null;
+  }
+
   function applicaSnapshotConsiglio(stato, sessioni, { sostituisci = false } = {}) {
     let nuovo = { ...stato, lavori: { ...stato.lavori }, ruoliPerSessione: {} };
     const presenti = new Set();
@@ -144,6 +149,8 @@
           revisione: numero(dati.revisione) ?? lavoro.revisione,
           stato: statoNuovo,
           tipo: dati.tipo ?? lavoro.tipo,
+          preimpostazione: dati.preimpostazione === undefined
+            ? lavoro.preimpostazione : metadatiPreimpostazione(dati.preimpostazione),
           motivo: dati.motivo ?? null,
           controllo: dati.controllo ?? lavoro.controllo,
           // Proposta di ripristino di un lavoro interrotto: la calcola il ponte
@@ -295,6 +302,8 @@
         workspace: risposta.lavoro.workspace ?? lavoro.workspace,
         sourceSessionId: risposta.lavoro.sourceSessionId ?? lavoro.sourceSessionId,
         tipo: risposta.lavoro.tipo ?? lavoro.tipo,
+        preimpostazione: risposta.lavoro.preimpostazione === undefined
+          ? lavoro.preimpostazione : metadatiPreimpostazione(risposta.lavoro.preimpostazione),
         piano: risposta.lavoro.piano ?? lavoro.piano ?? null,
         git: risposta.lavoro.git ?? lavoro.git ?? null,
         consenso: risposta.lavoro.consenso ?? lavoro.consenso ?? null,
@@ -526,6 +535,7 @@
     return {
       lavoroId: lavoro?.lavoroId || null,
       titolo: "Risultato del consiglio",
+      preimpostazione: metadatiPreimpostazione(lavoro?.preimpostazione),
       revisione: lavoro?.revisione ?? null,
       stato: {
         chiave: lavoro?.stato || null,
@@ -730,6 +740,95 @@
     };
   }
 
+  // Il montaggio collega il contesto anche al vecchio ingresso del consiglio:
+  // la chiave è la funzione del ponte, senza sostituirla né leggere il DOM.
+  const lettoriAllegati = new WeakMap();
+
+  function collegaContestoAllegatiConsiglio(chiama, leggiContesto) {
+    if (typeof chiama !== "function" || typeof leggiContesto !== "function") {
+      throw new TypeError("Il collegamento degli allegati del consiglio non è valido.");
+    }
+    lettoriAllegati.set(chiama, leggiContesto);
+    return () => {
+      if (lettoriAllegati.get(chiama) === leggiContesto) lettoriAllegati.delete(chiama);
+    };
+  }
+
+  function percorsoAssolutoConsiglio(valore) {
+    if (typeof valore !== "string" || !valore || /[\u0000-\u001f\u007f-\u009f]/u.test(valore)) return null;
+    const windows = /^[a-z]:[\\/]/iu.test(valore) || /^[\\/]{2}/u.test(valore);
+    const percorso = windows ? valore.replace(/\\/gu, "/") : valore;
+    if (!windows && !percorso.startsWith("/")) return null;
+    if (windows && (/^\/\/[?.](?:\/|$)/u.test(percorso) || /:/u.test(percorso.slice(/^[a-z]:/iu.test(percorso) ? 2 : 0)))) return null;
+    const parti = percorso.split("/").filter(Boolean);
+    if (parti.some((parte) => parte === "." || parte === ".." || (windows && /[ .]$/u.test(parte)))) return null;
+    if (percorso.startsWith("//") && parti.length < 2) return null;
+    const normalizzato = percorso.replace(/\/+$/u, "") || "/";
+    return { percorso: normalizzato, confronto: windows ? normalizzato.toLowerCase() : normalizzato, windows };
+  }
+
+  function riferimentoDentroCartella(percorso, workspace) {
+    const base = percorsoAssolutoConsiglio(workspace);
+    const file = percorsoAssolutoConsiglio(percorso);
+    return Boolean(base && file && base.windows === file.windows
+      && file.confronto.startsWith(base.confronto.replace(/\/$/u, "") + "/"));
+  }
+
+  // Le estensioni seguono i documenti testuali riconosciuti da estrazione.mjs.
+  // Il contenuto non entra mai qui: anche il testo viaggia solo per percorso.
+  const ESTENSIONI_TESTUALI = new Set(["md", "txt", "csv", "json", "xml", "yaml", "yml", "html", "htm", "log", "js", "mjs", "cjs", "jsx", "ts", "tsx", "css", "scss", "py", "rs", "c", "h", "cpp", "hpp", "java", "go", "rb", "php", "sql", "sh", "toml", "ini", "cfg", "r", "tex", "svelte", "vue", "kt", "swift"]);
+
+  function riferimentoTestuale(voce) {
+    return /^text\//iu.test(voce.mimeType || "")
+      || ESTENSIONI_TESTUALI.has(/\.([a-z0-9]+)$/iu.exec(voce.percorso || "")?.[1].toLowerCase() || "");
+  }
+
+  function riferimentoLibreria(voce) {
+    const indice = percorsoAssolutoConsiglio(voce.percorsoIndice);
+    if (voce.tipo !== "file" || voce.origineLibreria !== true || !indice
+      || !indice.confronto.endsWith("/.ingest-index.json")) return false;
+    return riferimentoDentroCartella(voce.percorso, indice.percorso.slice(0, -".ingest-index.json".length));
+  }
+
+  // Nessun filtro può scartare una voce: se un solo chip non è utilizzabile
+  // si ferma tutta la richiesta. I riferimenti della libreria conservano la loro
+  // radice; la guardia del ponte continua a confinare le letture al workspace.
+  function preparaAllegatiConsiglio({ prompt, allegati = [], allegatiLibreria = [], workspace = null } = {}) {
+    const blocca = (nome, motivo) => ({
+      ok: false,
+      codice: "allegato-non-ammesso",
+      messaggio: `Non posso avviare Agenti: ${nome} ${motivo} La bozza e tutti gli allegati sono conservati.`,
+    });
+    if (!Array.isArray(allegati) || !Array.isArray(allegatiLibreria)) {
+      return blocca("l'elenco degli allegati", "non è valido.");
+    }
+    const riferimenti = [];
+    for (const voce of [...allegati, ...allegatiLibreria]) {
+      const nome = voce?.nome ? `"${String(voce.nome)}"` : "un allegato";
+      if (!voce || typeof voce !== "object") return blocca(nome, "non è riconosciuto.");
+      if (voce.tipo === "image" || voce.tipo === "immagine" || /^image\//iu.test(voce.mimeType || "")) {
+        return blocca(nome, "è un'immagine. Il consiglio accetta solo riferimenti a file di testo nella cartella di lavoro o nella libreria.");
+      }
+      if (voce.origineLibreria === true) {
+        if (!riferimentoLibreria(voce)) return blocca(nome, "non ha un riferimento valido nella radice della libreria.");
+      } else if (typeof voce.percorso !== "string" || !riferimentoDentroCartella(voce.percorso, workspace)) {
+        return blocca(nome, "è un caricamento esterno o non ha un riferimento dentro la cartella di lavoro. Usa un file di testo nella cartella oppure una voce della libreria.");
+      }
+      if (!riferimentoTestuale(voce)) return blocca(nome, "non è un riferimento a un file di testo. Indicizzalo nella libreria per ottenere un riferimento al testo estratto.");
+      riferimenti.push({
+        percorso: voce.percorso,
+        nome: typeof voce.nome === "string" ? voce.nome : null,
+        ...(Number.isFinite(voce.dimensione) && voce.dimensione >= 0 ? { dimensione: voce.dimensione } : {}),
+        ...(typeof voce.impronta === "string" ? { impronta: voce.impronta } : {}),
+      });
+    }
+    return {
+      ok: true,
+      prompt,
+      allegati: riferimenti,
+    };
+  }
+
   // Avvio. Il consenso dei lavori di codice si chiede una volta sola: il ponte
   // risponde 409 con il testo, l'utente accetta, e la stessa richiesta riparte
   // con lo stesso operationId, così non nascono due lavori.
@@ -739,15 +838,36 @@
     istruzioni = null,
     tipo = "testo",
     operationId,
+    preimpostazione,
+    allegati,
+    allegatiLibreria,
+    workspace,
     chiama,
     chiediConsenso,
   } = {}) {
+    const scelta = preimpostazione == null ? null : {
+      id: preimpostazione.id, versione: preimpostazione.versione,
+    };
+    let contesto = { allegati, allegatiLibreria, workspace };
+    const leggiContesto = lettoriAllegati.get(chiama);
+    if (allegati === undefined && allegatiLibreria === undefined && leggiContesto) {
+      try {
+        contesto = await leggiContesto(sourceSessionId);
+        if (!contesto || typeof contesto !== "object") throw new Error("Il contesto degli allegati non è più disponibile.");
+      } catch (errore) {
+        return { avviato: false, codice: "allegati-non-verificati", messaggio: errore?.message || "Non riesco a verificare gli allegati. La bozza e i chip sono conservati." };
+      }
+    }
+    const preparati = preparaAllegatiConsiglio({ prompt, ...contesto });
+    if (!preparati.ok) return { avviato: false, ...preparati };
     const corpo = {
       operationId,
       sourceSessionId,
-      prompt,
+      prompt: preparati.prompt,
       tipo,
       ...(istruzioni ? { istruzioni } : {}),
+      ...(scelta ? { preimpostazione: scelta } : {}),
+      ...(preparati.allegati.length ? { allegati: preparati.allegati } : {}),
     };
     let esito = await chiama("/api/consiglio/avvia", corpo);
     if (!esito?.ok && esito?.codice === "consenso-mancante") {
@@ -856,6 +976,7 @@
     approvaConsiglio,
     avviaConsiglio,
     bozzaRuoli,
+    collegaContestoAllegatiConsiglio,
     corpoConfigurazioneRuoli,
     roleIdConsigliereLibero,
     etichettaRuolo,
@@ -865,6 +986,7 @@
     lavoroDiScheda,
     livelloStatoLavoro,
     livelloStatoRuolo,
+    preparaAllegatiConsiglio,
     registraNuovaRevisione,
     rifaiConsiglio,
     righeRuolo,

@@ -111,6 +111,59 @@ test("un modello assegnato e sparito torna al default con avviso", () => {
   assert.equal(risolti.avvioPossibile, true);
 });
 
+test("una preimpostazione con modello mancante blocca senza sostituzioni e conserva il fallback legacy", () => {
+  const configurazione = {
+    ...configurazioneConsiglioPredefinita(),
+    consiglieri: [{ roleId: "consigliere-1", model: { provider: "fake", modelId: "modello-sparito" }, thinking: "high" }],
+    scrittore: { roleId: "scrittore", model: { provider: "fake", modelId: "modello-secondo" }, thinking: "low" },
+  };
+  const rigorosi = risolviRuoliConsiglio({ configurazione, catalogo: DUE_MODELLI, sostituisciMancanti: false });
+  assert.equal(rigorosi.avvioPossibile, false);
+  assert.equal(rigorosi.effettive.consiglieri[0].provider, null);
+  assert.equal(rigorosi.effettive.consiglieri[0].modello, null, "il modello assente non viene rimpiazzato");
+  assert.equal(rigorosi.effettive.consiglieri[0].nonDisponibile, "fake/modello-sparito");
+  assert.equal(rigorosi.effettive.scrittore.modello, "modello-secondo");
+  assert.equal(rigorosi.effettive.consiglieri[0].thinking, "high");
+  assert.match(rigorosi.problemi[0].messaggio, /scegli esplicitamente/);
+  assert.equal(rigorosi.configurazione.consiglieri[0].model.modelId, "modello-sparito", "l'assegnazione salvata resta leggibile");
+
+  const compatibili = risolviRuoliConsiglio({ configurazione, catalogo: DUE_MODELLI });
+  assert.equal(compatibili.avvioPossibile, true);
+  assert.ok(compatibili.effettive.consiglieri[0].modello);
+  assert.equal(compatibili.effettive.scrittore.modello, "modello-secondo");
+  assert.match(compatibili.problemi[0].messaggio, /torna al modello predefinito/);
+});
+
+test("solo scrittore richiede un consenso esplicito del validatore e il percorso legacy lo rifiuta", () => {
+  const configurazione = { ...configurazioneConsiglioPredefinita(), consiglieri: [] };
+  assert.throws(() => validaConfigurazioneConsiglio(configurazione), /consiglieri devono essere/);
+  assert.throws(() => risolviRuoliConsiglio({ configurazione, catalogo: DUE_MODELLI }), /consiglieri devono essere/);
+  const valida = validaConfigurazioneConsiglio(configurazione, { consentiSoloScrittore: true });
+  assert.deepEqual(valida.consiglieri, []);
+  const risolti = risolviRuoliConsiglio({ configurazione, catalogo: DUE_MODELLI,
+    consentiSoloScrittore: true, sostituisciMancanti: false,
+    modelloSorgente: { provider: "fake", modelId: "modello-secondo" } });
+  assert.equal(risolti.avvioPossibile, true);
+  assert.deepEqual(risolti.effettive.consiglieri, []);
+  assert.equal(risolti.effettive.scrittore.modello, "modello-secondo");
+  assert.equal(risolti.effettive.scrittore.ordine, 1);
+  assert.equal(risolti.effettive.scrittore.automatico, true);
+});
+
+test("automatico resta risolvibile senza sostituzioni ma il catalogo vuoto blocca anche solo scrittore", () => {
+  const configurazione = configurazioneConsiglioPredefinita();
+  const automatici = risolviRuoliConsiglio({ configurazione, catalogo: DUE_MODELLI, sostituisciMancanti: false });
+  assert.equal(automatici.avvioPossibile, true);
+  assert.notEqual(automatici.effettive.consiglieri[0].modello, automatici.effettive.scrittore.modello);
+  assert.equal(automatici.effettive.consiglieri[0].automatico, true);
+  assert.deepEqual(automatici.problemi, []);
+  const senzaCatalogo = risolviRuoliConsiglio({ configurazione: { ...configurazione, consiglieri: [] },
+    catalogo: [], consentiSoloScrittore: true, sostituisciMancanti: false });
+  assert.equal(senzaCatalogo.avvioPossibile, false);
+  assert.equal(senzaCatalogo.effettive.scrittore.modello, null);
+  assert.equal(senzaCatalogo.problemi.some((problema) => problema.codice === "catalogo-vuoto"), true);
+});
+
 test("il validatore accetta soglia e consiglio insieme", () => {
   const configurazione = configurazioneConsiglioPredefinita();
   const entrambi = validaImpostazioniGui({ sogliaCompattazionePercento: 80, consiglio: configurazione });
