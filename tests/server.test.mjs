@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   creaPonte,
+  cartellePreferite,
   caricaAlberoCompattoDaPi,
   caricaCronologiaDaPi,
   caricaCronologiaParzialeDaPi,
@@ -690,6 +691,8 @@ async function avviaPonteTest({
   const ponte = creaPonte({
     home,
     cliPi: FAKE_PI,
+    portachiavi: [],
+    ambienteEstensioni: { LOCALAPPDATA: join(home, "locale"), XDG_DATA_HOME: join(home, "dati") },
     maxSessioni,
     elencaDiscendenti: async () => [],
     terminaDiscendenti: async () => true,
@@ -735,6 +738,36 @@ async function avviaPonteTest({
   };
   return { home, ponte, base, stato, post, chiudi };
 }
+
+test("gli endpoint delle estensioni rifiutano campi non previsti e rispondono 409 sulla versione superata", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const senzaToken = await fetch(ambiente.base + "/api/estensioni");
+  assert.equal(senzaToken.status, 403);
+  await senzaToken.text();
+  const lettura = await fetch(ambiente.base + "/api/estensioni", { headers: { "x-pi-gui-token": ambiente.ponte.tokenApi } });
+  assert.equal(lettura.status, 200);
+  assert.equal((await lettura.json()).versioneArchivio, 0);
+  for (const azione of ["installa", "aggiorna", "attiva", "applica", "rimuovi", "torna-versione"]) {
+    const extra = await ambiente.post(`/api/estensioni/${azione}`, { versioneAttesa: 0, imprevisto: true });
+    assert.equal(extra.risposta.status, 400, azione);
+    assert.match(extra.dati.errore, /campi non previsti/);
+    assert.equal((await ambiente.post(`/api/estensioni/${azione}`, { versioneAttesa: 0 }, null)).risposta.status, 403);
+  }
+  const superata = await ambiente.post("/api/estensioni/applica", { versioneAttesa: 10 });
+  assert.equal(superata.risposta.status, 409, JSON.stringify(superata.dati));
+  await assert.rejects(stat(join(ambiente.home, ".pi", "gui", "estensioni.json")), { code: "ENOENT" });
+});
+
+test("le cartelle preferite non contengono nomi personali", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  assert.deepEqual(ambiente.stato.preferite, []);
+  assert.deepEqual(cartellePreferite([ambiente.home], [ambiente.home]), [{
+    nome: basename(ambiente.home), descrizione: "Cartella scelta di recente", percorso: ambiente.home,
+  }]);
+  assert.doesNotMatch(cartellePreferite.toString(), /Second Brain|Business|kDrive|Obsidian/);
+});
 
 test("default 90 quando il file manca", async (t) => {
   const ambiente = await avviaPonteTest();
@@ -6443,11 +6476,15 @@ test("la condivisione durevole replaya il successo e non duplica un gist ambiguo
   assert.deepEqual(chiamateDopoRestart, []);
 });
 
-test("lo stato propone Desktop e Documenti reindirizzati come posizioni rapide", async (t) => {
+test("lo stato propone Desktop e Documenti reindirizzati dopo una scelta recente", async (t) => {
   const ambiente = await avviaPonteTest({
     preparaHome: async (home) => {
       await mkdir(join(home, "OneDrive", "Desktop"), { recursive: true });
       await mkdir(join(home, "OneDrive", "Documenti"), { recursive: true });
+      await mkdir(join(home, ".pi", "gui"), { recursive: true });
+      await writeFile(join(home, ".pi", "gui", "recenti.json"), JSON.stringify([
+        join(home, "OneDrive", "Desktop"), join(home, "OneDrive", "Documenti"),
+      ]));
     },
   });
   t.after(ambiente.chiudi);

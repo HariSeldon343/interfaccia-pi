@@ -2,19 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, relative } from "node:path";
+import { dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   creaGestoreSistemaGuidato,
+  preparaMigrazioneSistemaGuidato,
+  radiceDatiSistemaGuidato,
   verificaBundleSistemaGuidato,
 } from "../app/sistema-guidato-manager.mjs";
 
 const RADICE = dirname(dirname(fileURLToPath(import.meta.url)));
-const BUNDLE = join(RADICE, "vendor", "sistema-guidato");
-const RUNTIME = join(BUNDLE, "runtime");
+const BUNDLE = process.env.SISTEMA_GUIDATO_PACCHETTO_TEST ? resolve(process.env.SISTEMA_GUIDATO_PACCHETTO_TEST) : null;
+const RUNTIME = BUNDLE ? join(BUNDLE, "runtime") : null;
+const testPacchetto = (nome, funzione) => test(nome, { skip: !BUNDLE && "Pacchetto opzionale assente: indicare SISTEMA_GUIDATO_PACCHETTO_TEST con una cartella firmata 2.9" }, funzione);
 
 function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
@@ -43,13 +46,14 @@ async function cammina(radice) {
   return risultati;
 }
 
-test("il bundle vendorizzato dichiara host, mount e proxy del pilot 2.8.0", async () => {
+testPacchetto("il pacchetto dichiara intervallo host, mount e proxy della 2.9.0", async () => {
   const { integrazione } = await manifesti();
   assert.equal(integrazione.schemaVersion, 1);
   assert.equal(integrazione.component, "sistema-guidato");
   assert.deepEqual(integrazione.host, {
     name: "interfaccia-pi",
-    version: "2.8.0",
+    minInclusa: "2.9.0",
+    maxEsclusa: "3.0.0",
     mountPath: "/sistema",
     sameOriginProxy: true,
     interfacciaPiPanel: true,
@@ -57,7 +61,7 @@ test("il bundle vendorizzato dichiara host, mount e proxy del pilot 2.8.0", asyn
   });
 });
 
-test("la verifica runtime dell'host accetta il bundle completo e inventariato", async () => {
+testPacchetto("la verifica runtime dell'host accetta il bundle completo e inventariato", async () => {
   const verificato = await verificaBundleSistemaGuidato(BUNDLE);
   assert.equal(verificato.root, BUNDLE);
   assert.match(verificato.manifestSha256, /^[a-f0-9]{64}$/u);
@@ -66,7 +70,7 @@ test("la verifica runtime dell'host accetta il bundle completo e inventariato", 
   assert.equal(relative(BUNDLE, verificato.templatesPath), join("runtime", "templates"));
 });
 
-test("il bundle reale completa bootstrap, sessione host-only e health via proxy", async (t) => {
+testPacchetto("il bundle reale completa bootstrap, sessione host-only e health via proxy", async (t) => {
   const dati = await mkdtemp(join(tmpdir(), "pi-gui-sg-real-bundle-"));
   const gestore = creaGestoreSistemaGuidato({
     guiDirectory: RADICE,
@@ -107,7 +111,7 @@ test("il bundle reale completa bootstrap, sessione host-only e health via proxy"
   assert.doesNotMatch(JSON.stringify(gestore.diagnostica()), /sg_local_session|[a-f0-9]{64}/iu);
 });
 
-test("le prove sorgente conservano esattamente gli hash registrati dall'host", async () => {
+testPacchetto("le prove sorgente conservano esattamente gli hash registrati dall'host", async () => {
   const { integrazione } = await manifesti();
   const [release, compatibilita] = await Promise.all([
     readFile(join(BUNDLE, "source-release-manifest.json")),
@@ -117,7 +121,7 @@ test("le prove sorgente conservano esattamente gli hash registrati dall'host", a
   assert.equal(sha256(compatibilita), integrazione.source.compatibilitySha256);
 });
 
-test("la baseline Pi e la patch RPC coincidono con il runtime GUI qualificato", async () => {
+testPacchetto("la baseline Pi e la patch RPC coincidono con il runtime GUI qualificato", async () => {
   const { integrazione, compatibilita } = await manifesti();
   assert.equal(compatibilita.pi.productionBaseline, "0.84.2");
   assert.equal(compatibilita.pi.productionPatchId, "PI_GUI_RPC_ADAPTER_V1");
@@ -127,7 +131,7 @@ test("la baseline Pi e la patch RPC coincidono con il runtime GUI qualificato", 
   assert.equal(integrazione.source.sourcePanelQualified, true);
 });
 
-test("schema 1 resta soltanto leggibile e ogni nuova scrittura usa schema 2", async () => {
+testPacchetto("schema 1 resta soltanto leggibile e ogni nuova scrittura usa schema 2", async () => {
   const { integrazione, compatibilita } = await manifesti();
   assert.deepEqual(compatibilita.projectSchemaReaders, [1, 2]);
   assert.deepEqual(compatibilita.projectSchemaWriters, [2]);
@@ -136,19 +140,19 @@ test("schema 1 resta soltanto leggibile e ogni nuova scrittura usa schema 2", as
   assert.equal(integrazione.host.legacySchema1ReadOnly, true);
 });
 
-test("l'inventario e ordinato, univoco e privo di percorsi evasivi", async () => {
+testPacchetto("l'inventario e ordinato, univoco e privo di percorsi evasivi", async () => {
   const { integrazione } = await manifesti();
   const percorsi = integrazione.files.map((voce) => voce.path);
   assert.deepEqual(percorsi, [...percorsi].sort((a, b) => a.localeCompare(b)));
   assert.equal(new Set(percorsi).size, percorsi.length);
   for (const percorso of percorsi) {
-    assert.match(percorso, /^(?:runtime|source-(?:compatibility|release-manifest)\.json)/u);
+    assert.match(percorso, /^(?:runtime|package\.json|source-(?:compatibility|release-manifest)\.json)/u);
     assert.equal(percorso.includes("\\"), false);
     assert.equal(percorso.split("/").includes(".."), false);
   }
 });
 
-test("ogni file vendorizzato ha dimensione e SHA-256 corrispondenti", async () => {
+testPacchetto("ogni file vendorizzato ha dimensione e SHA-256 corrispondenti", async () => {
   const { integrazione } = await manifesti();
   for (const voce of integrazione.files) {
     const contenuto = await readFile(join(BUNDLE, ...voce.path.split("/")));
@@ -157,17 +161,17 @@ test("ogni file vendorizzato ha dimensione e SHA-256 corrispondenti", async () =
   }
 });
 
-test("il bundle non contiene file runtime estranei al manifesto", async () => {
+testPacchetto("il bundle non contiene file runtime estranei al manifesto", async () => {
   const { integrazione } = await manifesti();
   const attesi = new Set(integrazione.files.map((voce) => voce.path));
   const presenti = (await cammina(BUNDLE))
     .map((percorso) => relative(BUNDLE, percorso).replaceAll("\\", "/"))
-    .filter((percorso) => percorso !== "integration-manifest.json");
+    .filter((percorso) => !["integration-manifest.json", "manifesto-estensione.json", "manifest.sig"].includes(percorso));
   assert.equal(presenti.length, attesi.size);
   assert.deepEqual(new Set(presenti), attesi);
 });
 
-test("il bundle destinato all'installer non contiene sourcemap o sorgenti incorporati", async () => {
+testPacchetto("il bundle destinato all'installer non contiene sourcemap o sorgenti incorporati", async () => {
   const textExtensions = new Set([".css", ".htm", ".html", ".js", ".json", ".mjs", ".ts", ".txt"]);
   const sourceExtensions = new Set([".cts", ".jsx", ".mts", ".svelte", ".ts", ".tsx", ".vue"]);
   for (const percorso of await cammina(RUNTIME)) {
@@ -179,7 +183,7 @@ test("il bundle destinato all'installer non contiene sourcemap o sorgenti incorp
   }
 });
 
-test("server, dashboard e template sono entrypoint inventariati", async () => {
+testPacchetto("server, dashboard e template sono entrypoint inventariati", async () => {
   const { integrazione } = await manifesti();
   const percorsi = new Set(integrazione.files.map((voce) => voce.path));
   assert.equal(integrazione.runtime.server, "runtime/server/server.mjs");
@@ -190,14 +194,14 @@ test("server, dashboard e template sono entrypoint inventariati", async () => {
   assert.equal(percorsi.has(integrazione.runtime.templatesMarker), true);
 });
 
-test("la dashboard usa asset relativi ed e quindi montabile sotto /sistema/", async () => {
+testPacchetto("la dashboard usa asset relativi ed e quindi montabile sotto /sistema/", async () => {
   const html = await readFile(join(RUNTIME, "dashboard", "index.html"), "utf8");
   assert.match(html, /(?:src|href)="\.\/assets\//u);
   assert.doesNotMatch(html, /(?:src|href)="\/assets\//u);
   assert.doesNotMatch(html, /X-SG-Token|sg_local_session|SG_API_TOKEN/iu);
 });
 
-test("il JavaScript del pannello non incorpora capability del backend", async () => {
+testPacchetto("il JavaScript del pannello non incorpora capability del backend", async () => {
   const assets = (await cammina(join(RUNTIME, "dashboard", "assets")))
     .filter((percorso) => percorso.endsWith(".js"));
   assert.ok(assets.length > 0);
@@ -206,7 +210,7 @@ test("il JavaScript del pannello non incorpora capability del backend", async ()
   assert.match(javascript, /document\.baseURI/u);
 });
 
-test("il pack include template neutrali Word ed Excel senza testo ISO", async () => {
+testPacchetto("il pack include template neutrali Word ed Excel senza testo ISO", async () => {
   const template = await json("runtime/templates/manifest.json");
   assert.equal(template.schemaVersion, 1);
   assert.equal(template.scheme, "ISO 9001/HLS");
@@ -216,7 +220,7 @@ test("il pack include template neutrali Word ed Excel senza testo ISO", async ()
   assert.equal(new Set(template.documents.map((documento) => documento.id)).size, template.documents.length);
 });
 
-test("ogni template dichiarato esiste ed e compreso nell'inventario host", async () => {
+testPacchetto("ogni template dichiarato esiste ed e compreso nell'inventario host", async () => {
   const [{ integrazione }, template] = await Promise.all([
     manifesti(),
     json("runtime/templates/manifest.json"),
@@ -229,7 +233,7 @@ test("ogni template dichiarato esiste ed e compreso nell'inventario host", async
   }
 });
 
-test("il server compilato espone sessione attendibile e lifecycle IPC", async () => {
+testPacchetto("il server compilato espone sessione attendibile e lifecycle IPC", async () => {
   const server = await readFile(join(RUNTIME, "server", "server.mjs"), "utf8");
   assert.match(server, /SG_API_TOKEN/u);
   assert.match(server, /sg_local_session/u);
@@ -238,7 +242,7 @@ test("il server compilato espone sessione attendibile e lifecycle IPC", async ()
   assert.match(server, /SG_PARENT_PID/u);
 });
 
-test("la migrazione legacy e una superficie esplicita prepare/commit e non un writer automatico", async () => {
+testPacchetto("la migrazione legacy e una superficie esplicita prepare/commit e non un writer automatico", async () => {
   const server = await readFile(join(RUNTIME, "server", "server.mjs"), "utf8");
   assert.match(server, /scanLegacyProjects/u);
   assert.match(server, /\/api\/trusted-ui\/migrations\/:[^"']+\/dry-run/u);
@@ -250,7 +254,7 @@ test("la migrazione legacy e una superficie esplicita prepare/commit e non un wr
   );
 });
 
-test("il release manifest sorgente coincide con l'intero sottoalbero runtime", async () => {
+testPacchetto("il release manifest sorgente coincide con l'intero sottoalbero runtime", async () => {
   const { release } = await manifesti();
   assert.equal(release.package, "@sistema-guidato/pi-sistema-guidato");
   assert.equal(release.reproducible, true);
@@ -265,7 +269,7 @@ test("il release manifest sorgente coincide con l'intero sottoalbero runtime", a
   assert.deepEqual(presenti, attesi);
 });
 
-test("manifesti e configurazione non registrano percorsi macchina o vecchi writer", async () => {
+testPacchetto("manifesti e configurazione non registrano percorsi macchina o vecchi writer", async () => {
   const [manifest, tauri, serverHost] = await Promise.all([
     readFile(join(BUNDLE, "integration-manifest.json"), "utf8"),
     readFile(join(RADICE, "src-tauri", "tauri.conf.json"), "utf8"),
@@ -274,4 +278,50 @@ test("manifesti e configurazione non registrano percorsi macchina o vecchi write
   assert.doesNotMatch(manifest, /[A-Z]:\\|Users[\\/]|AppData[\\/]/iu);
   assert.doesNotMatch(tauri, /app\/extensions\/sistema-guidato/u);
   assert.doesNotMatch(serverHost, /extensions["',\s]+sistema-guidato["',\s]+index\.ts/u);
+});
+
+test("senza pacchetto installato il gestore risponde assente e non avvia nessun processo", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-assente-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  let avvii = 0;
+  const gestore = creaGestoreSistemaGuidato({ guiDirectory: base, dataRoot: join(base, "dati"), avviaProcesso: () => { avvii += 1; } });
+  assert.equal(gestore.diagnostica().stato, "assente");
+  assert.equal(await gestore.assicuratiAvviato(), null);
+  assert.equal(avvii, 0);
+  assert.deepEqual(await readdir(base), []);
+  await gestore.chiudi();
+});
+
+test("un payload 2.8 rimasto nella cartella dell'app non viene caricato e i dati restano intatti", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-legacy-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const guiDirectory = join(base, "app");
+  const payload = join(guiDirectory, "sistema-guidato");
+  const dataRoot = radiceDatiSistemaGuidato({ platform: "win32", localAppData: join(base, "local") });
+  await mkdir(payload, { recursive: true });
+  await mkdir(dataRoot, { recursive: true });
+  await writeFile(join(payload, "integration-manifest.json"), '{"host":{"version":"2.8.0"}}');
+  await writeFile(join(dataRoot, "documento.txt"), "Dato sintetico già presente\n");
+  const prima = await readFile(join(dataRoot, "documento.txt"));
+  const vecchioPayload = await readFile(join(payload, "integration-manifest.json"));
+  let avvii = 0;
+  const gestore = creaGestoreSistemaGuidato({ guiDirectory, dataRoot, avviaProcesso: () => { avvii += 1; } });
+  assert.equal(await gestore.assicuratiAvviato(), null);
+  assert.equal(avvii, 0);
+  const precedente = await gestore.installazionePrecedente();
+  assert.equal(precedente.presente, true);
+  assert.equal(precedente.titolo, "Il Sistema Guidato ora si installa a parte");
+  const primaElenco = await readdir(dirname(dataRoot));
+  const annullata = await preparaMigrazioneSistemaGuidato({ guiDirectory, dataRoot, confermata: false });
+  assert.equal(annullata.annullata, true);
+  assert.deepEqual(await readdir(dirname(dataRoot)), primaElenco);
+  assert.deepEqual(await readFile(join(dataRoot, "documento.txt")), prima);
+  assert.deepEqual(await readFile(join(payload, "integration-manifest.json")), vecchioPayload);
+  const confermata = await preparaMigrazioneSistemaGuidato({ guiDirectory, dataRoot, confermata: true, arrestaBackend: () => gestore.arresta() });
+  assert.equal(confermata.annullata, false);
+  assert.ok(confermata.backup);
+  assert.deepEqual(await readFile(join(confermata.backup, "documento.txt")), prima);
+  assert.deepEqual(await readFile(join(dataRoot, "documento.txt")), prima);
+  assert.deepEqual(await readFile(join(payload, "integration-manifest.json")), vecchioPayload);
+  await gestore.chiudi();
 });

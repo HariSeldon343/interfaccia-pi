@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { creaPacchettoSistemaGuidato } from "../scripts/vendor-sistema-guidato.mjs";
+import { verificaPacchettoEstensione } from "../app/estensioni-manifest.mjs";
 
 const RADICE = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -20,6 +22,7 @@ async function artefattoRuntimeConDivulgazione({ map = false, marker = "", sourc
     ["runtime/server/server.mjs", "export const server = true;"],
     ["runtime/dashboard/index.html", "<main>Sistema Guidato</main>"],
     ["runtime/dashboard/assets/app.js", marker ? `const leak = ${JSON.stringify(marker)};` : "console.log('release');"],
+    ["runtime/templates/manifest.json", "{}"],
   ]);
   if (map) files.set("runtime/dashboard/assets/app.js.map", "{}");
   if (source) files.set("runtime/dashboard/App.tsx", "export const App = () => null;");
@@ -141,7 +144,7 @@ test("il cleanup ricorsivo e confinato alla directory temporanea verificata", as
   assert.match(script, /Remove-Item -LiteralPath \$safeWorkDirectory -Recurse -Force/u);
 });
 
-test("i workflow pubblici acquisiscono e verificano il bundle prima dei test", async () => {
+test("i workflow conservano il gate del payload e verificano separatamente i pacchetti", async () => {
   for (const nome of ["verifica-windows.yml", "compila-windows.yml"]) {
     const workflow = await readFile(join(RADICE, ".github", "workflows", nome), "utf8");
     for (const configurazione of [
@@ -159,6 +162,8 @@ test("i workflow pubblici acquisiscono e verificano il bundle prima dei test", a
     );
     assert.ok(prepara >= 0 && prepara < verifica, nome);
     assert.ok(verifica < testJavascript, nome);
+    assert.ok(workflow.indexOf("npm run test:pacchetti", testJavascript) > testJavascript, nome);
+    assert.match(workflow, /payload legacy resta subordinata al pacchetto firmato 2\.9 provato/u);
   }
 });
 
@@ -186,6 +191,7 @@ test("il candidato production confina ogni segreto agli step strettamente necess
   );
   const verifica = bloccoPassaggio(workflow, "Verifica completa");
   const build = bloccoPassaggio(workflow, "Compila candidato e firme updater");
+  const pacchetti = bloccoPassaggio(workflow, "Verifica pacchetti opzionali");
 
   assert.doesNotMatch(dipendenze, /\$\{\{\s*secrets\./u);
   assert.match(acquisizione, /SISTEMA_GUIDATO_BUNDLE_TOKEN:\s*\$\{\{\s*secrets\./u);
@@ -195,6 +201,8 @@ test("il candidato production confina ogni segreto agli step strettamente necess
   assert.doesNotMatch(configurazione, /TAURI_SIGNING_PRIVATE_KEY_PASSWORD/u,
     "la password serve soltanto al comando Tauri che firma");
   assert.doesNotMatch(verifica, /\$\{\{\s*secrets\./u);
+  assert.doesNotMatch(pacchetti, /\$\{\{\s*secrets\./u);
+  assert.match(pacchetti, /npm run test:pacchetti/u);
   assert.match(
     verifica,
     /node --test --test-concurrency=1 tests\/\*\.test\.mjs app\/tests\/\*\.test\.mjs/u,
@@ -215,4 +223,23 @@ test("il bundle generato non viene assunto come file versionato", async () => {
   const ignore = await readFile(join(RADICE, ".gitignore"), "utf8");
   assert.match(ignore, /^\/vendor\/sistema-guidato\/$/mu);
   assert.match(ignore, /^\/vendor\/\.sistema-guidato-stage-\*\/$/mu);
+});
+
+test("la riemissione firma i byte esatti del manifesto e pubblica in una nuova cartella", async (t) => {
+  const sorgente = await artefattoRuntimeConDivulgazione();
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-pacchetto-"));
+  t.after(() => Promise.all([rm(sorgente, { recursive: true, force: true }), rm(base, { recursive: true, force: true })]));
+  const chiavi = generateKeyPairSync("ed25519");
+  const portachiavi = [{ chiaveId: "prova", pubblica: chiavi.publicKey, stato: "attiva", dal: "2026-01-01", primaParte: true }];
+  const destinazione = join(base, "pacchetto");
+  let firmati;
+  const opzioni = { artifactRoot: sorgente, destinazione, chiaveId: "prova", portachiavi,
+    firmaManifesto: (bytes) => { firmati = Buffer.from(bytes); return sign(null, bytes, chiavi.privateKey); } };
+  assert.equal(await creaPacchettoSistemaGuidato(opzioni), destinazione);
+  assert.deepEqual(await readFile(join(destinazione, "manifesto-estensione.json")), firmati);
+  const verificato = await verificaPacchettoEstensione(destinazione, { portachiavi });
+  assert.equal(verificato.manifesto.id, "sistema-guidato");
+  assert.deepEqual(verificato.manifesto.host, { minInclusa: "2.9.0", maxEsclusa: "3.0.0" });
+  await assert.rejects(creaPacchettoSistemaGuidato(opzioni), /destinazione.*esiste già/u);
+  assert.deepEqual(await readFile(join(destinazione, "manifesto-estensione.json")), firmati);
 });

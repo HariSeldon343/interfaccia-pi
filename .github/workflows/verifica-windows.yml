@@ -99,6 +99,10 @@ jobs:
         # un file alla volta per una verifica riproducibile.
         run: node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs
 
+      # La rimozione del payload legacy resta subordinata al pacchetto firmato 2.9 provato.
+      - name: Verifica pacchetti opzionali
+        run: npm run test:pacchetti
+
       - name: Smoke test sul runtime incluso
         run: npm run test:smoke
 

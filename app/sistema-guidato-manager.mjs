@@ -1,16 +1,18 @@
-// Lifecycle e reverse proxy del pannello Sistema Guidato incorporato.
+// Lifecycle e reverse proxy dell'estensione Sistema Guidato scelta esplicitamente.
 // Il browser resta sempre sulla stessa origine della GUI: la capability del
 // backend vive soltanto in questo processo e viene aggiunta come header interno.
 
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { request as richiestaHttp } from "node:http";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { verificaPacchettoEstensione, versioneHostCompatibile } from "./estensioni-manifest.mjs";
+import { VERSIONE_HOST } from "./versione-host.mjs";
 
-const VERSIONE_HOST = "2.8.0";
+export const INTERVALLO_HOST = Object.freeze({ minInclusa: "2.9.0", maxEsclusa: "3.0.0" });
 const MOUNT_PATH = "/sistema";
 const LIMITE_MANIFEST = 2 * 1024 * 1024;
 const MAX_FILE_BUNDLE = 20_000;
@@ -151,23 +153,97 @@ async function inventarioFisicoBundle(radice) {
 }
 
 export function radiceDatiSistemaGuidato({
-  localAppData = process.env.LOCALAPPDATA,
+  localAppData,
   home = homedir(),
   platform = process.platform,
+  env = process.env,
 } = {}) {
   if (platform === "win32") {
-    return resolve(localAppData || join(home, "AppData", "Local"), "it.amodeo.sistema-guidato");
+    return resolve(localAppData || env.LOCALAPPDATA || join(home, "AppData", "Local"), "it.amodeo.sistema-guidato");
   }
-  return resolve(process.env.XDG_DATA_HOME || join(home, ".local", "share"), "it.amodeo.sistema-guidato");
+  return resolve(env.XDG_DATA_HOME || join(home, ".local", "share"), "it.amodeo.sistema-guidato");
 }
 
-export function trovaBundleSistemaGuidato(guiDirectory) {
-  const candidati = [
-    resolve(guiDirectory, "sistema-guidato"),
-    resolve(guiDirectory, "..", "vendor", "sistema-guidato"),
-  ];
-  return candidati.find((candidato) => existsSync(join(candidato, "integration-manifest.json")))
-    || candidati[0];
+export function risolviRadiceDatiSistemaGuidato({ home = homedir(), env = process.env, platform = process.platform } = {}) {
+  return radiceDatiSistemaGuidato({ home, env, platform, localAppData: env.LOCALAPPDATA });
+}
+
+// Una vecchia installazione viene soltanto segnalata: non è mai una sorgente eseguibile.
+export async function rilevaInstallazionePrecedenteSistemaGuidato({ guiDirectory, dataRoot = radiceDatiSistemaGuidato() } = {}) {
+  const dati = resolve(dataRoot);
+  const payload = guiDirectory ? resolve(guiDirectory, "sistema-guidato") : null;
+  const [infoDati, infoPayload] = await Promise.all([
+    lstat(dati).catch((errore) => { if (errore.code === "ENOENT") return null; throw errore; }),
+    payload ? lstat(payload).catch((errore) => { if (errore.code === "ENOENT") return null; throw errore; }) : null,
+  ]);
+  const presente = Boolean(infoDati || infoPayload);
+  return {
+    presente,
+    dataRoot: dati,
+    datiPresenti: Boolean(infoDati),
+    payloadPrecedente: infoPayload ? payload : null,
+    ...(presente ? {
+      titolo: "Il Sistema Guidato ora si installa a parte",
+      messaggio: "I documenti restano dove sono. Prima dell'installazione viene creata una copia di sicurezza dei dati.",
+    } : {}),
+  };
+}
+
+export async function preparaMigrazioneSistemaGuidato({ guiDirectory, dataRoot = radiceDatiSistemaGuidato(), confermata = false,
+  arrestaBackend, copiaFile = copyFile } = {}) {
+  let precedente = await rilevaInstallazionePrecedenteSistemaGuidato({ guiDirectory, dataRoot });
+  if (!precedente.presente) return { ...precedente, annullata: false, backup: null };
+  if (confermata !== true) return { ...precedente, annullata: true, backup: null };
+  if (typeof arrestaBackend !== "function") throw erroreGestore("L'arresto del Sistema Guidato è obbligatorio prima della copia di sicurezza", "SG_BACKUP_IN_USE");
+  await arrestaBackend();
+  // Il processo può avere terminato una scrittura mentre si arrestava.
+  precedente = await rilevaInstallazionePrecedenteSistemaGuidato({ guiDirectory, dataRoot });
+  if (!precedente.datiPresenti) return { ...precedente, annullata: false, backup: null };
+  const sorgente = precedente.dataRoot;
+  // Scansione completa prima della copia: nessun collegamento o giunzione viene seguito.
+  async function visita(corrente, voci) {
+    const info = await lstat(corrente);
+    if (info.isSymbolicLink() || resolve(await realpath(corrente)).toLowerCase() !== resolve(corrente).toLowerCase()) {
+      throw erroreGestore(`Copia di sicurezza non sicura: ${relative(sorgente, corrente) || "radice dati"}`, "SG_BACKUP_INVALID");
+    }
+    if (info.isDirectory()) {
+      voci.push({ percorso: corrente, directory: true });
+      for (const nome of (await readdir(corrente)).sort()) await visita(join(corrente, nome), voci);
+    } else if (info.isFile()) voci.push({ percorso: corrente, directory: false, size: info.size, digest: sha256(await readFile(corrente)) });
+    else throw erroreGestore("La copia di sicurezza contiene un file non regolare", "SG_BACKUP_INVALID");
+  }
+  const voci = [];
+  await visita(sorgente, voci);
+  const backup = `${sorgente}.backup-2.9-${Date.now()}-${randomBytes(6).toString("hex")}`;
+  if (!percorsoConfinato(backup, dirname(sorgente)) || backup === sorgente) throw erroreGestore("Percorso della copia di sicurezza non valido", "SG_BACKUP_INVALID");
+  try {
+    await mkdir(backup);
+    for (const voce of voci) {
+      const destinazione = join(backup, relative(sorgente, voce.percorso));
+      const info = await lstat(voce.percorso);
+      if (info.isSymbolicLink() || info.isDirectory() !== voce.directory) throw erroreGestore("I dati sono cambiati durante la copia di sicurezza", "SG_BACKUP_CHANGED");
+      if (voce.directory) {
+        if (destinazione !== backup) await mkdir(destinazione);
+      } else {
+        await copiaFile(voce.percorso, destinazione, constants.COPYFILE_EXCL);
+        if (info.size !== voce.size || sha256(await readFile(destinazione)) !== voce.digest || sha256(await readFile(voce.percorso)) !== voce.digest) {
+          throw erroreGestore(`I dati sono cambiati durante la copia di sicurezza: ${relative(sorgente, voce.percorso)}`, "SG_BACKUP_CHANGED");
+        }
+      }
+    }
+    // Il controllo dei soli file copiati non vede nuove voci. Confrontiamo
+    // l'intero inventario, comprese directory vuote, file rimossi e rinominati.
+    const dopo = [];
+    try { await visita(sorgente, dopo); }
+    catch { throw erroreGestore("I dati sono cambiati durante la copia di sicurezza", "SG_BACKUP_CHANGED"); }
+    if (JSON.stringify(dopo) !== JSON.stringify(voci)) {
+      throw erroreGestore("L'inventario dei dati è cambiato durante la copia di sicurezza", "SG_BACKUP_CHANGED");
+    }
+    return { ...precedente, annullata: false, backup };
+  } catch (errore) {
+    await rm(backup, { recursive: true, force: true }).catch(() => {});
+    throw errore;
+  }
 }
 
 export async function verificaBundleSistemaGuidato(
@@ -193,7 +269,7 @@ export async function verificaBundleSistemaGuidato(
     || manifest.schemaVersion !== 1
     || manifest.component !== "sistema-guidato"
     || manifest.host?.name !== "interfaccia-pi"
-    || manifest.host?.version !== versioneHost
+    || !versioneHostCompatibile(versioneHost, { minInclusa: manifest.host?.minInclusa, maxEsclusa: manifest.host?.maxEsclusa })
     || manifest.host?.mountPath !== mountPath
     || manifest.host?.sameOriginProxy !== true
     || manifest.host?.interfacciaPiPanel !== true
@@ -238,6 +314,10 @@ export async function verificaBundleSistemaGuidato(
   const inventarioFisico = await inventarioFisicoBundle(radice);
   const fisici = new Set(inventarioFisico);
   const attesiFisici = new Set([...visti, "integration-manifest.json"]);
+  // I due file esterni sono verificati dalla firma prima di ogni avvio.
+  for (const nome of ["manifesto-estensione.json", "manifest.sig"]) {
+    if (fisici.has(nome)) attesiFisici.add(nome);
+  }
   const extra = inventarioFisico.filter((percorso) => !attesiFisici.has(percorso));
   const mancanti = [...attesiFisici].filter((percorso) => !fisici.has(percorso));
   if (extra.length || mancanti.length || inventarioFisico.length !== attesiFisici.size) {
@@ -452,11 +532,13 @@ function headerRispostaSicuri(headers) {
 
 export function creaGestoreSistemaGuidato({
   guiDirectory,
-  bundleRoot = trovaBundleSistemaGuidato(guiDirectory),
+  bundleRoot = null,
   dataRoot = radiceDatiSistemaGuidato(),
   nodePath = process.env.PI_GUI_NODE || process.execPath,
   piCliPath,
   versioneHost = VERSIONE_HOST,
+  portachiavi,
+  verificaPacchetto = (radice) => verificaPacchettoEstensione(radice, { portachiavi, versioneHost }),
   mountPath = MOUNT_PATH,
   avviaProcesso = spawn,
   inviaHttp = richiestaHttp,
@@ -473,10 +555,31 @@ export function creaGestoreSistemaGuidato({
   let rinnovoSessioneInCorso = null;
   let chiuso = false;
   let ultimoErrore = null;
+  let manomessa = false;
   let riavvii = 0;
+  let arrestoInCorso = null;
+  let arrestoFallito = false;
+
+  async function verificaAvvio() {
+    try {
+      const estensione = await verificaPacchetto(bundleRoot);
+      if (estensione.manifesto.id !== "sistema-guidato" || estensione.manifesto.categoria !== "backend"
+        || !estensione.manifesto.pannelli.some((pannello) => pannello.id === "sistema-guidato" && pannello.percorso === mountPath)) {
+        throw erroreGestore("Il pacchetto selezionato non è il Sistema Guidato", "SG_BUNDLE_INCOMPATIBLE");
+      }
+      const bundle = await verificaBundleSistemaGuidato(bundleRoot, { versioneHost, mountPath });
+      if (resolve(estensione.backendIngresso) !== bundle.serverPath) throw erroreGestore("Il punto di ingresso del Sistema Guidato non corrisponde al manifesto firmato", "SG_BUNDLE_INCOMPATIBLE");
+      manomessa = false;
+      return bundle;
+    } catch (errore) {
+      manomessa = true;
+      throw errore;
+    }
+  }
 
   async function avvia() {
-    const bundle = await verificaBundleSistemaGuidato(bundleRoot, { versioneHost, mountPath });
+    if (!bundleRoot) return null;
+    await verificaAvvio();
     const node = resolve(nodePath);
     const cliPi = piCliPath ? resolve(piCliPath) : null;
     const [infoNode, infoPi] = await Promise.all([
@@ -486,6 +589,10 @@ export function creaGestoreSistemaGuidato({
     if (!infoNode?.isFile()) throw erroreGestore("Runtime Node verificato non disponibile", "SG_RUNTIME_MISSING");
     if (!infoPi?.isFile()) throw erroreGestore("Runtime Pi verificato non disponibile", "SG_RUNTIME_MISSING");
     await mkdir(dataRoot, { recursive: true });
+    // Nessuna attesa o scrittura separa questa riverifica completa dalla composizione
+    // dell'ambiente e dallo spawn: il controllo iniziale precedeva le operazioni sui dati.
+    const bundle = await verificaAvvio();
+    if (chiuso) throw erroreGestore("Avvio Sistema Guidato annullato", "SG_START_ABORTED");
     const token = randomBytes(32).toString("hex");
     if (!TOKEN_PATTERN.test(token)) throw erroreGestore("Capability interna non generata", "SG_TOKEN_ERROR");
     const ambiente = {
@@ -517,6 +624,7 @@ export function creaGestoreSistemaGuidato({
       if (processo === figlio) {
         processo = null;
         endpoint = null;
+        arrestoFallito = false;
       }
       log({ evento: "sistema-guidato-exit", codice, segnale });
     });
@@ -565,19 +673,15 @@ export function creaGestoreSistemaGuidato({
       return endpoint;
     } catch (errore) {
       ultimoErrore = String(errore?.message || errore).slice(0, 1000);
-      if (processo === figlio) {
-        processo = null;
-        endpoint = null;
-      }
-      try { if (figlio.connected) figlio.disconnect(); } catch {}
-      try { figlio.kill(); } catch {}
-      await attendiUscita(figlio, Math.min(timeoutArrestoMs, 3000));
+      await terminaProcesso(figlio, true);
       throw errore;
     }
   }
 
   async function assicuratiAvviato() {
-    if (chiuso) throw erroreGestore("Il ponte Sistema Guidato e chiuso", "SG_CLOSED");
+    if (arrestoFallito || arrestoInCorso) throw erroreGestore("Il Sistema Guidato è ancora in uso: attendi l'arresto del processo", "SG_IN_USE");
+    if (chiuso) throw erroreGestore("Il ponte Sistema Guidato è chiuso", "SG_CLOSED");
+    if (!bundleRoot) return null;
     if (processo && endpoint && processo.exitCode === null && processo.signalCode === null) {
       if (endpoint.sessionExpiresAt > ora() + margineRinnovoSessioneMs) return endpoint;
       if (rinnovoSessioneInCorso) return rinnovoSessioneInCorso;
@@ -597,23 +701,27 @@ export function creaGestoreSistemaGuidato({
         .catch(async (errore) => {
           ultimoErrore = "Sessione backend Sistema Guidato da ristabilire";
           const figlio = processo;
-          processo = null;
-          endpoint = null;
-          try { if (figlio?.connected) figlio.disconnect(); } catch {}
-          try { figlio?.kill(); } catch {}
-          if (figlio) await attendiUscita(figlio, Math.min(timeoutArrestoMs, 3000));
+          if (figlio) await terminaProcesso(figlio, true);
           throw errore;
         })
         .finally(() => { rinnovoSessioneInCorso = null; });
       return rinnovoSessioneInCorso;
     }
     if (avvioInCorso) return avvioInCorso;
-    avvioInCorso = avvia().finally(() => { avvioInCorso = null; });
+    avvioInCorso = avvia().catch((errore) => {
+      ultimoErrore = String(errore?.message || errore).slice(0, 1000);
+      throw errore;
+    }).finally(() => { avvioInCorso = null; });
     return avvioInCorso;
   }
 
   async function proxy(richiesta, risposta, percorsoBackend) {
     const interno = await assicuratiAvviato();
+    if (!interno) {
+      risposta.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      risposta.end("<!doctype html><html lang=\"it\"><meta charset=\"utf-8\"><title>Estensione assente</title><p>Questa estensione non è installata o attiva. Puoi gestirla dal pannello Estensioni.</p></html>");
+      return;
+    }
     if (typeof percorsoBackend !== "string" || !percorsoBackend.startsWith("/")) {
       throw erroreGestore("Percorso proxy Sistema Guidato non valido", "SG_PROXY_INVALID");
     }
@@ -658,26 +766,52 @@ export function creaGestoreSistemaGuidato({
     });
   }
 
-  async function chiudi() {
-    chiuso = true;
-    const attesa = avvioInCorso;
-    if (attesa) await attesa.catch(() => {});
-    const figlio = processo;
-    processo = null;
-    endpoint = null;
-    if (!figlio) return;
+  async function terminaProcesso(figlio, subito = false) {
     try { if (figlio.connected) figlio.disconnect(); } catch {}
-    if (await attendiUscita(figlio, timeoutArrestoMs)) return;
-    try { figlio.kill(); } catch {}
-    await attendiUscita(figlio, Math.min(timeoutArrestoMs, 3000));
+    let uscito = !subito && await attendiUscita(figlio, timeoutArrestoMs);
+    if (!uscito) {
+      try { figlio.kill(); } catch {}
+      uscito = await attendiUscita(figlio, Math.min(timeoutArrestoMs, 3000));
+    }
+    if (!uscito) {
+      arrestoFallito = true;
+      ultimoErrore = "Il Sistema Guidato è ancora in uso: il processo non ha confermato l'arresto";
+      throw erroreGestore(ultimoErrore, "SG_IN_USE");
+    }
+    if (processo === figlio) {
+      processo = null;
+      endpoint = null;
+    }
+    arrestoFallito = false;
+  }
+
+  async function arresta() {
+    if (arrestoInCorso) return arrestoInCorso;
+    arrestoInCorso = (async () => {
+      const attesa = avvioInCorso;
+      if (attesa) await attesa.catch(() => {});
+      const figlio = processo;
+      if (figlio) await terminaProcesso(figlio);
+    })().finally(() => { arrestoInCorso = null; });
+    return arrestoInCorso;
   }
 
   return Object.freeze({
     assicuratiAvviato,
     proxy,
-    chiudi,
+    chiudi: async () => { chiuso = true; await arresta(); },
+    arresta,
+    selezionaPacchetto: (radice) => {
+      if ((radice ? resolve(radice) : null) === bundleRoot) return;
+      if (processo || avvioInCorso || arrestoInCorso) throw erroreGestore("Il Sistema Guidato è in uso", "SG_IN_USE");
+      bundleRoot = radice ? resolve(radice) : null;
+      ultimoErrore = null;
+      manomessa = false;
+    },
+    installazionePrecedente: () => rilevaInstallazionePrecedenteSistemaGuidato({ guiDirectory, dataRoot }),
     diagnostica: () => ({
-      stato: chiuso ? "closed" : endpoint ? "ready" : avvioInCorso ? "starting" : ultimoErrore ? "error" : "idle",
+      stato: arrestoFallito ? "In uso, non rimovibile adesso" : chiuso ? "closed" : !bundleRoot ? "assente" : endpoint ? "ready" : avvioInCorso ? "starting" : manomessa ? "Manomessa" : ultimoErrore ? "error" : "idle",
+      inUso: Boolean(processo || avvioInCorso || arrestoInCorso),
       riavvii,
       ...(ultimoErrore ? { ultimoErrore } : {}),
     }),

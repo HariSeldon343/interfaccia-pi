@@ -20,13 +20,15 @@ import {
   rm,
   copyFile,
 } from "node:fs/promises";
-import { constants as costantiFs, existsSync } from "node:fs";
+import { constants as costantiFs, existsSync, realpathSync } from "node:fs";
 import { join, dirname, resolve, basename, extname, isAbsolute, parse, relative, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
-import { creaGestoreSistemaGuidato } from "./sistema-guidato-manager.mjs";
+import { creaGestoreSistemaGuidato, preparaMigrazioneSistemaGuidato, radiceDatiSistemaGuidato } from "./sistema-guidato-manager.mjs";
+import { creaGestoreEstensioni } from "./estensioni-manager.mjs";
+import { VERSIONE_HOST } from "./versione-host.mjs";
 import { creaGestoreEstrazione } from "./estrazione-worker.mjs";
 import { creaSerializzatore, scriviFileAtomico } from "./persistenza-atomica.mjs";
 import { creaArchivioConsigli } from "./consiglio-store.mjs";
@@ -172,8 +174,17 @@ export function argomentiAvvioPi({
   senzaCartella = false,
   estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
   estensioneConsiglio = null,
+  risorseVerificate = { skills: [], prompts: [] },
 } = {}) {
-  const argomenti = [cliPi, "--mode", "rpc", "--no-extensions"];
+  const argomenti = [cliPi, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"];
+  for (const [tipo, flag] of [["skills", "--skill"], ["prompts", "--prompt-template"]]) {
+    for (const percorso of risorseVerificate[tipo] || []) {
+      if (typeof percorso !== "string" || !isAbsolute(percorso) || /[\r\n\0]/u.test(percorso)) {
+        throw new Error("Il percorso della risorsa verificata non è valido.");
+      }
+      argomenti.push(flag, percorso);
+    }
+  }
   if (senzaCartella) {
     argomenti.push(
       "--no-context-files",
@@ -1951,49 +1962,10 @@ export function rigaMessaggioCronologia(messaggio, massimo = LIMITE_RECORD_CRONO
   return JSON.stringify({ tipo: "messaggio", messaggio: ridotto }) + "\n";
 }
 
-function cartellePreferite(home) {
-  const kdrive = primoEsistente(join(home, "kDrive 2"), join(home, "kDrive"));
-  const voci = [
-    {
-      nome: "Second Brain",
-      descrizione: "Il vault Obsidian",
-      percorso: primoEsistente(
-        join(home, "OneDrive", "Documenti", "SecondBrain"),
-        join(home, "OneDrive", "Desktop", "SecondBrain"),
-      ),
-    },
-    {
-      nome: "Business",
-      descrizione: "I clienti su kDrive",
-      percorso: kdrive ? primoEsistente(join(kdrive, "01_Lavoro", "Business")) : null,
-    },
-    {
-      nome: "Progetti",
-      descrizione: "Sviluppo software",
-      percorso: primoEsistente(join(home, "Progetti")),
-    },
-    {
-      nome: "Desktop",
-      descrizione: "Scrivania di Windows",
-      percorso: primoEsistente(join(home, "OneDrive", "Desktop"), join(home, "Desktop")),
-    },
-    {
-      nome: "Documenti",
-      descrizione: "Cartella documenti",
-      percorso: primoEsistente(
-        join(home, "OneDrive", "Documenti"),
-        join(home, "OneDrive", "Documents"),
-        join(home, "Documents"),
-        join(home, "Documenti"),
-      ),
-    },
-    {
-      nome: "Scaricati",
-      descrizione: "Cartella download",
-      percorso: primoEsistente(join(home, "Downloads")),
-    },
-  ];
-  return voci.filter((voce) => voce.percorso);
+export function cartellePreferite(scelte = [], recenti = []) {
+  return [...new Set([...scelte, ...recenti])]
+    .filter((percorso) => typeof percorso === "string" && isAbsolute(percorso) && existsSync(percorso))
+    .map((percorso) => ({ nome: basename(percorso) || percorso, descrizione: "Cartella scelta di recente", percorso }));
 }
 
 let tipiUnitaWindowsCache = null;
@@ -3542,9 +3514,12 @@ export class SessionePi {
     estensioniBuiltinConsentite = null,
     estensioneSenzaCartella = join(QUI, "no-workspace-guard.mjs"),
     estensioneConsiglio = join(QUI, "consiglio-guard.mjs"),
+    caricaRisorseVerificate = async () => ({ skills: [], prompts: [] }),
   }) {
     this.id = id;
     this.cliPi = cliPi;
+    this.caricaRisorseVerificate = caricaRisorseVerificate;
+    this.applicazioneEstensioniInCorso = false;
     this.identificaFile = identificaFile;
     this.emettiGlobale = emetti;
     // Popolati solo per le sessioni aperte da un consiglio: ruolo, lavoro e
@@ -4106,6 +4081,8 @@ export class SessionePi {
     nome,
     approvaProgetto,
     consiglio = null,
+    risorseVerificate = null,
+    riverificaRisorse = null,
   }) {
     if (!this.cliPi) {
       throw new Error(
@@ -4113,6 +4090,8 @@ export class SessionePi {
       );
     }
 
+    // Anche i riavvii verificano i file prima di toccare il processo esistente.
+    let risorseAvvio = risorseVerificate || await this.caricaRisorseVerificate();
     await this.ferma({ notifica: false });
     this.avvioCompletato = false;
     this.cartella = cartella;
@@ -4148,10 +4127,12 @@ export class SessionePi {
 
     // In PI 0.84.x un comando extension puo chiamare ctx.switchSession/newSession
     // senza esporre il cambio al protocollo RPC. Con piu processi aggirerebbe il
-    // mutex sui JSONL. La GUI mantiene skill, prompt template, context file e
-    // strumenti, ma disabilita la sola discovery delle estensioni. Il pulsante
-    // terminale apre invece PI integrale quando serve quella superficie TUI.
+    // mutex sui JSONL. La GUI disabilita la scoperta di estensioni, skill,
+    // prompt template e temi: skill e prompt entrano solo come percorsi
+    // espliciti verificati. I context file restano soggetti alla fiducia della
+    // cartella. Pi può ancora risolvere i packages dichiarati nei suoi settings.
     this.consiglio = consiglio || null;
+    risorseAvvio = await (riverificaRisorse || this.caricaRisorseVerificate)();
     const argomenti = argomentiAvvioPi({
       cliPi: this.cliPi,
       provider,
@@ -4164,6 +4145,7 @@ export class SessionePi {
       senzaCartella: this.senzaCartella,
       estensioneSenzaCartella: this.estensioneSenzaCartella,
       estensioneConsiglio: this.consiglio ? this.estensioneConsiglio : null,
+      risorseVerificate: risorseAvvio,
     });
 
     const generazione = ++this.generazione;
@@ -4327,6 +4309,9 @@ export class SessionePi {
   }
 
   invia(comando, clientId = null, replayId = null) {
+    if (this.applicazioneEstensioniInCorso && !String(comando?.type || "").startsWith("get_")) {
+      throw erroreHttp("Le estensioni sono in applicazione. Attendi il riavvio della conversazione.", 409);
+    }
     const preventiva = this.compattazionePreventivaInCorso;
     const controllato = this.comandiCompattazionePreventiva.has(comando?.id);
     if (preventiva && ["abort", "abort_compaction"].includes(comando?.type)) {
@@ -5914,7 +5899,7 @@ async function metadatiSessione(percorso, info) {
   return meta;
 }
 
-async function elencaFileSessione(home, limite = 80) {
+async function elencaFileSessione(home) {
   const radice = join(home, ".pi", "agent", "sessions");
   if (!existsSync(radice)) return [];
   const cartelle = await readdir(radice, { withFileTypes: true });
@@ -5938,10 +5923,52 @@ async function elencaFileSessione(home, limite = 80) {
       }
     }
   }
-  candidati.sort((a, b) => b.info.mtimeMs - a.info.mtimeMs);
-  return Promise.all(
-    candidati.slice(0, limite).map(({ percorso, info }) => metadatiSessione(percorso, info)),
-  );
+  const sessioni = [];
+  for (let indice = 0; indice < candidati.length; indice += 32) {
+    const gruppo = await Promise.all(candidati.slice(indice, indice + 32).map(async ({ percorso, info }) => {
+      try { return await metadatiSessione(percorso, info); }
+      catch (errore) { if (errore.code === "ENOENT") return null; throw errore; }
+    }));
+    sessioni.push(...gruppo.filter(Boolean));
+  }
+  return sessioni;
+}
+
+export async function paginaSessioniSalvate(home, { cartella = null, ricerca = "", limite = 80, cursore = null } = {}) {
+  if (!Number.isInteger(limite) || limite < 1 || limite > 200) {
+    throw erroreHttp("Il limite deve essere un intero fra 1 e 200.", 400);
+  }
+  if (typeof ricerca !== "string" || ricerca.length > 500 || (cartella !== null && typeof cartella !== "string")) {
+    throw erroreHttp("Il filtro delle conversazioni non è valido.", 400);
+  }
+  const percorso = cartella ? resolve(cartella).toLowerCase() : null;
+  const testo = ricerca.trim().toLocaleLowerCase("it");
+  const filtro = createHash("sha256").update(JSON.stringify([percorso, testo])).digest("hex");
+  let dopo = null;
+  if (cursore !== null) {
+    try {
+      if (typeof cursore !== "string" || cursore.length > 6000 || !/^[A-Za-z0-9_-]+$/u.test(cursore)) throw new Error();
+      dopo = JSON.parse(Buffer.from(cursore, "base64url").toString("utf8"));
+      if (Object.keys(dopo).sort().join(",") !== "filtro,modificataIl,percorso" || dopo.filtro !== filtro
+        || typeof dopo.percorso !== "string" || typeof dopo.modificataIl !== "string"
+        || !Number.isFinite(Date.parse(dopo.modificataIl))) throw new Error();
+    } catch { throw erroreHttp("Il cursore delle conversazioni non è valido per questa ricerca.", 400); }
+  }
+  let salvate = (await elencaFileSessione(home)).filter((sessione) => (
+    (!percorso || (sessione.cwd && resolve(sessione.cwd).toLowerCase() === percorso))
+    && (!testo || [sessione.nome, sessione.primoMessaggio, sessione.cwd]
+      .some((valore) => String(valore || "").toLocaleLowerCase("it").includes(testo)))
+  ));
+  salvate.sort((a, b) => b.modificataIl.localeCompare(a.modificataIl)
+    || (a.percorso < b.percorso ? -1 : a.percorso > b.percorso ? 1 : 0));
+  if (dopo) salvate = salvate.filter((voce) => voce.modificataIl < dopo.modificataIl
+    || (voce.modificataIl === dopo.modificataIl && voce.percorso > dopo.percorso));
+  const sessioni = salvate.slice(0, limite);
+  const ultima = sessioni.at(-1);
+  const prossimoCursore = salvate.length > limite && ultima
+    ? Buffer.from(JSON.stringify({ filtro, modificataIl: ultima.modificataIl, percorso: ultima.percorso })).toString("base64url")
+    : null;
+  return { sessioni, prossimoCursore };
 }
 
 export function creaPonte({
@@ -5983,6 +6010,8 @@ export function creaPonte({
   scadenzaRebindModelloMs = 30_000,
   timeoutRicaricaCatalogoModelliMs = 25_000,
   gestoreSistemaGuidato = null,
+  portachiavi,
+  ambienteEstensioni = process.env,
   gestoreEstrazione = null,
   launcherToken = null,
   // Punti di aggancio del consiglio: i valori predefiniti sono i moduli dello
@@ -6058,6 +6087,57 @@ export function creaPonte({
   const sistemaGuidato = gestoreSistemaGuidato || creaGestoreSistemaGuidato({
     guiDirectory: QUI,
     piCliPath: cliPi,
+    portachiavi,
+    versioneHost: VERSIONE_HOST,
+    dataRoot: radiceDatiSistemaGuidato({ home, env: ambienteEstensioni }),
+  });
+  let applicazioneEstensioniInCorso = false;
+  let richiesteSistemaGuidato = 0;
+  // L'alias del profilo scelto dal chiamante è una radice autorizzata. Lo
+  // normalizziamo una volta; i collegamenti dentro registro e pacchetti
+  // restano rifiutati dai rispettivi verificatori.
+  const homeEstensioni = existsSync(home) ? realpathSync(home) : resolve(home);
+  const avvisiPersonaliPerSessione = new WeakMap();
+  function diffondiAvvisiRisorsePersonali(sessione) {
+    if (!sessione.avvioCompletato) return;
+    const attivi = estensioni.avvisiRisorsePersonaliAttivi();
+    const precedenti = avvisiPersonaliPerSessione.get(sessione) || new Map();
+    const correnti = new Map(attivi.map((avviso) => [avviso.percorso, avviso.messaggio]));
+    avvisiPersonaliPerSessione.set(sessione, correnti);
+    for (const { percorso, messaggio } of attivi) {
+      if (precedenti.get(percorso) !== messaggio) sessione.diffondi({ type: "gui_errore", messaggio });
+    }
+  }
+  const estensioni = creaGestoreEstensioni({
+    home: homeEstensioni,
+    env: ambienteEstensioni,
+    portachiavi,
+    versioneHost: VERSIONE_HOST,
+    avvisaRisorsaPersonale: () => {
+      for (const sessione of sessioni.values()) diffondiAvvisiRisorsePersonali(sessione);
+    },
+    sessioniOccupate: () => sessioniOccupatePerEstensioni(),
+    rilevaMigrazione: () => sistemaGuidato.installazionePrecedente?.() || null,
+    applicaSessioni: (configurazione, riverifica) => applicaRisorseSessioni(configurazione, riverifica),
+    sospendiSessioni: async () => {
+      const risultati = await Promise.allSettled([...sessioni.values()].map(async (sessione) => {
+        sessione.applicazioneRisorseFallita = true;
+        await fermaSessioneConEstrazione(sessione, { notifica: false });
+        sessione.diffondi({ type: "gui_errore", messaggio: "Errore: la verifica delle estensioni richiede attenzione. La conversazione è stata fermata; bozza, allegati e file salvato restano disponibili." });
+      }));
+      const fallita = risultati.find((risultato) => risultato.status === "rejected");
+      if (fallita) throw fallita.reason;
+    },
+    primaDiInstallare: async ({ manifesto, confermaMigrazione }) => {
+      if (manifesto.id !== "sistema-guidato") return;
+      const esito = await preparaMigrazioneSistemaGuidato({
+        guiDirectory: QUI,
+        dataRoot: radiceDatiSistemaGuidato({ home, env: ambienteEstensioni }),
+        confermata: confermaMigrazione === true,
+        arrestaBackend: () => sistemaGuidato.arresta(),
+      });
+      if (esito.annullata) throw erroreHttp("Il Sistema Guidato ora si installa a parte. Conferma la copia di sicurezza prima dell’installazione; i documenti restano dove sono.", 409);
+    },
   });
   const cacheProviderLocali = new Map();
   const estrazione = gestoreEstrazione || creaGestoreEstrazione({guiDirectory: QUI});
@@ -6073,6 +6153,61 @@ export function creaPonte({
     "System32",
     "taskkill.exe",
   );
+
+  function sessioniOccupatePerEstensioni() {
+    return richiesteSistemaGuidato > 0 || terminali.size > 0 || processiTestConsiglio.size > 0 || consiglio.lavoriInCorso().length > 0
+      || [...sessioni.values()].some((s) => s.proc && (
+        !s.avvioCompletato || s.inEsecuzione || s.proprietariTurni.length || s.revisioniComandi.size
+        || s.cambioSessioneInCorso || s.fileSessioneIncerta || s.compattazioneInCorso
+        || s.compattazionePreventivaInCorso || s.configurazioneModelliInCorso
+        || s.inChiusura || s.chiusuraFallita || s.handoffInCorso || s.loginProviderInCorso
+        || s.esportazioneCondivisioneId || s.rebindModelloInCorso || s.sequenzaCatalogoModelliInCorso
+        || s.cambioModelloSicuroInCorso || s.richiesteInterattivePendenti.size
+      ));
+  }
+
+  async function applicaRisorseSessioni(configurazione, riverifica) {
+    const ferme = [...sessioni.values()].filter((s) => s.proc || s.applicazioneRisorseFallita);
+    const riavviate = new Set();
+    const riavvii = ferme.map((sessione) => ({ sessione, opzioni: {
+      cartella: sessione.cartella, directoryLavoro: sessione.directoryLavoro,
+      senzaCartella: sessione.senzaCartella, provider: sessione.provider,
+      modello: sessione.modello, ragionamento: sessione.ragionamento,
+      sessionPath: sessione.fileSessione, nome: sessione.nomeSessione,
+      approvaProgetto: sessione.approvaProgetto, consiglio: sessione.consiglio,
+    } }));
+    for (const sessione of ferme) sessione.applicazioneEstensioniInCorso = true;
+    try {
+      // Nessuna scheda viene rimossa: identificatori, bozze e allegati restano
+      // associati alla stessa conversazione in tutte le finestre collegate.
+      for (const { sessione, opzioni } of riavvii) {
+        await sessione.verificaIdentitaFileSessione({ consentiInesistente: true });
+        if (!opzioni.sessionPath) throw erroreHttp("La conversazione non ha ancora un percorso di sessione verificato.", 409);
+      }
+      await sistemaGuidato.arresta?.();
+      for (const { sessione, opzioni } of riavvii) {
+        const risorseVerificate = await riverifica();
+        riavviate.add(sessione);
+        await fermaSessioneConEstrazione(sessione, { notifica: false });
+        await sessione.avvia({ ...opzioni, risorseVerificate, riverificaRisorse: riverifica });
+        await completaAvvioSessione(sessione, { consentiInesistente: true });
+        riapriLibreriaSeAttiva(sessione);
+        sessione.applicazioneRisorseFallita = false;
+      }
+    } catch (errore) {
+      // Il manager ripristina la configurazione precedente anche se fallisce
+      // la scrittura atomica del registro dopo il riavvio. Manteniamo le schede
+      // ferme nel gruppo da ripristinare, insieme a bozze e allegati.
+      for (const sessione of riavviate) sessione.applicazioneRisorseFallita = true;
+      throw errore;
+    } finally {
+      // L'endpoint conserva la barriera fino al commit del registro, compreso
+      // l'eventuale rollback. Le chiamate interne senza endpoint la rilasciano qui.
+      if (!applicazioneEstensioniInCorso) {
+        for (const sessione of ferme) sessione.applicazioneEstensioniInCorso = false;
+      }
+    }
+  }
 
   function descriviSessioneSorgente(id) {
     const sessione = id ? sessioni.get(id) : null;
@@ -6101,6 +6236,7 @@ export function creaPonte({
     const sessione = new SessionePi({
       id,
       cliPi,
+      caricaRisorseVerificate: () => estensioni.risorsePerPi(),
       emetti,
       elencaDiscendenti,
       terminaDiscendenti,
@@ -7676,6 +7812,9 @@ export function creaPonte({
     await sessione.confermaIdentitaFileSessione({ consentiInesistente });
     sessione.avvioCompletato = true;
     sessione.notificaAvviata();
+    // Il client crea la conversazione su gui_sessione_avviata: un avviso
+    // precedente verrebbe ignorato, soprattutto al primo avvio dell'app.
+    diffondiAvvisiRisorsePersonali(sessione);
   }
 
   // Alle sessioni vere si aggiungono le schede "Risultato" del consiglio, che
@@ -8110,6 +8249,12 @@ $processo.WaitForExit()
     const metodo = String(richiesta.method || "GET").toUpperCase();
     const vieGet = new Set(["/api/eventi", "/api/stato", "/api/salute"]);
     const viePost = new Set([
+      "/api/estensioni/installa",
+      "/api/estensioni/aggiorna",
+      "/api/estensioni/attiva",
+      "/api/estensioni/applica",
+      "/api/estensioni/rimuovi",
+      "/api/estensioni/torna-versione",
       "/api/consiglio/avvia",
       "/api/consiglio/stato",
       "/api/consiglio/approva",
@@ -8272,9 +8417,17 @@ $processo.WaitForExit()
           );
         }
         const percorsoBackend = `${via.slice("/sistema".length) || "/"}${url.search}`;
+        if (applicazioneEstensioniInCorso) {
+          return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Le estensioni sono in applicazione." }, 409);
+        }
+        richiesteSistemaGuidato += 1;
         try {
+          if (!gestoreSistemaGuidato) {
+            const backend = await estensioni.backendVerificato("sistema-guidato");
+            sistemaGuidato.selezionaPacchetto(backend?.radice || null);
+          }
           await sistemaGuidato.proxy(richiesta, risposta, percorsoBackend);
-        } catch {
+        } catch (errore) {
           if (risposta.headersSent) {
             if (!risposta.destroyed) risposta.destroy();
             return;
@@ -8282,15 +8435,17 @@ $processo.WaitForExit()
           return rifiutaPrimaDelCorpo(
             richiesta,
             risposta,
-            { errore: "Sistema Guidato non disponibile. Ricarica il pannello per riprovare." },
-            503,
+            { errore: errore?.statusHttp ? errore.message : "Sistema Guidato non disponibile. Ricarica il pannello per riprovare." },
+            errore?.statusHttp || 503,
           );
+        } finally {
+          richiesteSistemaGuidato -= 1;
         }
         return;
       }
 
       const metodoAtteso = ["/api/impostazioni", "/api/consiglio/ruoli"].includes(via)
-        ? "GET, POST" : vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
+        ? "GET, POST" : via === "/api/estensioni" || vieGet.has(via) ? "GET" : viePost.has(via) ? "POST" : null;
       if (via.startsWith("/api/") && !metodoAtteso) {
         return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Operazione non trovata" }, 404);
       }
@@ -8309,6 +8464,9 @@ $processo.WaitForExit()
         if (rifiuto) {
           return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: rifiuto }, 403);
         }
+        if (applicazioneEstensioniInCorso) {
+          return rifiutaPrimaDelCorpo(richiesta, risposta, { errore: "Le estensioni sono in applicazione. Attendi il completamento del riavvio." }, 409);
+        }
         if (chiusuraDefinitiva) {
           return rifiutaPrimaDelCorpo(
             richiesta,
@@ -8316,6 +8474,81 @@ $processo.WaitForExit()
             { errore: "Il ponte si sta chiudendo" },
             503,
           );
+        }
+      }
+
+      if (via === "/api/estensioni") {
+        const rifiuto = postAutorizzato({ headers: { ...richiesta.headers, "content-type": "application/json" } });
+        if (rifiuto) return json(risposta, { errore: rifiuto }, 403);
+        if ([...url.searchParams].length) throw erroreHttp("L’elenco delle estensioni non accetta parametri.", 400);
+        return json(risposta, await estensioni.elenco());
+      }
+
+      if (via.startsWith("/api/estensioni/") && post) {
+        if ([...url.searchParams].length) throw erroreHttp("Le operazioni sulle estensioni non accettano parametri nell’indirizzo.", 400);
+        const corpo = await leggiCorpo(richiesta);
+        const azione = via.slice("/api/estensioni/".length);
+        const campi = {
+          installa: ["cartella", "versioneAttesa", "confermaMigrazione"],
+          aggiorna: ["cartella", "versioneAttesa", "confermaMigrazione"],
+          attiva: ["id", "percorso", "attiva", "versioneAttesa"],
+          applica: ["versioneAttesa"],
+          rimuovi: ["id", "versioneAttesa"],
+          "torna-versione": ["id", "versione", "conferma", "versioneAttesa"],
+        };
+        if (!campi[azione] || Object.keys(corpo).some((campo) => !campi[azione].includes(campo))) {
+          throw erroreHttp("La richiesta delle estensioni contiene campi non previsti.", 400);
+        }
+        if (!Number.isSafeInteger(corpo.versioneAttesa) || corpo.versioneAttesa < 0) {
+          throw erroreHttp("La versione attesa del registro non è valida.", 400);
+        }
+        if ((Object.hasOwn(corpo, "id") || ["rimuovi", "torna-versione"].includes(azione))
+          && (typeof corpo.id !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(corpo.id))) {
+          throw erroreHttp("L’identificativo dell’estensione non è valido.", 400);
+        }
+        if (Object.hasOwn(corpo, "percorso") && (typeof corpo.percorso !== "string"
+          || !isAbsolute(corpo.percorso) || /[\r\n\0]/u.test(corpo.percorso))) {
+          throw erroreHttp("Il percorso della risorsa personale non è valido.", 400);
+        }
+        if (azione === "torna-versione" && (typeof corpo.versione !== "string"
+          || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(corpo.versione)
+          || typeof corpo.conferma !== "string")) {
+          throw erroreHttp("Il ritorno richiede una versione numerica e la conferma scritta.", 400);
+        }
+        if (["installa", "aggiorna"].includes(azione) && (
+          typeof corpo.cartella !== "string" || !isAbsolute(corpo.cartella)
+          || (Object.hasOwn(corpo, "confermaMigrazione") && typeof corpo.confermaMigrazione !== "boolean")
+        )) throw erroreHttp("La cartella o la conferma dell’installazione non è valida.", 400);
+        if (azione === "attiva" && (typeof corpo.attiva !== "boolean"
+          || (Object.hasOwn(corpo, "id") === Object.hasOwn(corpo, "percorso")))) {
+          throw erroreHttp("Indica una sola estensione o risorsa personale e lo stato attivo.", 400);
+        }
+        const libera = await acquisisciMutazione();
+        try {
+          if (chiusuraDefinitiva) throw erroreHttp("Il ponte si sta chiudendo.", 503);
+          if (azione === "applica") {
+            applicazioneEstensioniInCorso = true;
+            // Blocca anche richieste già autorizzate che stanno ancora leggendo
+            // il corpo o verificando il JSONL, prima del preflight del manager.
+            for (const sessione of sessioni.values()) sessione.applicazioneEstensioniInCorso = true;
+          }
+          const risultato = await estensioni[azione === "torna-versione" ? "tornaVersione" : azione](corpo);
+          if (azione === "applica" && !gestoreSistemaGuidato) {
+            const backend = await estensioni.backendVerificato("sistema-guidato");
+            sistemaGuidato.selezionaPacchetto(backend?.radice || null);
+          }
+          return json(risposta, risultato);
+        } catch (errore) {
+          if (!errore.statusHttp && /^ESTENSION[EI]_/.test(String(errore.code || ""))) {
+            throw erroreHttp(errore.message, 400);
+          }
+          throw errore;
+        } finally {
+          if (azione === "applica") {
+            applicazioneEstensioniInCorso = false;
+            for (const sessione of sessioni.values()) sessione.applicazioneEstensioniInCorso = false;
+          }
+          libera();
         }
       }
 
@@ -8357,6 +8590,12 @@ $processo.WaitForExit()
           }
         }
         ascoltatori.set(risposta, { clientId, replayId });
+        for (const sessione of sessioni.values()) {
+          if (!sessione.avvioCompletato) continue;
+          for (const { messaggio } of estensioni.avvisiRisorsePersonaliAttivi()) {
+            emetti({ type: "gui_errore", guiSessionId: sessione.id, messaggio }, { rispostaDestinataria: risposta });
+          }
+        }
         riproduciStatoEstensioni(risposta);
         riproduciRisposteRecenti(risposta, replayId);
         riproduciDialoghiPendenti();
@@ -8404,7 +8643,7 @@ $processo.WaitForExit()
           cliPiTrovata: Boolean(cliPi),
           sessioni: statoSessioni(),
           ultimaSessioneId,
-          preferite: cartellePreferite(home),
+          preferite: cartellePreferite([...sessioni.values()].filter((voce) => !voce.senzaCartella).map((voce) => voce.cartella), await leggiRecenti()),
           recenti: await leggiRecenti(),
           radici: await radiciDisponibili(home),
           modelliPredefiniti: cliPi
@@ -8448,15 +8687,12 @@ $processo.WaitForExit()
       if (via === "/api/sessioni-salvate" && post) {
         const corpo = await leggiCorpo(richiesta);
         if (chiusuraDefinitiva) return json(risposta, { errore: "Il ponte si sta chiudendo" }, 503);
-        const cartella = valoreCli(corpo.cartella, "Cartella", 2000);
-        let salvate = await elencaFileSessione(home);
-        if (cartella) {
-          const risolta = resolve(cartella).toLowerCase();
-          salvate = salvate.filter(
-            (sessione) => sessione.cwd && resolve(sessione.cwd).toLowerCase() === risolta,
-          );
+        if (Object.keys(corpo).some((chiave) => !["cartella", "ricerca", "limite", "cursore"].includes(chiave))) {
+          throw erroreHttp("La ricerca delle conversazioni contiene campi non previsti.", 400);
         }
-        salvate = salvate.map((sessione) => {
+        const cartella = valoreCli(corpo.cartella, "Cartella", 2000);
+        const pagina = await paginaSessioniSalvate(home, { ...corpo, cartella: cartella || null });
+        const salvate = pagina.sessioni.map((sessione) => {
           const senzaCartella = percorsoInRadiceSenzaCartella(
             sessione.cwd,
             radiceSenzaCartellaRisolta,
@@ -8467,7 +8703,7 @@ $processo.WaitForExit()
             senzaCartella,
           };
         });
-        return json(risposta, { sessioni: salvate });
+        return json(risposta, { sessioni: salvate, prossimoCursore: pagina.prossimoCursore });
       }
 
       if (via === "/api/cronologia" && post) {
@@ -9235,6 +9471,7 @@ $processo.WaitForExit()
         const sessione = new SessionePi({
           id,
           cliPi,
+          caricaRisorseVerificate: () => estensioni.risorsePerPi(),
           emetti,
           elencaDiscendenti,
           terminaDiscendenti,
@@ -10544,6 +10781,7 @@ $processo.WaitForExit()
     programmaAutoStop,
     emetti,
     sistemaGuidato,
+    estensioni,
     consiglio,
     pulisciFileAllegatiPendentiOrfani,
     numeroAscoltatori: () => ascoltatori.size,

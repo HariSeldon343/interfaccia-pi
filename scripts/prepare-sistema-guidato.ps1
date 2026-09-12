@@ -95,7 +95,7 @@ try {
     Authorization = "Bearer $bundleToken"
     Accept = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
-    'User-Agent' = 'interfaccia-pi-bundle-fetcher/2.8.0'
+    'User-Agent' = 'interfaccia-pi-bundle-fetcher/2.9.0'
   }
   $release = Invoke-RestMethod -Uri $releaseUri -Headers $headers -Method Get
   $assets = @($release.assets | Where-Object { $_.name -ceq $assetName })

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.9.0 Pilot (non-production) — in lavorazione
+
+- P1 introduce pacchetti di estensioni verificati con firma Ed25519 e inventario SHA-256, installazione per utente, registro atomico e attivazione applicata alle sessioni ferme.
+- Skill e prompt entrano in Pi solo da percorsi espliciti verificati; le risorse personali restano intatte e quelle cambiate o assenti vengono escluse con un avviso.
+- Prepara la migrazione del Sistema Guidato con arresto del backend e copia di sicurezza verificata; separa le prove dei pacchetti opzionali dalla suite di base.
+- Aggiunge strumenti locali per generare le chiavi e firmare i pacchetti, controlli del Second Brain e paginazione delle conversazioni salvate dopo filtro e ricerca.
+- Limiti: chiave pubblica di produzione, pacchetti firmati e prova reale di migrazione restano al gate del titolare. Il Sistema Guidato rimane nel bundle fino al superamento del gate.
+- Il pannello Estensioni è predisposto come modulo e verrà montato in P3; durante P1 le operazioni sono disponibili tramite gli endpoint.
+
 ## 2.8.0 Pilot (non-production) — 2026-09-11
 
 - aggiunge il consiglio a più modelli in **Strumenti > Chiedi al consiglio**: la

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,7 +60,7 @@ test("build desktop richiede il vendor verificato e Node 22.19 minimo", async ()
   );
   assert.equal(
     pacchetto.scripts["build:desktop:offline"],
-    "npm run vendor:pi:check && npm run vendor:estrazione:check && npm run vendor:sistema:check && tauri build",
+    "npm run vendor:pi:check && npm run vendor:estrazione:check && node scripts/vendor-sistema-guidato.mjs --check-opzionale && tauri build",
   );
   assert.equal(
     pacchetto.scripts["build:desktop:production"],
@@ -753,4 +753,84 @@ test("manifesto generato, quando presente, non contiene configurazione utente", 
     percorsi.some((percorso) => /(?:^|\/)(?:\.pi|\.agents)(?:\/|$)|(?:^|\/)(?:auth|settings|trust|credentials)\.json$/i.test(percorso)),
     false,
   );
+});
+
+test("la versione dell'host e una sola in tutto il repository", async () => {
+  // Esegue lo stesso controllo dei sei punti senza invocare un comando npm.
+  await import("../scripts/check-release-version.mjs");
+  const [{ INTERVALLO_HOST }, { VERSIONE_HOST }, pacchetto, script, preparatore, fonte, server, manager, manifesto] = await Promise.all([
+    import("../app/sistema-guidato-manager.mjs"),
+    import("../app/versione-host.mjs"),
+    readFile(join(RADICE, "package.json"), "utf8").then(JSON.parse),
+    readFile(join(RADICE, "scripts/vendor-sistema-guidato.mjs"), "utf8"),
+    readFile(join(RADICE, "scripts/prepare-sistema-guidato.ps1"), "utf8"),
+    readFile(join(RADICE, "app/versione-host.mjs"), "utf8"),
+    readFile(join(RADICE, "app/server.mjs"), "utf8"),
+    readFile(join(RADICE, "app/estensioni-manager.mjs"), "utf8"),
+    readFile(join(RADICE, "app/estensioni-manifest.mjs"), "utf8"),
+  ]);
+  assert.equal(pacchetto.version, "2.9.0");
+  assert.equal(VERSIONE_HOST, pacchetto.version);
+  assert.match(fonte, /package\.json/u);
+  assert.doesNotMatch(fonte, /["']\d+\.\d+\.\d+["']/u);
+  assert.deepEqual(INTERVALLO_HOST, { minInclusa: "2.9.0", maxEsclusa: "3.0.0" });
+  for (const sorgente of [script, server, manager, manifesto]) {
+    assert.match(sorgente, /import \{ VERSIONE_HOST \} from ["'][^"']*versione-host\.mjs["']/u);
+    assert.doesNotMatch(sorgente, /(?:versioneHost|VERSIONE_HOST)\s*=\s*["']\d+\.\d+\.\d+["']/u);
+  }
+  assert.match(server, /creaGestoreEstensioni\(\{[\s\S]*?versioneHost: VERSIONE_HOST/u);
+  assert.match(server, /creaGestoreSistemaGuidato\(\{[\s\S]*?versioneHost: VERSIONE_HOST/u);
+  assert.match(manager, /versioneHost = VERSIONE_HOST/u);
+  assert.match(manifesto, /versioneHost = VERSIONE_HOST/u);
+  assert.doesNotMatch(script, /2\.8\.0/u);
+  assert.match(preparatore, /interfaccia-pi-bundle-fetcher\/2\.9\.0/u);
+});
+
+test("npm test non legge il pacchetto opzionale e la build di base non lo prepara", async (t) => {
+  const pacchetto = JSON.parse(await readFile(join(RADICE, "package.json"), "utf8"));
+  assert.equal(pacchetto.scripts.test, "node --test --test-concurrency=1 tests/*.test.mjs app/tests/*.test.mjs");
+  assert.equal(pacchetto.scripts["test:pacchetti"], "node --test --test-concurrency=1 tests-pacchetti/*.test.mjs");
+  assert.doesNotMatch(pacchetto.scripts["build:desktop:offline"], /vendor:sistema:(?:check|prepare)/u);
+  assert.match(pacchetto.scripts["build:desktop:offline"], /node scripts\/vendor-sistema-guidato\.mjs --check-opzionale/u);
+  const { controllaPacchettoOpzionale } = await import("../scripts/vendor-sistema-guidato.mjs");
+  const messaggi = [];
+  const esito = await controllaPacchettoOpzionale({ destinazione: join(RADICE, "tests", "pacchetto-opzionale-assente"), scrivi: (testo) => messaggi.push(testo) });
+  assert.equal(esito.saltato, true);
+  assert.match(messaggi.join(""), /Gate P1:.*firmato assente; controllo saltato/u);
+  const base = await readdir(join(RADICE, "tests"));
+  const separati = await readdir(join(RADICE, "tests-pacchetti"));
+  for (const nome of ["sistema-guidato-runtime-bundle.test.mjs", "sistema-guidato-distribution.test.mjs", "sistema-guidato-manager.test.mjs"]) {
+    assert.equal(base.includes(nome), false, nome);
+    assert.equal(separati.includes(nome), true, nome);
+  }
+  await t.test("la preparazione legacy scompare dalla build e dai workflow al gate", {
+    skip: "Gate P1 aperto: chiave di rilascio, pacchetto firmato e prova reale di migrazione ancora assenti",
+  }, async () => {
+    assert.doesNotMatch(pacchetto.scripts["build:desktop"], /vendor:sistema:prepare/u);
+    for (const nome of ["verifica-windows.yml", "compila-windows.yml", "compila-production-updater-windows.yml"]) {
+      const workflow = await readFile(join(RADICE, ".github/workflows", nome), "utf8");
+      assert.doesNotMatch(workflow, /scripts\/prepare-sistema-guidato\.ps1/u);
+    }
+  });
+});
+
+test("il bundle di base non contiene il Sistema Guidato e contiene i moduli delle estensioni", async (t) => {
+  const [config, pacchetto] = await Promise.all([
+    readFile(join(RADICE, "src-tauri/tauri.conf.json"), "utf8").then(JSON.parse),
+    readFile(join(RADICE, "package.json"), "utf8").then(JSON.parse),
+  ]);
+  for (const nome of ["versione-host.mjs", "estensioni-manifest.mjs", "estensioni-store.mjs", "estensioni-manager.mjs", "estensioni-chiavi.mjs", "estensioni-risorse.mjs", "public/estensioni-core.js"]) {
+    assert.equal(config.bundle.resources["../app/" + nome], "app/" + nome);
+    assert.ok(pacchetto.scripts.check.split(" && ").includes("node --check app/" + nome));
+  }
+  assert.equal(config.bundle.resources["../package.json"], "package.json");
+  for (const nome of ["genera-chiavi-estensioni.mjs", "firma-pacchetto-estensione.mjs"]) {
+    assert.ok(pacchetto.scripts.check.split(" && ").includes("node --check scripts/" + nome));
+  }
+  await t.test("il payload legacy scompare dal bundle al gate", {
+    skip: "Gate P1 aperto: il payload resta fino al pacchetto 2.9 firmato e alla prova reale di migrazione",
+  }, () => {
+    assert.equal(Object.entries(config.bundle.resources).some(([origine, destinazione]) => /sistema-guidato/u.test(origine + "/" + destinazione)
+      && !origine.endsWith("sistema-guidato-manager.mjs")), false);
+  });
 });

@@ -1,16 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 import {
   creaGestoreSistemaGuidato,
+  preparaMigrazioneSistemaGuidato,
   verificaBundleSistemaGuidato,
 } from "../app/sistema-guidato-manager.mjs";
+import { verificaPacchettoEstensione } from "../app/estensioni-manifest.mjs";
+
+const chiaviProva = generateKeyPairSync("ed25519");
+const portachiavi = [{ chiaveId: "prova-sg", pubblica: chiaviProva.publicKey, stato: "attiva", dal: "2026-01-01", primaParte: true }];
 
 const SERVER_FALSO = String.raw`
 import { randomBytes } from "node:crypto";
@@ -73,6 +80,7 @@ const server = createServer(async (request, response) => {
       piNode: process.env.SG_PI_NODE,
       piCli: process.env.SG_PI_CLI,
       templatesDir: process.env.SG_TEMPLATES_DIR,
+      dataDir: process.env.SG_DATA_DIR,
       runtimeBundled: process.env.SG_RUNTIME_BUNDLED,
       trustedSession: sessions.has(sessionCookie),
       forwardedOrigin: request.headers.origin || null,
@@ -149,7 +157,8 @@ async function creaBundleFalso(base) {
     source: { packageVersion: "0.1.0" },
     host: {
       name: "interfaccia-pi",
-      version: "2.8.0",
+      minInclusa: "2.9.0",
+      maxEsclusa: "3.0.0",
       mountPath: "/sistema",
       sameOriginProxy: true,
       interfacciaPiPanel: true,
@@ -167,6 +176,18 @@ async function creaBundleFalso(base) {
     })),
   };
   await writeFile(join(root, "integration-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  const integrazione = await readFile(join(root, "integration-manifest.json"));
+  const manifestoEstensione = {
+    schemaVersion: 1, id: "sistema-guidato", nome: "Sistema Guidato", versione: "1.0.0",
+    editore: "Prova", descrizione: "Pacchetto sintetico", categoria: "backend",
+    host: { minInclusa: "2.9.0", maxEsclusa: "3.0.0" }, pi: { skills: [], prompts: [], themes: [], extensions: [] },
+    pannelli: [{ id: "sistema-guidato", percorso: "/sistema" }], backend: { ingresso: "runtime/server/server.mjs" },
+    files: [...file, ["integration-manifest.json", integrazione]].map(([percorso, contenuto]) => ({ percorso, byte: contenuto.length, sha256: sha256(contenuto) })),
+    limiti: {}, chiaveId: "prova-sg",
+  };
+  const bytes = Buffer.from(JSON.stringify(manifestoEstensione));
+  await writeFile(join(root, "manifesto-estensione.json"), bytes);
+  await writeFile(join(root, "manifest.sig"), sign(null, bytes, chiaviProva.privateKey).toString("base64"));
   return root;
 }
 
@@ -179,13 +200,64 @@ async function attendi(condizione, timeoutMs = 3000) {
   throw new Error("Condizione di test non raggiunta entro il timeout");
 }
 
+test("la migrazione attende l'arresto del backend prima dell'inventario e della copia", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-backup-arresto-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dataRoot = join(base, "dati");
+  await mkdir(dataRoot);
+  await writeFile(join(dataRoot, "prima.txt"), "prima");
+  let fermo = false;
+  const risultato = await preparaMigrazioneSistemaGuidato({ dataRoot, confermata: true,
+    arrestaBackend: async () => {
+      await writeFile(join(dataRoot, "ultima-scrittura.txt"), "ultima scrittura prima dell'arresto");
+      fermo = true;
+    },
+    copiaFile: async (...argomenti) => { assert.equal(fermo, true); await copyFile(...argomenti); },
+  });
+  assert.equal(await readFile(join(risultato.backup, "ultima-scrittura.txt"), "utf8"), "ultima scrittura prima dell'arresto");
+});
+
+test("la migrazione rifiuta l'arresto mancante o fallito senza iniziare il backup", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-backup-in-uso-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dataRoot = join(base, "dati");
+  await mkdir(dataRoot);
+  await assert.rejects(preparaMigrazioneSistemaGuidato({ dataRoot, confermata: true }), { code: "SG_BACKUP_IN_USE" });
+  await assert.rejects(preparaMigrazioneSistemaGuidato({ dataRoot, confermata: true,
+    arrestaBackend: async () => { throw Object.assign(new Error("Ancora in uso"), { code: "SG_IN_USE" }); },
+  }), { code: "SG_IN_USE" });
+  assert.deepEqual(await readdir(base), ["dati"]);
+});
+
+test("il backup rileva file nuovi e directory create durante la copia e rimuove la copia incompleta", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-backup-inventario-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const dataRoot = join(base, "dati");
+  await mkdir(dataRoot);
+  await writeFile(join(dataRoot, "originale.txt"), "originale");
+  for (const tipo of ["file", "directory"]) {
+    const nuovaVoce = join(dataRoot, "nuova-" + tipo);
+    await assert.rejects(preparaMigrazioneSistemaGuidato({ dataRoot, confermata: true, arrestaBackend: async () => {},
+      copiaFile: async (...argomenti) => {
+        await copyFile(...argomenti);
+        if (tipo === "file") await writeFile(nuovaVoce, "comparso durante la copia");
+        else await mkdir(nuovaVoce);
+      },
+    }), { code: "SG_BACKUP_CHANGED" });
+    assert.deepEqual(await readdir(base), ["dati"]);
+    assert.equal(await readFile(join(dataRoot, "originale.txt"), "utf8"), "originale");
+    await rm(nuovaVoce, { recursive: true });
+  }
+});
+
 test("il bundle Sistema Guidato e fail-closed su compatibilita e digest", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "pi-gui-sg-bundle-"));
   t.after(() => rm(base, { recursive: true, force: true }));
   const bundleRoot = await creaBundleFalso(base);
 
   const verificato = await verificaBundleSistemaGuidato(bundleRoot);
-  assert.equal(verificato.manifest.host.version, "2.8.0");
+  assert.equal(verificato.manifest.host.minInclusa, "2.9.0");
+  assert.equal(verificato.manifest.host.maxEsclusa, "3.0.0");
   assert.equal(relative(bundleRoot, verificato.serverPath), join("runtime", "server", "server.mjs"));
 
   await writeFile(join(bundleRoot, "runtime", "dashboard", "index.html"), "alterato");
@@ -193,6 +265,87 @@ test("il bundle Sistema Guidato e fail-closed su compatibilita e digest", async 
     verificaBundleSistemaGuidato(bundleRoot),
     (errore) => errore?.code === "SG_BUNDLE_TAMPERED",
   );
+});
+
+test("il backend firmato viene riverificato prima dell'avvio e nomina il file alterato", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-riverifica-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const bundleRoot = await creaBundleFalso(base);
+  let avvii = 0;
+  const gestore = creaGestoreSistemaGuidato({ guiDirectory: base, bundleRoot, portachiavi, dataRoot: join(base, "dati"),
+    avviaProcesso: () => { avvii += 1; } });
+  await writeFile(join(bundleRoot, "runtime/dashboard/index.html"), "alterato");
+  await assert.rejects(gestore.assicuratiAvviato(), /runtime[\\/]dashboard[\\/]index\.html/u);
+  assert.equal(avvii, 0);
+  assert.equal(gestore.diagnostica().stato, "Manomessa");
+  await gestore.chiudi();
+});
+
+test("un processo ostinato conserva il riferimento e impedisce un secondo backend", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-ostinato-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const bundleRoot = await creaBundleFalso(base);
+  const piCli = join(base, "pi.mjs");
+  await writeFile(piCli, "// Pi sintetico\n");
+  const figlio = Object.assign(new EventEmitter(), { pid: 45678, exitCode: null, signalCode: null, connected: true,
+    stdout: { resume() {} }, stderr: { resume() {} },
+    disconnect() { this.connected = false; }, kill() { return false; },
+  });
+  let avvii = 0;
+  const gestore = creaGestoreSistemaGuidato({ guiDirectory: base, bundleRoot, portachiavi, dataRoot: join(base, "dati"),
+    nodePath: process.execPath, piCliPath: piCli, timeoutArrestoMs: 5,
+    avviaProcesso: () => {
+      avvii += 1;
+      setImmediate(() => figlio.emit("message", { type: "sistema-guidato-ready", pid: figlio.pid, port: 12345, baseUrl: "http://127.0.0.1:12345" }));
+      return figlio;
+    },
+    inviaHttp: (opzioni, rispondi) => Object.assign(new EventEmitter(), { end() {
+      const bootstrap = opzioni.path === "/api/bootstrap";
+      const risposta = Readable.from([Buffer.from(bootstrap ? JSON.stringify({ path: "/__sg/bootstrap", code: "a".repeat(64) }) : "")]);
+      risposta.statusCode = bootstrap ? 200 : 204;
+      risposta.headers = bootstrap ? {} : { "set-cookie": [`sg_local_session=${"b".repeat(64)}; HttpOnly; SameSite=Strict; Max-Age=28800; Path=/`] };
+      setImmediate(() => rispondi(risposta));
+    } }),
+  });
+  t.after(async () => { figlio.exitCode = 0; figlio.emit("exit", 0, null); await gestore.chiudi(); });
+  await gestore.assicuratiAvviato();
+  await assert.rejects(gestore.arresta(), (errore) => errore.code === "SG_IN_USE");
+  assert.equal(gestore.diagnostica().stato, "In uso, non rimovibile adesso");
+  assert.equal(gestore.diagnostica().inUso, true);
+  assert.throws(() => gestore.selezionaPacchetto(null), (errore) => errore.code === "SG_IN_USE");
+  await assert.rejects(gestore.assicuratiAvviato(), (errore) => errore.code === "SG_IN_USE");
+  await assert.rejects(gestore.chiudi(), (errore) => errore.code === "SG_IN_USE");
+  assert.equal(gestore.diagnostica().inUso, true);
+  assert.equal(avvii, 1);
+  figlio.exitCode = 0;
+  figlio.emit("exit", 0, null);
+  await gestore.arresta();
+  gestore.selezionaPacchetto(null);
+  assert.equal(gestore.diagnostica().inUso, false);
+});
+
+test("la riverifica completa immediatamente prima dello spawn blocca una modifica tardiva", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "pi-sg-tardiva-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const bundleRoot = await creaBundleFalso(base);
+  const piCli = join(base, "pi.mjs");
+  await writeFile(piCli, "// Pi sintetico\n");
+  let controlli = 0;
+  let avvii = 0;
+  const gestore = creaGestoreSistemaGuidato({ guiDirectory: base, bundleRoot, portachiavi, dataRoot: join(base, "dati"),
+    nodePath: process.execPath, piCliPath: piCli,
+    verificaPacchetto: async (radice) => {
+      controlli += 1;
+      if (controlli === 2) await writeFile(join(radice, "runtime/dashboard/index.html"), "modifica tardiva");
+      return verificaPacchettoEstensione(radice, { portachiavi });
+    },
+    avviaProcesso: () => { avvii += 1; },
+  });
+  await assert.rejects(gestore.assicuratiAvviato(), /runtime[\\/]dashboard[\\/]index\.html/u);
+  assert.equal(controlli, 2);
+  assert.equal(avvii, 0);
+  assert.equal(gestore.diagnostica().stato, "Manomessa");
+  await gestore.chiudi();
 });
 
 test("il bundle Sistema Guidato rifiuta sourcemap e sourcesContent anche con digest validi", async (t) => {
@@ -285,6 +438,7 @@ test("il bootstrap rifiuta cookie backend privi degli attributi di confinamento"
   const piCli = join(base, "cli-pi-falso.js");
   await writeFile(piCli, "// runtime Pi test\n");
   const gestore = creaGestoreSistemaGuidato({
+    portachiavi,
     guiDirectory: base,
     bundleRoot,
     dataRoot: join(base, "dati"),
@@ -321,6 +475,7 @@ test("singleton lazy, proxy header-only, crash recovery e shutdown restano confi
   const precedenteSegreto = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "non-inoltrare";
   const gestore = creaGestoreSistemaGuidato({
+    portachiavi,
     guiDirectory: base,
     bundleRoot,
     dataRoot: join(base, "dati"),
@@ -378,6 +533,7 @@ test("singleton lazy, proxy header-only, crash recovery e shutdown restano confi
   assert.equal(ambiente.piNode, process.execPath);
   assert.equal(ambiente.piCli, piCli);
   assert.equal(ambiente.templatesDir, join(bundleRoot, "runtime", "templates"));
+  assert.equal(ambiente.dataDir, join(base, "dati"));
   assert.equal(ambiente.runtimeBundled, "1");
   assert.equal(ambiente.trustedSession, true);
   assert.equal(ambiente.forwardedOrigin, null);
