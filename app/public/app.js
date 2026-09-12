@@ -10905,9 +10905,149 @@ function bottoneAzione(testo, azione, classe = "bottone") {
   return bottone;
 }
 
+const TEMA_CORE = globalThis.PiGuiTemaCore;
+if (!TEMA_CORE) throw new Error("Il modulo dei temi non è stato caricato");
+const TEMA_GUI = { scelta: "caldo", confermata: "caldo", revisione: 0, pendenti: 0, coda: Promise.resolve(), media: null };
+
+function normalizzaSceltaTema(scelta) {
+  return ["caldo", "notte", "automatico"].includes(scelta) ? scelta : "caldo";
+}
+
+function applicaSceltaTema(scelta) {
+  TEMA_GUI.scelta = normalizzaSceltaTema(scelta);
+  TEMA_CORE.applicaTema(document, TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light"));
+  try { localStorage.setItem("pi-gui-tema", TEMA_GUI.scelta); } catch { /* Il ponte resta la fonte di verità. */ }
+}
+
+function riceviTemaImpostazioni(impostazioni, revisione) {
+  if (revisione !== TEMA_GUI.revisione || TEMA_GUI.pendenti) return;
+  TEMA_GUI.confermata = normalizzaSceltaTema(impostazioni.tema);
+  applicaSceltaTema(TEMA_GUI.confermata);
+}
+
+function inizializzaTema() {
+  TEMA_GUI.media = window.matchMedia("(prefers-color-scheme: dark)");
+  let ricordo = "caldo";
+  try { ricordo = localStorage.getItem("pi-gui-tema") || "caldo"; } catch { /* Caldo anche senza memoria locale. */ }
+  TEMA_GUI.confermata = normalizzaSceltaTema(ricordo);
+  applicaSceltaTema(TEMA_GUI.confermata);
+  TEMA_GUI.media.addEventListener("change", () => {
+    if (TEMA_GUI.scelta === "automatico") applicaSceltaTema("automatico");
+  });
+  const revisione = TEMA_GUI.revisione;
+  void chiedi("/api/impostazioni")
+    .then((impostazioni) => riceviTemaImpostazioni(impostazioni, revisione))
+    .catch(() => { /* Il ricordo permette l'avvio; Impostazioni consente di riprovare la lettura. */ });
+}
+
+function salvaSceltaTema(scelta) {
+  const tema = normalizzaSceltaTema(scelta);
+  const revisione = ++TEMA_GUI.revisione;
+  TEMA_GUI.pendenti += 1;
+  applicaSceltaTema(tema);
+  // Ordina anche scelte rapide: una risposta vecchia non può ripristinare il tema precedente.
+  const salvataggio = TEMA_GUI.coda.then(async () => {
+    try {
+      const impostazioni = await chiedi("/api/impostazioni", { corpo: { tema } });
+      TEMA_GUI.confermata = normalizzaSceltaTema(impostazioni.tema);
+      if (revisione === TEMA_GUI.revisione) applicaSceltaTema(TEMA_GUI.confermata);
+      return TEMA_GUI.confermata;
+    } catch (errore) {
+      // Una risposta persa può nascondere una scrittura riuscita: rileggi prima del ripristino.
+      let riconciliata = false;
+      try {
+        const impostazioni = await chiedi("/api/impostazioni");
+        TEMA_GUI.confermata = normalizzaSceltaTema(impostazioni.tema);
+        riconciliata = true;
+      } catch { /* Conserva l'ultima preferenza confermata se il ponte è irraggiungibile. */ }
+      if (revisione === TEMA_GUI.revisione) applicaSceltaTema(TEMA_GUI.confermata);
+      if (riconciliata && TEMA_GUI.confermata === tema) return TEMA_GUI.confermata;
+      throw errore;
+    } finally {
+      TEMA_GUI.pendenti -= 1;
+    }
+  });
+  TEMA_GUI.coda = salvataggio.catch(() => {});
+  return salvataggio;
+}
+
+function montaAspettoImpostazioni(corpo, modaleRichiesta) {
+  const revisioneLettura = TEMA_GUI.revisione;
+  const sezione = crea("section", "sezione-avanzata aspetto-impostazioni");
+  sezione.appendChild(crea("h4", null, "Aspetto"));
+  const gruppo = crea("div", "scelte-tema");
+  gruppo.setAttribute("role", "radiogroup");
+  gruppo.setAttribute("aria-label", "Aspetto");
+  const stato = crea("p", "nota", "Leggo il tema salvato...");
+  stato.setAttribute("role", "status");
+  stato.setAttribute("aria-live", "polite");
+  const radioTemi = [];
+  const aggiornaRadio = () => {
+    for (const radio of radioTemi) radio.checked = radio.value === TEMA_GUI.scelta;
+  };
+  const nomi = { caldo: "Caldo", notte: "Notte", automatico: "Automatico" };
+  for (const [valore, nome] of Object.entries(nomi)) {
+    const etichetta = crea("label", "riga-impostazione scelta-tema");
+    const radio = crea("input");
+    radio.type = "radio";
+    radio.name = "tema-gui";
+    radio.id = "tema-gui-" + valore;
+    radio.value = valore;
+    radio.disabled = true;
+    radio.onchange = async () => {
+      if (!radio.checked) return;
+      const salvataggio = salvaSceltaTema(valore);
+      const revisioneScelta = TEMA_GUI.revisione;
+      aggiornaRadio();
+      stato.textContent = "Salvo il tema " + nome + "...";
+      try {
+        const confermata = await salvataggio;
+        if (APP.modale === modaleRichiesta && revisioneScelta === TEMA_GUI.revisione) {
+          aggiornaRadio();
+          stato.textContent = "Tema salvato: " + nomi[confermata] + ".";
+        }
+      } catch (errore) {
+        if (APP.modale === modaleRichiesta && revisioneScelta === TEMA_GUI.revisione) {
+          aggiornaRadio();
+          stato.textContent = "Non riesco a confermare il tema: " + testoErrore(errore)
+            + ". Ultimo tema confermato: " + nomi[TEMA_GUI.confermata] + ".";
+        }
+      }
+    };
+    radioTemi.push(radio);
+    etichetta.append(radio, crea("span", null, nome));
+    gruppo.appendChild(etichetta);
+  }
+  aggiornaRadio();
+  sezione.append(gruppo, crea("p", "nota", "Automatico segue il sistema: Caldo con aspetto chiaro, Notte con aspetto scuro. Le scelte si salvano subito."), stato);
+  corpo.appendChild(sezione);
+  return {
+    sbloccaSenzaPonte() {
+      aggiornaRadio();
+      for (const radio of radioTemi) radio.disabled = false;
+      stato.textContent = "Tema applicato localmente, non confermato dal ponte";
+    },
+    carica(impostazioni) {
+      riceviTemaImpostazioni(impostazioni, revisioneLettura);
+      aggiornaRadio();
+      for (const radio of radioTemi) radio.disabled = false;
+      stato.textContent = "Tema attuale: " + nomi[TEMA_GUI.scelta] + ".";
+      if (TEMA_GUI.pendenti) {
+        const revisioneAttesa = TEMA_GUI.revisione;
+        void TEMA_GUI.coda.then(() => {
+          if (APP.modale !== modaleRichiesta || revisioneAttesa !== TEMA_GUI.revisione) return;
+          aggiornaRadio();
+          stato.textContent = "Ultimo tema confermato: " + nomi[TEMA_GUI.confermata] + ".";
+        });
+      }
+    },
+  };
+}
+
 async function apriImpostazioniGui() {
   const corpo = apriModale("Impostazioni della GUI");
   const modaleRichiesta = APP.modale;
+  const aspetto = montaAspettoImpostazioni(corpo, modaleRichiesta);
   corpo.appendChild(crea("p", "nota",
     "Questa preferenza vale per tutte le conversazioni della GUI ed è conservata ai prossimi avvii. La compattazione automatica di Pi mantiene la tua impostazione separata."));
   const riga = crea("label", "riga-impostazione impostazione-spiegata");
@@ -10987,6 +11127,7 @@ async function apriImpostazioniGui() {
   try {
     const impostazioni = await chiedi("/api/impostazioni");
     if (APP.modale !== modaleRichiesta) return;
+    aspetto.carica(impostazioni);
     valoreSalvato = impostazioni.sogliaCompattazionePercento;
     soglia.value = String(valoreSalvato);
     soglia.oninput();
@@ -10995,6 +11136,7 @@ async function apriImpostazioniGui() {
     stato.textContent = `Soglia attuale: ${valoreSalvato}%. Premi Salva per applicare le modifiche.`;
   } catch (errore) {
     if (APP.modale !== modaleRichiesta) return;
+    aspetto.sbloccaSenzaPonte();
     stato.textContent = "Non riesco a leggere le impostazioni della GUI: " + testoErrore(errore);
     corpo.appendChild(bottoneAzione("Riprova", () => void apriImpostazioniGui()));
   }
@@ -12680,4 +12822,5 @@ async function avvio() {
   }
 }
 
+inizializzaTema();
 avvio();

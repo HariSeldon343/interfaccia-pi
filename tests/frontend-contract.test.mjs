@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -650,7 +651,7 @@ test("i popup restano nel viewport basso e l'attesa dell'ospite usa i colori del
   }
   assert.match(stile, /\.pannello-ospite-attesa\s*\{[^}]*color:\s*var\(--testo\)/);
   assert.match(stile, /\.pannello-ospite-attesa small\s*\{[^}]*color:\s*var\(--testo-debole\)/);
-  assert.match(stile, /\.pannello-ospite-attesa\.errore strong\s*\{[^}]*color:\s*var\(--rosso\)/);
+  assert.match(stile, /\.pannello-ospite-attesa\.errore strong\s*\{[^}]*color:\s*var\(--stato-errore-testo\)/);
 });
 
 test("senza estensioni attive non esiste nessuna voce ISO e il pannello resta un ospite vuoto", () => {
@@ -2571,7 +2572,7 @@ test("l'etichetta della soglia mantiene l'ultimo valore salvato con 89.5 e 49", 
   let corpo;
   let valoreSalvato = 87;
   const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi",
-    "sessioneAttiva", "apriPannelloRuoliConsiglio",
+    "sessioneAttiva", "apriPannelloRuoliConsiglio", "montaAspettoImpostazioni",
     `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
   )(
     app, { modalePiede: piede },
@@ -2583,7 +2584,7 @@ test("l'etichetta della soglia mantiene l'ultimo valore salvato con 89.5 e 49", 
     },
     // Il pannello dei ruoli del consiglio vive nella stessa finestra: qui non
     // è in prova, quindi resta un doppio silenzioso.
-    () => null, async () => {},
+    () => null, async () => {}, () => ({ carica() {} }),
   );
   await apri();
   const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
@@ -2626,7 +2627,7 @@ test("le impostazioni della GUI leggono la soglia salvata e mantengono il valore
   let salvata = 87;
   let fallisce = false;
   const apri = new Function("APP", "DOM", "apriModale", "crea", "bottoneAzione", "chiedi", "testoErrore", "chiudiModale",
-    "sessioneAttiva", "apriPannelloRuoliConsiglio",
+    "sessioneAttiva", "apriPannelloRuoliConsiglio", "montaAspettoImpostazioni",
     `return async function() { ${corpoFunzione("apriImpostazioniGui")} };`,
   )(
     app, { modalePiede: piede },
@@ -2642,7 +2643,7 @@ test("le impostazioni della GUI leggono la soglia salvata e mantengono il valore
       return { sogliaCompattazionePercento: salvata };
     },
     (errore) => errore.message, () => {},
-    () => null, async () => {},
+    () => null, async () => {}, () => ({ carica() {} }),
   );
   const nodi = (nodo) => [nodo, ...nodo.children.flatMap(nodi)];
   const testo = () => nodi(corpo).map((nodo) => nodo.textContent).join(" ");
@@ -3209,6 +3210,367 @@ test("share e login cancellabili usano operazioni stabili senza retry automatici
     "chiusura, pulsante e timeout devono produrre una sola cancellazione");
   assert.doesNotMatch(annulla, /setTimeout|while\s*\(/,
     "la cancellazione auth non deve avere retry automatici");
+});
+
+
+
+function ambienteSalvataggioTema(chiedi) {
+  const stato = { scelta: "caldo", confermata: "caldo", revisione: 0, pendenti: 0, coda: Promise.resolve() };
+  const applicati = [];
+  const ambiente = {
+    TEMA_GUI: stato, chiedi,
+    normalizzaSceltaTema: funzioneProva("normalizzaSceltaTema", "scelta", {}),
+    applicaSceltaTema(scelta) { stato.scelta = scelta; applicati.push(scelta); },
+  };
+  return {
+    stato, applicati,
+    salva: funzioneProva("salvaSceltaTema", "scelta", ambiente),
+    ricevi: funzioneProva("riceviTemaImpostazioni", "impostazioni, revisione", ambiente),
+  };
+}
+
+test("la lettura del ponte fallita sblocca Aspetto sul ricordo locale senza dichiararlo confermato", async () => {
+  for (const ricordo of ["caldo", "notte", "automatico"]) {
+    const { creaNodo } = alberoProva();
+    const corpo = creaNodo("div");
+    const APP = { modale: {} };
+    const richieste = [];
+    const ambiente = {
+      APP, DOM: { modalePiede: creaNodo("footer") }, crea: creaNodo,
+      apriModale: () => corpo, sessioneAttiva: () => null,
+      apriPannelloRuoliConsiglio: async () => {}, chiudiModale() {},
+      testoErrore: (errore) => errore.message,
+      bottoneAzione(testo, azione, classe) {
+        const nodo = creaNodo("button", classe, testo);
+        nodo.onclick = azione;
+        return nodo;
+      },
+      chiedi: async (via) => { richieste.push(via); throw new Error("Ponte non raggiungibile"); },
+    };
+    const tema = ambienteSalvataggioTema(ambiente.chiedi);
+    tema.stato.scelta = ricordo;
+    // Una scelta applicata localmente può differire dall'ultima conferma ricevuta.
+    tema.stato.confermata = ricordo === "notte" ? "caldo" : "notte";
+    ambiente.montaAspettoImpostazioni = funzioneProva("montaAspettoImpostazioni", "corpo, modaleRichiesta", {
+      ...ambiente, TEMA_GUI: tema.stato, riceviTemaImpostazioni: tema.ricevi, salvaSceltaTema: tema.salva,
+    });
+    await funzioneProva("apriImpostazioniGui", "", ambiente, true)();
+    const sezione = corpo.querySelector(".aspetto-impostazioni");
+    const radio = sezione.querySelectorAll("input");
+    assert.deepEqual(radio.map((nodo) => nodo.value), ["caldo", "notte", "automatico"]);
+    assert.ok(radio.every((nodo) => nodo.disabled === false), "il tema resta selezionabile senza ponte");
+    assert.deepEqual(radio.filter((nodo) => nodo.checked).map((nodo) => nodo.value), [ricordo]);
+    const stato = sezione.querySelectorAll("p").find((nodo) => nodo.getAttribute("role") === "status");
+    assert.equal(stato.textContent, "Tema applicato localmente, non confermato dal ponte");
+    assert.equal(stato.getAttribute("aria-live"), "polite");
+    assert.equal(sezione.querySelector("h4")?.textContent, "Aspetto");
+    assert.deepEqual(tema.applicati, [], "l'errore di lettura non sovrascrive la scelta locale");
+    assert.deepEqual(richieste, ["/api/impostazioni"]);
+    assert.ok(corpo.querySelectorAll("input").find((nodo) => nodo.type === "number").disabled,
+      "la soglia del ponte resta disabilitata finché non viene letta");
+    assert.ok(corpo.querySelectorAll("button").some((nodo) => nodo.textContent === "Riprova"));
+  }
+});
+
+test("due scelte rapide del tema si applicano subito e si salvano nell'ordine senza ritorni al tema vecchio", async () => {
+  const richieste = [];
+  const risposte = [];
+  const avviate = [Promise.withResolvers(), Promise.withResolvers()];
+  const { stato, applicati, salva } = ambienteSalvataggioTema((via, opzioni) => {
+    const indice = richieste.length;
+    richieste.push({ via, corpo: opzioni.corpo });
+    return new Promise((resolve) => { risposte.push(resolve); avviate[indice].resolve(); });
+  });
+  const prima = salva("notte");
+  const seconda = salva("automatico");
+  assert.equal(stato.scelta, "automatico", "la scelta è visibile prima della risposta del ponte");
+  assert.deepEqual(applicati, ["notte", "automatico"]);
+  await avviate[0].promise;
+  assert.deepEqual(richieste, [{ via: "/api/impostazioni", corpo: { tema: "notte" } }]);
+  risposte[0]({ tema: "notte" });
+  await prima;
+  await avviate[1].promise;
+  assert.equal(stato.scelta, "automatico", "la risposta precedente non ripristina Notte");
+  assert.deepEqual(applicati, ["notte", "automatico"]);
+  risposte[1]({ tema: "automatico" });
+  await seconda;
+  assert.deepEqual(richieste.map((richiesta) => richiesta.corpo.tema), ["notte", "automatico"]);
+  assert.equal(stato.scelta, "automatico");
+  assert.equal(stato.confermata, "automatico");
+  assert.equal(stato.pendenti, 0);
+});
+
+test("un errore di salvataggio del tema rilegge il ponte, ripristina se necessario e lascia utilizzabile la scelta successiva", async () => {
+  for (const temaRiletto of ["notte", "caldo", null]) {
+    const errore = new Error("Risposta del salvataggio persa");
+    const richieste = [];
+    let primoInvio = true;
+    const { stato, salva } = ambienteSalvataggioTema(async (via, opzioni) => {
+      richieste.push({ via, corpo: opzioni?.corpo });
+      if (opzioni?.corpo) {
+        if (primoInvio) { primoInvio = false; throw errore; }
+        return { tema: opzioni.corpo.tema };
+      }
+      if (temaRiletto === null) throw new Error("Ponte non raggiungibile");
+      return { tema: temaRiletto };
+    });
+    const salvataggio = salva("notte");
+    assert.equal(stato.scelta, "notte");
+    if (temaRiletto === "notte") assert.equal(await salvataggio, "notte", "una rilettura concorde conferma la scrittura");
+    else await assert.rejects(salvataggio, (ricevuto) => ricevuto === errore);
+    assert.equal(stato.scelta, temaRiletto === "notte" ? "notte" : "caldo");
+    assert.equal(stato.confermata, stato.scelta);
+    assert.equal(stato.pendenti, 0);
+    assert.deepEqual(richieste, [
+      { via: "/api/impostazioni", corpo: { tema: "notte" } },
+      { via: "/api/impostazioni", corpo: undefined },
+    ]);
+    assert.equal(await salva("automatico"), "automatico", "l'errore precedente non blocca la coda");
+    assert.equal(stato.scelta, "automatico");
+    assert.equal(stato.pendenti, 0);
+  }
+});
+
+test("una lettura delle impostazioni in ritardo non annulla una scelta locale più recente o pendente", () => {
+  const { stato, applicati, ricevi } = ambienteSalvataggioTema(() => assert.fail("la ricezione non deve inviare richieste"));
+  stato.scelta = "automatico";
+  stato.revisione = 1;
+  stato.pendenti = 1;
+  ricevi({ tema: "notte" }, 0);
+  ricevi({ tema: "notte" }, 1);
+  assert.deepEqual(applicati, []);
+  assert.equal(stato.scelta, "automatico");
+  stato.pendenti = 0;
+  ricevi({ tema: "notte" }, 0);
+  assert.deepEqual(applicati, [], "una vecchia lettura resta vecchia dopo il salvataggio");
+  ricevi({ tema: "notte" }, 1);
+  assert.equal(stato.scelta, "notte", "una lettura corrente del ponte è la fonte di verità");
+  assert.equal(stato.confermata, "notte");
+  assert.deepEqual(applicati, ["notte"]);
+});
+
+function verificaGettoniTema(css) {
+  const senzaCommenti = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const blocchi = [...senzaCommenti.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  assert.ok(blocchi.length >= 2, "mancano i due blocchi dei gettoni");
+  assert.equal(blocchi[0].index, 0, "i gettoni devono aprire il foglio di stile");
+  assert.match(blocchi[0][1].trim(), /^:root\s*,\s*\[data-tema=["']notte["']\]$/,
+    "il primo blocco unisce :root e il tema Notte");
+  assert.match(blocchi[1][1].trim(), /^\[data-tema=["']caldo["']\]$/,
+    "il secondo blocco contiene il tema Caldo");
+  for (const blocco of blocchi.slice(0, 2)) {
+    for (const dichiarazione of blocco[2].split(";").map((voce) => voce.trim()).filter(Boolean)) {
+      assert.match(dichiarazione, /^--[\w-]+\s*:/, "i blocchi iniziali contengono soltanto gettoni");
+    }
+  }
+  const resto = senzaCommenti.slice(blocchi[1].index + blocchi[1][0].length);
+  assert.doesNotMatch(resto, /(?:^|[{},])\s*:root(?=[\s,{.:#\[])/,
+    "nessun altro :root può sovrascrivere i gettoni in cascata");
+  assert.doesNotMatch(resto, /(?:^|[}])\s*\[data-tema=["'](?:caldo|notte)["']\]\s*\{/,
+    "ogni tema ha un solo blocco dei gettoni");
+  const colore = /#[\da-f]{3,8}\b|\b(?:rgba?|hsla?)\s*\(/i;
+  // Il controllo legge valori CSS: un selettore ID non è un colore.
+  for (const dichiarazione of resto.matchAll(/(?:^|[;{])\s*[\w-]+\s*:\s*([^;{}]*)/g)) {
+    const letterale = dichiarazione[1].match(colore);
+    assert.equal(letterale, null,
+      "colore letterale fuori dai blocchi dei gettoni: " + (letterale?.[0] || ""));
+  }
+}
+
+test("i colori CSS sono gettoni dichiarati soltanto nei due blocchi iniziali", () => {
+  verificaGettoniTema(stile);
+});
+
+test("il contratto dei gettoni rileva colori fuori blocco in ogni sintassi", () => {
+  const valido = ':root, [data-tema="notte"] { --fondo: #000000; }\n[data-tema="caldo"] { --fondo: #ffffff; }\n#abc { color: var(--testo); }';
+  verificaGettoniTema(valido);
+  for (const colore of ["#123456", "#abc", "#abcd", "#12345678", "rgb(1, 2, 3)", "rgba(1, 2, 3, 0.5)", "hsl(1 2% 3%)", "hsla(1, 2%, 3%, 0.5)"]) {
+    assert.throws(() => verificaGettoniTema(valido + "\n.esca { color: " + colore + "; }"),
+      /colore letterale fuori dai blocchi dei gettoni/);
+    assert.throws(() => verificaGettoniTema(valido + "\n@media (width < 980px) { .esca { box-shadow: 0 0 2px " + colore + "; } }"),
+      /colore letterale fuori dai blocchi dei gettoni/);
+  }
+  assert.throws(() => verificaGettoniTema(valido + "\n:root { --fondo: #123456; }"), /nessun altro :root/);
+});
+
+const PROTEZIONI_TESTI_TINTI = [
+  ["#btn-modello .pillola-etichetta", "modello-testo-etichetta"],
+  [".riga-conversazione.attiva .conversazione-stato", "testo-su-riempimento"],
+  [".contesto-esteso-gpt .nota", "testo-su-riempimento"],
+  [".contesto-esteso-gpt .nota-costo-contesto", "testo-su-riempimento"],
+  [".cronologia-in-attesa .nota", "testo-su-riempimento"],
+  [".esplora-riga:hover .esplora-cartella-testo small", "testo-su-riempimento"],
+  [".esplora-riga.selezionata .esplora-cartella-testo small", "testo-su-riempimento"],
+  [".voce.attiva .voce-testo small:not(.avviso-modello)", "voce-attiva-secondario"],
+];
+
+function verificaTestiSuFondiTinti(css, protezioni = []) {
+  const blocchi = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+  const gettoniCaldo = new Map();
+  const regole = new Map();
+  for (const [, selettori, corpo] of blocchi) {
+    const dichiarazioni = [...corpo.matchAll(/(?:^|;)\s*([\w-]+)\s*:\s*([^;]*)/g)]
+      .map(([, nome, valore]) => [nome, valore.trim()]);
+    if (/^\s*\[data-tema=["']caldo["']\]\s*$/.test(selettori)) {
+      for (const [nome, valore] of dichiarazioni) gettoniCaldo.set(nome, valore);
+    } else if (!selettori.includes(":root") && !selettori.includes("data-tema=")) {
+      for (const selettore of selettori.split(",").map((voce) => voce.trim().replace(/\s+/g, " "))) {
+        const regola = regole.get(selettore) || new Map();
+        for (const [nome, valore] of dichiarazioni) regola.set(nome, valore);
+        regole.set(selettore, regola);
+      }
+    }
+  }
+  function usaGettone(valore, cercati, visitati = new Set()) {
+    for (const [, nome] of (valore || "").matchAll(/var\(\s*(--[\w-]+)/g)) {
+      if (cercati.has(nome)) return true;
+      if (visitati.has(nome)) continue;
+      visitati.add(nome);
+      if (usaGettone(gettoniCaldo.get(nome), cercati, visitati)) return true;
+    }
+    return false;
+  }
+  const fondiTinti = new Set(["--selezione", "--verde-fondo", "--azzurro-fondo", "--ambra-fondo"]);
+  const testiVietati = new Set(["--testo-debole", "--accento"]);
+  const selettoriTinti = [...regole].filter(([, regola]) =>
+    usaGettone(regola.get("background"), fondiTinti) || usaGettone(regola.get("background-color"), fondiTinti))
+    .map(([selettore]) => selettore);
+  // Contratto statico: selettori identici e discendenti espliciti, senza simulare DOM o media query.
+  for (const [selettore, regola] of regole) {
+    const suFondoTinto = selettoriTinti.some((fondo) => selettore === fondo
+      || (selettore.startsWith(fondo) && /^[\s>.:#\[]/.test(selettore.slice(fondo.length))));
+    if (suFondoTinto) assert.equal(usaGettone(regola.get("color"), testiVietati), false,
+      "testo debole o accento su fondo tinto: " + selettore);
+  }
+  // Questi override proteggono anche i colori provenienti da selettori generici, come .nota.
+  for (const [selettore, gettone] of protezioni) {
+    assert.equal(regole.get(selettore)?.get("color"), "var(--" + gettone + ")",
+      "manca la protezione del testo su fondo tinto: " + selettore);
+    assert.equal(usaGettone(gettoniCaldo.get("--" + gettone), testiVietati), false,
+      "la protezione del testo Caldo non deve risolvere a un colore vietato: " + gettone);
+  }
+}
+
+test("i testi sui fondi tinti Caldo escludono testo debole e accento, anche tramite alias", () => {
+  verificaTestiSuFondiTinti(stile, PROTEZIONI_TESTI_TINTI);
+});
+
+test("il contratto dei fondi tinti rileva blocchi separati, discendenti e override rimossi", () => {
+  const alias = '[data-tema="caldo"] { --fondo-esca: var(--selezione); --testo-esca: var(--testo-debole); }\n';
+  for (const fondo of ["selezione", "verde-fondo", "azzurro-fondo", "ambra-fondo", "fondo-esca"]) {
+    for (const testo of ["testo-debole", "accento", "testo-esca"]) {
+      for (const regole of [
+        ".esca { background: var(--" + fondo + "); color: var(--" + testo + "); }",
+        ".esca { color: var(--" + testo + "); } .esca { background-color: var(--" + fondo + "); }",
+        ".esca { background: var(--" + fondo + "); } .esca small { color: var(--" + testo + "); }",
+      ]) assert.throws(() => verificaTestiSuFondiTinti(alias + regole), /testo debole o accento su fondo tinto/);
+    }
+  }
+  const corretto = alias + ".esca { background: var(--fondo-esca); } .esca small { color: var(--testo-debole); }"
+    + " .esca small { color: var(--testo-tenue); }";
+  verificaTestiSuFondiTinti(corretto);
+  assert.throws(() => verificaTestiSuFondiTinti(corretto + " .esca small { color: var(--accento); }"),
+    /testo debole o accento su fondo tinto/);
+  for (const gettone of ["testo-su-riempimento", "voce-attiva-secondario", "modello-testo-etichetta"]) {
+    const senzaProtezione = stile.replace(new RegExp("color:\\s*var\\(--" + gettone + "\\)\\s*;", "g"), "");
+    assert.notEqual(senzaProtezione, stile, "la prova deve rimuovere un override esistente");
+    assert.throws(() => verificaTestiSuFondiTinti(senzaProtezione, PROTEZIONI_TESTI_TINTI),
+      /testo debole o accento su fondo tinto|manca la protezione del testo su fondo tinto/);
+  }
+});
+
+function scriptTemaIniziale() {
+  const foglio = elementiHtml.find((nodo) => nodo.tag === "link" && nodo.attributi.get("rel") === "stylesheet");
+  assert.ok(foglio, "manca il foglio di stile");
+  const script = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    .find((candidato) => !attributi(candidato[1]).has("src") && candidato[2].includes("pi-gui-tema"));
+  assert.ok(script, "manca lo script inline del ricordo del tema");
+  const testa = html.match(/<head\b[^>]*>/i);
+  assert.ok(script.index > testa.index && script.index < html.search(/<\/head>/i), "il tema iniziale si applica nel head");
+  assert.ok(script.index + script[0].length < foglio.indice, "il tema si applica prima del foglio di stile");
+  const attributiScript = attributi(script[1]);
+  assert.equal(attributiScript.has("defer"), false);
+  assert.equal(attributiScript.has("async"), false);
+  assert.notEqual(attributiScript.get("type"), "module", "la prima pittura non deve attendere un modulo");
+  return script[2];
+}
+
+test("il ricordo del tema si applica prima del CSS senza interrompere l'ordine di avvio", async () => {
+  scriptTemaIniziale();
+  const scriptEsterni = elementiHtml.filter((nodo) => nodo.tag === "script" && nodo.attributi.has("src"))
+    .map((nodo) => nodo.attributi.get("src"));
+  const indiceTema = scriptEsterni.indexOf("/tema-core.js");
+  const indiceAvvio = scriptEsterni.indexOf("/startup-core.js");
+  assert.ok(indiceTema >= 0 && indiceTema < indiceAvvio, "il modulo tema precede l'avvio del frontend");
+  assert.equal(scriptEsterni[indiceAvvio + 1], "/app.js");
+  assert.match(html, /<script src="\/startup-core\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+  const config = JSON.parse(await readFile(join(RADICE, "src-tauri/tauri.conf.json"), "utf8"));
+  assert.equal(config.bundle.resources["../app/public/tema-core.js"], "app/public/tema-core.js");
+});
+
+
+function verificaFontiScriptCsp(csp, hash, nome) {
+  assert.ok(csp, "manca la CSP del " + nome);
+  const direttiveScript = csp.split(";").map((direttiva) => direttiva.trim().split(/\s+/))
+    .filter(([direttiva]) => direttiva.toLowerCase() === "script-src");
+  assert.equal(direttiveScript.length, 1, "la CSP del " + nome + " deve avere un solo script-src");
+  assert.deepEqual(direttiveScript[0].slice(1).sort(), ["'self'", hash].sort(),
+    "la CSP del " + nome + " deve autorizzare soltanto self e l'hash esatto dello script iniziale");
+  assert.doesNotMatch(csp, /'unsafe-(?:inline|eval)'/i, "il tema non allarga la CSP del " + nome);
+}
+
+test("la CSP del ponte e del desktop autorizza soltanto self e l'hash dello script iniziale", async () => {
+  const hash = "'sha256-" + createHash("sha256").update(scriptTemaIniziale().replace(/\r\n?/g, "\n")).digest("base64") + "'";
+  const [server, config] = await Promise.all([
+    readFile(join(RADICE, "app/server.mjs"), "utf8"),
+    readFile(join(RADICE, "src-tauri/tauri.conf.json"), "utf8").then(JSON.parse),
+  ]);
+  const cspPonte = server.match(/"content-security-policy":\s*"([^"]*)"/)?.[1];
+  for (const [nome, csp] of [["ponte", cspPonte], ["desktop", config.app.security.csp]]) {
+    verificaFontiScriptCsp(csp, hash, nome);
+  }
+});
+
+test("il contratto CSP respinge fonti script aggiuntive, mancanti e direttive duplicate", () => {
+  const hash = "'sha256-esempio'";
+  const valida = "default-src 'self'; script-src 'self' " + hash;
+  verificaFontiScriptCsp(valida, hash, "esempio");
+  verificaFontiScriptCsp("script-src " + hash + " 'self';", hash, "ordine inverso");
+  for (const fonte of ["https://esempio.invalid", "*", "'sha256-altro'", "'self'", hash]) {
+    assert.throws(() => verificaFontiScriptCsp(valida + " " + fonte, hash, "fonte aggiunta"),
+      /deve autorizzare soltanto self e l'hash esatto/);
+  }
+  assert.throws(() => verificaFontiScriptCsp("script-src " + hash, hash, "self assente"),
+    /deve autorizzare soltanto self e l'hash esatto/);
+  for (const duplicata of ["script-src 'none'", "SCRIPT-SRC 'self' " + hash, "script-src"]) {
+    assert.throws(() => verificaFontiScriptCsp(valida + "; " + duplicata, hash, "direttiva duplicata"),
+      /deve avere un solo script-src/);
+  }
+});
+
+test("la prima pittura rispetta ricordo, schema di sistema e storage indisponibile", () => {
+  const sorgente = scriptTemaIniziale();
+  for (const [scelta, scuro, atteso] of [
+    [null, false, "caldo"], [null, true, "caldo"],
+    ["caldo", true, "caldo"], ["notte", false, "notte"],
+    ["automatico", false, "caldo"], ["automatico", true, "notte"],
+    ["sconosciuto", true, "caldo"],
+  ]) {
+    const radice = { dataset: {}, style: {}, setAttribute(nome, valore) { this.dataset[nome.slice(5)] = valore; } };
+    radice.style.setProperty = (nome, valore) => { radice.style[nome === "color-scheme" ? "colorScheme" : nome] = valore; };
+    const document = { documentElement: radice };
+    const localStorage = { "pi-gui-tema": scelta, getItem: (chiave) => chiave === "pi-gui-tema" ? scelta : null };
+    const matchMedia = (query) => { assert.equal(query, "(prefers-color-scheme: dark)"); return { matches: scuro }; };
+    new Function("document", "localStorage", "matchMedia", "window", sorgente)(document, localStorage, matchMedia, { document, localStorage, matchMedia });
+    assert.equal(radice.dataset.tema, atteso, "ricordo " + scelta + ", sistema " + (scuro ? "scuro" : "chiaro"));
+  }
+  const radice = { dataset: {}, style: {}, setAttribute(nome, valore) { this.dataset[nome.slice(5)] = valore; } };
+  radice.style.setProperty = (nome, valore) => { radice.style[nome === "color-scheme" ? "colorScheme" : nome] = valore; };
+  const document = { documentElement: radice };
+  const localStorage = new Proxy({}, { get() { throw new Error("storage non disponibile"); } });
+  const matchMedia = () => ({ matches: true });
+  assert.doesNotThrow(() => new Function("document", "localStorage", "matchMedia", "window", sorgente)(document, localStorage, matchMedia, { document, localStorage, matchMedia }));
+  assert.equal(radice.dataset.tema, "caldo", "senza storage il tema predefinito resta applicabile");
 });
 
 test("il nuovo tema continua a stilizzare i nodi creati dinamicamente da app.js", () => {

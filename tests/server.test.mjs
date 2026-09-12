@@ -50,7 +50,9 @@ import {
   unificaCatalogoCapacita,
   validaCatalogoBuiltinPi,
   configuraCapacitaMassimaGpt56,
+  validaImpostazioniGui,
 } from "../app/server.mjs";
+import { configurazioneConsiglioPredefinita } from "../app/consiglio-ruoli.mjs";
 import { BUILTIN_SLASH_COMMANDS } from "../vendor/pi-runtime/pi/dist/core/slash-commands.js";
 
 const QUI = dirname(fileURLToPath(import.meta.url));
@@ -769,12 +771,12 @@ test("le cartelle preferite non contengono nomi personali", async (t) => {
   assert.doesNotMatch(cartellePreferite.toString(), /Second Brain|Business|kDrive|Obsidian/);
 });
 
-test("default 90 quando il file manca", async (t) => {
+test("default 90 e tema caldo quando il file manca", async (t) => {
   const ambiente = await avviaPonteTest();
   t.after(ambiente.chiudi);
   const risposta = await fetch(ambiente.base + "/api/impostazioni");
   assert.equal(risposta.status, 200);
-  assert.deepEqual(await risposta.json(), { sogliaCompattazionePercento: 90 });
+  assert.deepEqual(await risposta.json(), { sogliaCompattazionePercento: 90, tema: "caldo" });
   await assert.rejects(stat(join(ambiente.home, ".pi", "gui", "impostazioni.json")), { code: "ENOENT" });
 });
 
@@ -793,12 +795,55 @@ test("rifiuta valori fuori 50-95 e non numerici", async (t) => {
   assert.equal(metodo.status, 405);
   assert.equal(metodo.headers.get("allow"), "GET, POST");
   await metodo.text();
-  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90 });
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90, tema: "caldo" });
   for (const sogliaCompattazionePercento of [50, 95]) {
     const esito = await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento });
     assert.equal(esito.risposta.status, 200);
-    assert.deepEqual(esito.dati, { sogliaCompattazionePercento });
+    assert.deepEqual(esito.dati, { sogliaCompattazionePercento, tema: "caldo" });
   }
+});
+
+test("il validatore accetta soltanto i tre temi e conserva le altre chiavi", () => {
+  const consiglio = configurazioneConsiglioPredefinita();
+  for (const tema of ["caldo", "notte", "automatico"]) {
+    assert.deepEqual(validaImpostazioniGui({ tema }), { tema });
+    const valide = validaImpostazioniGui({ tema, sogliaCompattazionePercento: 82, consiglio });
+    assert.equal(valide.tema, tema);
+    assert.equal(valide.sogliaCompattazionePercento, 82);
+    assert.deepEqual(valide.consiglio, consiglio);
+  }
+  for (const tema of ["", "scuro", "Caldo", "light", null, true, 1, {}, []]) {
+    assert.throws(() => validaImpostazioniGui({ tema }), (errore) => {
+      assert.equal(errore.statusHttp, 400);
+      assert.match(errore.message, /tema deve essere caldo, notte o automatico/);
+      return true;
+    });
+  }
+});
+
+test("i temi sono persistiti senza perdere soglia e ruoli e i valori sconosciuti sono rifiutati", async (t) => {
+  const ambiente = await avviaPonteTest();
+  t.after(ambiente.chiudi);
+  const consiglio = configurazioneConsiglioPredefinita();
+  const iniziale = await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 82, consiglio });
+  assert.equal(iniziale.risposta.status, 200);
+  for (const tema of ["notte", "automatico", "caldo"]) {
+    const esito = await ambiente.post("/api/impostazioni", { tema });
+    assert.equal(esito.risposta.status, 200);
+    assert.equal(esito.dati.tema, tema);
+    assert.equal(esito.dati.sogliaCompattazionePercento, 82);
+    assert.deepEqual(esito.dati.consiglio, consiglio);
+    assert.deepEqual(JSON.parse(await readFile(join(ambiente.home, ".pi", "gui", "impostazioni.json"), "utf8")), esito.dati);
+  }
+  const sconosciuto = await ambiente.post("/api/impostazioni", { tema: "scuro" });
+  assert.equal(sconosciuto.risposta.status, 400);
+  const dopoErrore = await (await fetch(ambiente.base + "/api/impostazioni")).json();
+  assert.deepEqual(dopoErrore, { tema: "caldo", sogliaCompattazionePercento: 82, consiglio });
+  const notte = await ambiente.post("/api/impostazioni", { tema: "notte" });
+  assert.equal(notte.risposta.status, 200);
+  const soloSoglia = await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 77 });
+  assert.equal(soloSoglia.dati.tema, "notte");
+  assert.deepEqual(soloSoglia.dati.consiglio, consiglio);
 });
 
 test("persistenza al riavvio del ponte", async (t) => {
@@ -807,11 +852,11 @@ test("persistenza al riavvio del ponte", async (t) => {
   t.after(primo.chiudi);
   const scrittura = await primo.post("/api/impostazioni", { sogliaCompattazionePercento: 87 });
   assert.equal(scrittura.risposta.status, 200);
-  assert.deepEqual(JSON.parse(await readFile(join(primo.home, ".pi", "gui", "impostazioni.json"), "utf8")), { sogliaCompattazionePercento: 87 });
+  assert.deepEqual(JSON.parse(await readFile(join(primo.home, ".pi", "gui", "impostazioni.json"), "utf8")), { sogliaCompattazionePercento: 87, tema: "caldo" });
   await primo.chiudi();
   const secondo = await avviaPonteTest({ home: primo.home, conservaHome: true });
   t.after(secondo.chiudi);
-  assert.deepEqual(await (await fetch(secondo.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87 });
+  assert.deepEqual(await (await fetch(secondo.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87, tema: "caldo" });
 });
 
 test("un file impostazioni non valido resta intatto e può essere corretto dalla GUI", async (t) => {
@@ -822,12 +867,12 @@ test("un file impostazioni non valido resta intatto e può essere corretto dalla
   } });
   t.after(ambiente.chiudi);
   const percorso = join(ambiente.home, ".pi", "gui", "impostazioni.json");
-  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90 });
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 90, tema: "caldo" });
   assert.equal(await readFile(percorso, "utf8"), "{non valido");
   assert.equal(avviso.mock.callCount(), 1);
   assert.equal((await ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 87 })).risposta.status, 200);
-  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87 });
-  assert.deepEqual(JSON.parse(await readFile(percorso, "utf8")), { sogliaCompattazionePercento: 87 });
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 87, tema: "caldo" });
+  assert.deepEqual(JSON.parse(await readFile(percorso, "utf8")), { sogliaCompattazionePercento: 87, tema: "caldo" });
 });
 
 test("scrittura fallita conserva file e valore precedenti", async (t) => {
@@ -854,7 +899,7 @@ test("scrittura fallita conserva file e valore precedenti", async (t) => {
   const scrittura = ambiente.post("/api/impostazioni", { sogliaCompattazionePercento: 95 });
   await arrivata;
   try {
-    assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80 });
+    assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80, tema: "caldo" });
     assert.equal(await readFile(percorso, "utf8"), originale);
   } finally {
     sblocca();
@@ -863,7 +908,7 @@ test("scrittura fallita conserva file e valore precedenti", async (t) => {
   assert.equal(esito.risposta.status, 500);
   assert.match(esito.dati.errore, /Scrittura delle impostazioni simulata/);
   assert.equal(await readFile(percorso, "utf8"), originale);
-  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80 });
+  assert.deepEqual(await (await fetch(ambiente.base + "/api/impostazioni")).json(), { sogliaCompattazionePercento: 80, tema: "caldo" });
   assert.deepEqual((await readdir(dirname(percorso))).filter((nome) => nome.startsWith("impostazioni.json")), ["impostazioni.json"]);
 });
 

@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://localhost:4666; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' http://localhost:4666 ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self'; script-src 'self'"
+      "csp": "default-src 'self' http://localhost:4666; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' http://localhost:4666 ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self'; script-src 'self' 'sha256-9XqM1noO6ltAmDlLoSAtRss88476Y+GV2ccuvUEsUuY='"
     }
   },
   "bundle": {
@@ -74,6 +74,7 @@
       "../app/public/library-core.js": "app/public/library-core.js",
       "../app/public/view-core.js": "app/public/view-core.js",
       "../app/public/navigazione-core.js": "app/public/navigazione-core.js",
+      "../app/public/tema-core.js": "app/public/tema-core.js",
       "../app/public/consiglio-core.js": "app/public/consiglio-core.js",
       "../app/public/agenti-core.js": "app/public/agenti-core.js",
       "../app/public/updater-core.js": "app/public/updater-core.js",

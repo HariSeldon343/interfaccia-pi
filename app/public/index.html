@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Interfaccia pi</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ctext x='12' y='49' font-size='52'%3Eπ%3C/text%3E%3C/svg%3E">
+  <script id="tema-iniziale">
+    (() => {
+      let scelta = "caldo";
+      try { scelta = localStorage.getItem("pi-gui-tema") || "caldo"; } catch { /* Memoria locale non disponibile. */ }
+      const notte = scelta === "notte" || (scelta === "automatico" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.setAttribute("data-tema", notte ? "notte" : "caldo");
+      document.documentElement.style.colorScheme = notte ? "dark" : "light";
+    })();
+  </script>
   <link rel="stylesheet" href="/stile.css">
 </head>
 <body>
@@ -277,6 +286,7 @@
   <script src="/estensioni-core.js"></script>
   <script src="/agenti-core.js"></script><!-- PiGuiAgentiCore -->
   <script src="/navigazione-core.js"></script>
+  <script src="/tema-core.js"></script>
   <script src="/startup-core.js"></script>
   <script src="/app.js"></script>
 </body>

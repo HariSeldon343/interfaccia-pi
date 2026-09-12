@@ -3047,19 +3047,19 @@ function erroreHttp(messaggio, stato = 400) {
   return errore;
 }
 
-// Le impostazioni della GUI hanno due chiavi: la soglia di compattazione e i
-// ruoli del consiglio. Il validatore accetta l'una, l'altra o entrambe; il
-// salvataggio fonde, cosi un client che conosce solo la soglia non cancella i
-// ruoli e viceversa.
+// Le impostazioni della GUI hanno tre chiavi: soglia di compattazione, ruoli
+// del consiglio e tema. Il validatore accetta ogni combinazione non vuota; il
+// salvataggio fonde, così un client che conosce soltanto una preferenza
+// conserva anche le altre.
 export function validaImpostazioniGui(valore) {
   if (!oggettoJson(valore)) {
     throw erroreHttp("sogliaCompattazionePercento deve essere un intero fra 50 e 95, senza altri campi", 400);
   }
   const chiavi = Object.keys(valore);
-  const ammesse = ["sogliaCompattazionePercento", "consiglio"];
+  const ammesse = ["sogliaCompattazionePercento", "consiglio", "tema"];
   if (!chiavi.length || chiavi.some((chiave) => !ammesse.includes(chiave))) {
     throw erroreHttp(
-      "Le impostazioni accettano soltanto sogliaCompattazionePercento e consiglio, e almeno un campo",
+      "Le impostazioni accettano soltanto sogliaCompattazionePercento, consiglio e tema, e almeno un campo",
       400,
     );
   }
@@ -3076,6 +3076,12 @@ export function validaImpostazioniGui(valore) {
   }
   if (Object.hasOwn(valore, "consiglio")) {
     valide.consiglio = validaConfigurazioneConsiglio(valore.consiglio);
+  }
+  if (Object.hasOwn(valore, "tema")) {
+    if (!["caldo", "notte", "automatico"].includes(valore.tema)) {
+      throw erroreHttp("tema deve essere caldo, notte o automatico", 400);
+    }
+    valide.tema = valore.tema;
   }
   return valide;
 }
@@ -5835,7 +5841,7 @@ function intestazioniStatiche(tipo) {
     "referrer-policy": "no-referrer",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
     "content-security-policy":
-      "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost",
+      "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self'; script-src 'self' 'sha256-9XqM1noO6ltAmDlLoSAtRss88476Y+GV2ccuvUEsUuY='; connect-src 'self' ipc: http://ipc.localhost",
   };
 }
 
@@ -6041,7 +6047,7 @@ export function creaPonte({
   const serializzaPreimpostazioni = creaSerializzatore();
   // Importazione nel punto di proprietà P2: nessuna dipendenza dal disco nel coordinatore.
   const moduloPreimpostazioni = () => import("./consiglio-preimpostazioni.mjs");
-  let impostazioni = { sogliaCompattazionePercento: SOGLIA_COMPATTAZIONE_PREDEFINITA };
+  let impostazioni = { sogliaCompattazionePercento: SOGLIA_COMPATTAZIONE_PREDEFINITA, tema: "caldo" };
   const impostazioniPronte = (async () => {
     try {
       impostazioni = {
