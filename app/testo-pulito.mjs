@@ -1,6 +1,7 @@
 // Una sola regola per le righe di metodo. I marker tra parentesi valgono
-// dall'inizio della riga; le attestazioni OK devono occupare la riga intera.
-export const RIGA_MARKER = /^\s*(?:`|\*\*|__)?(?:\[(?:Skill stack\]|GOAL\b|GSD\b|Postura QI 190\b|Check finale\])[^\r\n]*|(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:`|\*\*|__)?\s*)$/i;
+// dall'inizio della riga; le attestazioni OK ammettono la coda dopo un trattino,
+// con la stessa forma riconosciuta da RIGA_METODO nel nucleo di vista.
+export const RIGA_MARKER = /^\s*(?:`|\*\*|__)?(?:\[(?:Skill stack\]|(?:GOAL|GSD)\s+[—–-]|Postura QI 190\b|Check finale\])[^\r\n]*|(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:(?:`|\*\*|__)\s*)?(?:\s*[—–-]\s*.*?)?(?:(?:`|\*\*|__))?\s*)$/i;
 
 export const TAG_TECNICI = Object.freeze([
   "skill", "system-reminder", "system_reminder", "antml", "function_results",

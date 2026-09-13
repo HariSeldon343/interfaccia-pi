@@ -53,9 +53,33 @@ test("il confronto con un minore isolato e i marker dentro una frase restano int
 });
 
 test("le righe marker intere spariscono anche in grassetto senza perdere la riga utile", () => {
-  for (const marker of ["[GOAL - fino al gate] x", "**[Skill stack]** a; b", "[GSD passo] x", "[Postura QI 190] x", "**[Check finale]** x", "orchestrazione: OK", "`ottimizzazione: ok.`", "__orchestrazione: OK__"]) {
+  for (const marker of ["[GOAL - fino al gate] x", "[GOAL — keep] x", "**[Skill stack]** a; b", "[GSD - passo] x", "[GSD – passo] x", "[Postura QI 190] x", "**[Check finale]** x", "orchestrazione: OK", "`ottimizzazione: ok.`", "__orchestrazione: OK__"]) {
     assert.equal(RIGA_MARKER.test(marker), true, marker);
     assert.equal(testoLeggibile(marker + "\nTesto utile"), "Testo utile");
+  }
+});
+
+test("i marker OK con suffisso tecnico spariscono anche dai titoli", () => {
+  for (const marker of [
+    "ottimizzazione: OK - stack e goal confermati",
+    "**ottimizzazione: OK** – stack e goal confermati.",
+    "__orchestrazione: OK — stack e goal confermati!__",
+  ]) {
+    assert.equal(RIGA_MARKER.test(marker), true, marker);
+    assert.equal(testoLeggibile(marker + "\nTesto utile"), "Testo utile");
+    assert.equal(titoloBreve(marker + "\nTesto utile"), "Testo utile");
+  }
+});
+
+test("GOAL e GSD senza spazio e trattino restano testo legittimo", () => {
+  for (const testo of [
+    "[GOAL: vendere di più] Ho bisogno di un piano",
+    "[GSD-2026-01] Analisi del cantiere",
+    "[GOAL fino al gate] lavoro", "[GSD passo] verifica",
+  ]) {
+    assert.equal(RIGA_MARKER.test(testo), false, testo);
+    assert.equal(testoLeggibile(testo), testo);
+    assert.equal(titoloBreve(testo), testo);
   }
 });
 
