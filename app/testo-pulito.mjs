@@ -37,6 +37,8 @@ export function titoloBreve(grezzo, { massimo = 120 } = {}) {
   const testo = testoLeggibile(grezzo);
   if (testo.length <= massimo) return testo;
   const inizio = testo.slice(0, massimo);
-  const intero = testo[massimo] === " " ? inizio : inizio.slice(0, Math.max(0, inizio.lastIndexOf(" ")));
+  const ultimoSpazio = inizio.lastIndexOf(" ");
+  const intero = testo[massimo] === " " || ultimoSpazio < massimo / 2
+    ? inizio : inizio.slice(0, ultimoSpazio);
   return intero.trimEnd() + "…";
 }

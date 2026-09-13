@@ -74,5 +74,14 @@ test("un messaggio di 500 caratteri ha un titolo a parole intere entro 120 più 
   assert.equal(titoloBreve("corto"), "corto");
   assert.equal(titoloBreve("uno due tre", { massimo: 7 }), "uno due…");
   assert.equal(titoloBreve("uno due tre", { massimo: 11 }), "uno due tre");
-  assert.equal(titoloBreve("lunghissima", { massimo: 4 }), "…");
+  assert.equal(titoloBreve("lunghissima", { massimo: 4 }), "lung…");
+});
+
+test("un URL lungo e un prefisso breve seguito da un token mantengono un titolo utile", () => {
+  const url = "https://example.test/".padEnd(130, "a");
+  const prefisso = "uno " + "x".repeat(200);
+  for (const testo of [url, prefisso, "C:\\cartella\\" + "x".repeat(200), JSON.stringify({ valore: "x".repeat(200) })]) {
+    assert.equal(titoloBreve(testo), testo.slice(0, 120) + "…");
+  }
+  assert.equal(titoloBreve("abcd efghijkl", { massimo: 8 }), "abcd…");
 });
