@@ -262,6 +262,50 @@ test("la scheda di un ruolo mostra lo stato a parole", () => {
   assert.deepEqual(senzaRuolo.children, []);
 });
 
+test("la scheda del ruolo mostra il dettaglio SSE sotto al motivo come nota", () => {
+  const errore = "Il provider finto ha rifiutato l'accesso: controlla le credenziali in Pi.";
+  const dettaglio = "401 authentication_error: invalid x-api-key";
+  const evento = {
+    type: "gui_consiglio_ruolo", lavoroId: "L1", revisione: 1, seq: 6,
+    roleId: "consigliere-1", guiSessionId: "s1", stato: "errore", tentativo: 0,
+    errore, dettaglio,
+  };
+  const stato = CONSIGLIO.applicaEventoConsiglio(statoConUnLavoro(), evento).stato;
+  assert.equal(stato.lavori.L1.ruoli["consigliere-1"].dettaglio, dettaglio);
+  const fascia = ambienteFascia(
+    { id: "s1", consiglio: { lavoroId: "L1", roleId: "consigliere-1" } },
+    { s1: { lavoroId: "L1", roleId: "consigliere-1" } },
+    stato.lavori,
+  );
+  const indiceMotivo = fascia.children.findIndex((nodo) => nodo.textContent === "Motivo: " + errore);
+  assert.notEqual(indiceMotivo, -1);
+  const nota = fascia.children[indiceMotivo + 1];
+  assert.equal(nota.textContent, "Dettaglio tecnico: " + dettaglio);
+  assert.equal(nota.tag, "p");
+  assert.ok(nota.className.split(/\s+/u).includes("nota"));
+  const completato = CONSIGLIO.applicaEventoConsiglio(stato, {
+    ...evento, seq: 7, stato: "completato", errore: null, dettaglio: null,
+  }).stato.lavori.L1.ruoli["consigliere-1"];
+  assert.equal(completato.dettaglio, null);
+  assert.equal(CONSIGLIO.righeRuolo(completato).some((riga) => riga.chiave === "dettaglio"), false);
+});
+
+test("la lettura HTTP conserva il dettaglio tecnico e non sovrascrive un evento più recente", () => {
+  const dettaglio = "402 Insufficient credits";
+  const risposta = {
+    ...DETTAGLIO,
+    ruoli: DETTAGLIO.ruoli.map((ruolo) => ruolo.roleId === "consigliere-2" ? { ...ruolo, dettaglio } : ruolo),
+  };
+  const stato = CONSIGLIO.applicaDettaglioConsiglio(statoConUnLavoro(), risposta).stato;
+  assert.equal(stato.lavori.L1.ruoli["consigliere-2"].dettaglio, dettaglio);
+  const recente = CONSIGLIO.applicaEventoConsiglio(stato, {
+    type: "gui_consiglio_ruolo", lavoroId: "L1", revisione: 1, seq: 10,
+    roleId: "consigliere-2", stato: "errore", dettaglio: "401 authentication_error",
+  }).stato;
+  const sorpassato = CONSIGLIO.applicaDettaglioConsiglio(recente, risposta).stato;
+  assert.equal(sorpassato.lavori.L1.ruoli["consigliere-2"].dettaglio, "401 authentication_error");
+});
+
 test("attesa del provider e ripetizione del consiglio sono righe distinte", () => {
   const righe = CONSIGLIO.righeRuolo(RUOLO_IN_ATTESA);
   const attesa = righe.find((riga) => riga.chiave === "attesa-provider");

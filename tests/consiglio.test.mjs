@@ -917,24 +917,48 @@ test("una risposta con stopReason error non entra nella fusione", async (t) => {
   assert.match(finale.lavoro.motivo, /Nessun consigliere/);
 });
 
-test("credito o accesso richiede un codice del provider e una parola riconoscibile", async () => {
+test("credito o accesso riconosce le frasi di quota e distingue i codici del provider", async () => {
   const { sembraErroreCreditoOAccesso } = await import("../app/consiglio.mjs");
-  for (const codice of [400, 401, 402, 403]) {
+  for (const frase of [
+    "insufficient_quota", "quota exceeded", "exceeded your current quota", "out of budget", "billing",
+    "available balance", "Monthly usage limit reached", "credit balance", "insufficient credit",
+    "insufficient funds", "GoUsageLimitError", "FreeUsageLimitError",
+  ]) {
+    assert.equal(sembraErroreCreditoOAccesso(frase), true, frase);
+    assert.equal(sembraErroreCreditoOAccesso(`429 ${frase.toUpperCase()}`), true, frase);
+  }
+  for (const codice of [401, 402, 403]) {
+    assert.equal(sembraErroreCreditoOAccesso(String(codice)), true, String(codice));
     for (const parola of ["credit", "billing", "insufficient", "quota", "unauthorized", "authentication", "forbidden"]) {
       const messaggio = `Errore del provider: ${codice} ${parola.toUpperCase()}`;
       assert.equal(sembraErroreCreditoOAccesso(messaggio), true, messaggio);
     }
   }
-  for (const messaggio of [null, "", "insufficient credit", "1400 insufficient credit", "400 invalid request", "429 quota exceeded", "500 billing unavailable"]) {
+  for (const parola of ["credit balance", "insufficient", "billing", "api key", "api_key", "invalid_api_key", "authentication_error"]) {
+    assert.equal(sembraErroreCreditoOAccesso(`400 ${parola}`), true, parola);
+  }
+  for (const messaggio of [
+    null, "", "1400 insufficient", "400 invalid request", "400 quota", "400 credit",
+    "400 unauthorized", "400 authentication", "400 forbidden", "400 invalid_request",
+    "HTTP 400 invalid_request: il campo quota nel testo dell'utente non è ammesso",
+    "400 invalid_request: billing non valido", "401 invalid_request", "429 rate limit, retry after 3 seconds",
+  ]) {
     assert.equal(sembraErroreCreditoOAccesso(messaggio), false, String(messaggio));
   }
 });
 
-for (const messaggioProvider of [
-  "Errore del provider: 400 insufficient credit",
-  "Errore del provider: 403 forbidden, rate limit, retry after 3 seconds",
+for (const [messaggioProvider, categoria] of [
+  ["Errore del provider: 400 insufficient credit", "credito"],
+  ["Errore del provider: 403 forbidden, rate limit, retry after 3 seconds", "accesso"],
+  ["429 You exceeded your current quota, please check your plan and billing details (insufficient_quota)", "credito"],
+  ["HTTP 400 invalid_request: il campo quota nel testo dell'utente non è ammesso", null],
+  ["401 authentication_error: invalid x-api-key", "accesso"],
+  ["402 Insufficient credits", "credito"],
+  ["400 insufficient_quota", "credito"],
+  ["400 invalid_request", null],
+  ["429 rate limit, retry after 3 seconds", "limite"],
 ]) {
-  test(`credito o accesso termina il ruolo senza ripetizione: ${messaggioProvider}`, async (t) => {
+  test(`il ponte conserva il dettaglio e applica la ripetizione corretta: ${messaggioProvider}`, async (t) => {
     const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-429-sempre" });
     const eventi = ascoltaEventi(t, ambiente);
     const osserva = ambiente.ponte.consiglio.osservaEvento;
@@ -950,22 +974,31 @@ for (const messaggioProvider of [
     };
     const { avvio, finale } = await avviaEAttendi(ambiente);
     const consigliere = finale.ruoli.find((ruolo) => ruolo.tipo === "consigliere");
-    const atteso = "Il provider fake non ha risposto per credito o accesso. Scegli un altro modello in Gestisci.";
+    const atteso = categoria === "credito"
+      ? "Il provider fake ha rifiutato per credito o quota esauriti. Scegli un altro modello in Gestisci."
+      : categoria === "accesso"
+        ? "Il provider fake ha rifiutato l'accesso: controlla le credenziali in Pi."
+        : messaggioProvider;
+    const ripetizioni = categoria === "limite" ? 1 : 0;
     assert.equal(consigliere.stato, "errore");
     assert.equal(consigliere.errore, atteso);
-    assert.equal(consigliere.tentativo, 0);
+    assert.equal(consigliere.dettaglio, messaggioProvider, "lo stato HTTP conserva l'errore originale");
+    const ruoloInterno = ambiente.ponte.consiglio.lavori.get(avvio.lavoroId).ruoli.find((ruolo) => ruolo.roleId === consigliere.roleId);
+    assert.equal(ruoloInterno.dettaglio, messaggioProvider, "lo stato del ruolo conserva l'errore originale");
+    assert.equal(consigliere.tentativo, ripetizioni);
     assert.equal(consigliere.attesaFinoA, null);
-    assert.equal(erroriRicevuti, 1, "il ponte invia un solo prompt al consigliere");
-    assert.deepEqual(ambiente.conf.attese, []);
+    assert.equal(erroriRicevuti, 1 + ripetizioni, "il ponte ripete solo il vero limite di richieste");
+    assert.deepEqual(ambiente.conf.attese, ripetizioni ? [3000] : []);
     assert.equal(finale.contributi[0].incluso, false);
     assert.equal(finale.contributi[0].errore, atteso);
     assert.equal(finale.lavoro.stato, "bozza_bloccata");
     const eventoErrore = await attendiEvento(eventi, (evento) => evento.type === "gui_consiglio_ruolo"
       && evento.lavoroId === avvio.lavoroId && evento.roleId === consigliere.roleId && evento.stato === "errore");
     assert.equal(eventoErrore.errore, atteso, "la scheda riceve lo stesso messaggio dello stato");
-    assert.equal(eventoErrore.tentativo, 0);
+    assert.equal(eventoErrore.dettaglio, messaggioProvider, "SSE conserva l'errore originale");
+    assert.equal(eventoErrore.tentativo, ripetizioni);
     assert.equal(eventi.some((evento) => evento.type === "gui_consiglio_ruolo"
-      && evento.lavoroId === avvio.lavoroId && evento.stato === "attesa_provider"), false);
+      && evento.lavoroId === avvio.lavoroId && evento.stato === "attesa_provider"), ripetizioni === 1);
   });
 }
 

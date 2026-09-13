@@ -2363,6 +2363,7 @@ body {
 }
 
 .fascia-consiglio-titolo { color: var(--testo); font-weight: 600; }
+.fascia-consiglio > .nota { flex-basis: 100%; margin: 0; }
 
 .fascia-consiglio-riga {
   display: inline-flex;

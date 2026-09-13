@@ -10136,7 +10136,9 @@ function disegnaFasciaConsiglio(sessione) {
   );
   for (const riga of CONSIGLIO_CORE.righeRuolo(ruolo)) {
     DOM.fasciaConsiglio.appendChild(
-      crea("span", "fascia-consiglio-riga livello-" + livelloRigaRuolo(riga, ruolo), riga.testo),
+      riga.chiave === "dettaglio"
+        ? crea("p", "nota", riga.testo)
+        : crea("span", "fascia-consiglio-riga livello-" + livelloRigaRuolo(riga, ruolo), riga.testo),
     );
   }
   DOM.fasciaConsiglio.appendChild(

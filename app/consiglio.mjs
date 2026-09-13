@@ -77,10 +77,27 @@ export function sembraLimiteRichieste(testo) {
     || /troppe richieste/iu.test(contenuto);
 }
 
-export function sembraErroreCreditoOAccesso(testo) {
+// Le frasi di limite dell'account comprendono quelle non ripetibili di pi-ai:
+// una quota esaurita può arrivare anche con 429, senza essere un rate limit.
+const ERRORE_CREDITO_O_QUOTA = new RegExp([
+  "insufficient_quota", "quota exceeded", "exceeded your current quota", "out of budget", "billing",
+  "available balance", "Monthly usage limit reached", "credit balance", "insufficient credit",
+  "insufficient funds", "GoUsageLimitError", "FreeUsageLimitError",
+].join("|"), "iu");
+
+function tipoErroreCreditoOAccesso(testo) {
   const contenuto = String(testo ?? "");
-  return /\b(?:400|401|402|403)\b/u.test(contenuto)
-    && /credit|billing|insufficient|quota|unauthorized|authentication|forbidden/iu.test(contenuto);
+  if (/\binvalid_request(?:_error)?\b/iu.test(contenuto)) return null;
+  if (/\b(?:401|403)\b/u.test(contenuto)) return "accesso";
+  if (/\b402\b/u.test(contenuto) || ERRORE_CREDITO_O_QUOTA.test(contenuto)) return "credito";
+  if (!/\b400\b/u.test(contenuto)) return null;
+  if (/\b(?:invalid_)?api[\s_-]+key\b|\bauthentication_error\b/iu.test(contenuto)) return "accesso";
+  if (/credit balance|insufficient|billing/iu.test(contenuto)) return "credito";
+  return null;
+}
+
+export function sembraErroreCreditoOAccesso(testo) {
+  return tipoErroreCreditoOAccesso(testo) !== null;
 }
 
 export function ambienteRuolo({ ruolo, workspace, filePiano }) {
@@ -424,6 +441,7 @@ export function creaGestoreConsiglio({
       tentativo: ruolo.tentativo,
       ...(ruolo.attesaFinoA ? { attesaFinoA: ruolo.attesaFinoA } : {}),
       ...(ruolo.errore ? { errore: ruolo.errore } : {}),
+      ...(ruolo.dettaglio ? { dettaglio: ruolo.dettaglio } : {}),
       ...extra,
     });
   }
@@ -599,16 +617,20 @@ export function creaGestoreConsiglio({
       if (esito.ok) {
         ruolo.stato = "completato";
         ruolo.errore = null;
+        ruolo.dettaglio = null;
         emettiRuolo(lavoro, ruolo);
         return esito;
       }
-      const creditoOAccesso = sembraErroreCreditoOAccesso(esito.errore);
+      ruolo.dettaglio = esito.errore;
+      const creditoOAccesso = tipoErroreCreditoOAccesso(esito.errore);
       const limite = !creditoOAccesso && sembraLimiteRichieste(esito.errore);
       if (!limite || tentativo === 1) {
         ruolo.stato = "errore";
-        ruolo.errore = creditoOAccesso
-          ? `Il provider ${ruolo.provider} non ha risposto per credito o accesso. Scegli un altro modello in Gestisci.`
-          : esito.errore;
+        ruolo.errore = creditoOAccesso === "credito"
+          ? `Il provider ${ruolo.provider} ha rifiutato per credito o quota esauriti. Scegli un altro modello in Gestisci.`
+          : creditoOAccesso === "accesso"
+            ? `Il provider ${ruolo.provider} ha rifiutato l'accesso: controlla le credenziali in Pi.`
+            : esito.errore;
         emettiRuolo(lavoro, ruolo);
         return { ...esito, errore: ruolo.errore };
       }
@@ -881,6 +903,7 @@ export function creaGestoreConsiglio({
       tentativo: 0,
       attesaFinoA: null,
       errore: null,
+      dettaglio: null,
       sessione: null,
     }));
     for (const ruolo of lavoro.ruoli) {
@@ -1273,6 +1296,7 @@ export function creaGestoreConsiglio({
       tentativo: ruolo.tentativo,
       attesaFinoA: ruolo.attesaFinoA,
       errore: ruolo.errore,
+      dettaglio: ruolo.dettaglio ?? null,
     };
   }
 

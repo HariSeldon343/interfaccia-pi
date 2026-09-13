@@ -182,6 +182,7 @@
       tentativo: numero(evento.tentativo) ?? precedente.tentativo ?? 0,
       attesaFinoA: evento.attesaFinoA ?? null,
       errore: evento.errore ?? null,
+      dettaglio: evento.dettaglio ?? null,
     };
     // Attesa del provider e ripetizione del consiglio sono due cose diverse:
     // la prima è un ritentativo interno di pi dentro lo stesso turno, la
@@ -290,6 +291,7 @@
             tentativo: numero(voce.tentativo) ?? base.tentativo ?? 0,
             attesaFinoA: voce.attesaFinoA ?? base.attesaFinoA ?? null,
             errore: voce.errore ?? base.errore ?? null,
+            dettaglio: voce.dettaglio ?? null,
           }
           : base;
       }
@@ -435,6 +437,9 @@
     }
     if (ruolo?.errore && stato === "errore") {
       righe.push({ chiave: "errore", testo: "Motivo: " + ruolo.errore });
+    }
+    if (ruolo?.dettaglio && stato === "errore") {
+      righe.push({ chiave: "dettaglio", testo: "Dettaglio tecnico: " + ruolo.dettaglio });
     }
     return righe;
   }
