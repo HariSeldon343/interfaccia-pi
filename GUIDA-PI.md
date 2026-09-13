@@ -41,6 +41,8 @@ La barra delle schede consente di passare fra progetti senza chiudere le altre
 conversazioni. **Conversazioni salvate** cerca le sessioni reali di `pi` e le
 riapre in una nuova scheda.
 
+Le righe di metodo delle skill globali (`[Skill stack]`, `[GOAL - ...]` e simili all'inizio di una riga) non compaiono nei titoli né nel testo fuso.
+
 Ogni scheda conserva separatamente testo e immagini non ancora inviati. Le
 bozze sopravvivono alla riapertura dell'app per un massimo di 30 giorni: il
 testo usa lo spazio locale della pagina e le immagini IndexedDB. Se il browser

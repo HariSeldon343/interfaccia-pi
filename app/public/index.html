@@ -255,6 +255,7 @@
         </div>
         <!-- Pannello di prima parte, sulla stessa origine tramite il proxy /sistema/.
              allow-same-origin resta: la guardia Origin rifiuta l'origine opaca.
+             allow-same-origin e allow-scripts concedono i privilegi dell'origine della GUI: il confine di fiducia è la firma del pacchetto.
              L'avviso del browser su questa combinazione sandbox è accettato. -->
         <iframe id="frame-pannello-ospite" title="Contenuto del pannello"
                 src="about:blank" hidden referrerpolicy="no-referrer"

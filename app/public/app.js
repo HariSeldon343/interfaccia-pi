@@ -327,10 +327,8 @@ async function caricaPannelloSistemaGuidato(
     }
     if (generazione !== PANNELLO_SISTEMA_GUIDATO.generazione
       || DOM.pannelloOspite.hidden) return;
-    const tema = TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light");
-    DOM.framePannelloOspite.onload = () => inviaTemaPannello(
-      TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light"),
-    );
+    const tema = temaRisolto();
+    DOM.framePannelloOspite.onload = () => inviaTemaPannello(temaRisolto());
     DOM.framePannelloOspite.src = destinazioneConsentita
       + (destinazioneConsentita.includes("?") ? "&" : "?") + "tema=" + tema;
     DOM.framePannelloOspite.hidden = false;
@@ -3344,7 +3342,6 @@ function attivaSessione(id) {
   NAVIGAZIONE.chiusi = NAVIGAZIONE_CORE.impostaGruppoChiuso(
     NAVIGAZIONE.chiusi, NAVIGAZIONE_CORE.cartellaConversazione(sessione), false,
   );
-  salvaPreferenzaGruppi();
   const precedente = sessioneAttiva();
   if (precedente && (precedente.bozzaSporca || precedente.bozza !== DOM.input.value)) {
     if (precedente.bozza !== DOM.input.value) ramificaLineageBozza(precedente);
@@ -3432,7 +3429,6 @@ function disegnaNavigazione() {
       ? "già aperta · " + (voce.stato.testo === "al lavoro" ? "sta lavorando" : voce.stato.testo)
       : voce.stato.testo;
     const nome = crea("span", "conversazione-nome", voce.titolo);
-    nome.title = voce.titolo;
     apri.title = voce.titolo;
     apri.append(nome, crea("small", "conversazione-stato", statoVisibile));
     apri.setAttribute("aria-label", voce.titolo + ", " + statoVisibile);
@@ -10795,7 +10791,7 @@ function disegnaPannelloRuoliConsiglio(contenitore, stato, azioni) {
   const vista = stato.vista;
   contenitore.appendChild(crea("h4", null, "Ruoli del consiglio"));
   contenitore.appendChild(crea("p", "nota",
-    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider."));
+    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider. Se il provider ha un solo modello, i due ruoli usano lo stesso modello."));
   const righe = [
     ...stato.bozza.consiglieri.map((voce, indice) => ({ voce, tipo: "consigliere", ordine: indice + 1 })),
     { voce: stato.bozza.scrittore, tipo: "scrittore", ordine: stato.bozza.consiglieri.length + 1 },
@@ -10967,6 +10963,10 @@ function normalizzaSceltaTema(scelta) {
   return ["caldo", "notte", "automatico"].includes(scelta) ? scelta : "caldo";
 }
 
+function temaRisolto() {
+  return TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light");
+}
+
 function inviaTemaPannello(tema) {
   if (DOM.pannelloOspite.hidden || DOM.framePannelloOspite.hidden
     || DOM.framePannelloOspite.src === "about:blank") return;
@@ -10975,7 +10975,7 @@ function inviaTemaPannello(tema) {
 
 function applicaSceltaTema(scelta) {
   TEMA_GUI.scelta = normalizzaSceltaTema(scelta);
-  const tema = TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light");
+  const tema = temaRisolto();
   TEMA_CORE.applicaTema(document, tema);
   inviaTemaPannello(tema);
   try { localStorage.setItem("pi-gui-tema", TEMA_GUI.scelta); } catch { /* Il ponte resta la fonte di verità. */ }

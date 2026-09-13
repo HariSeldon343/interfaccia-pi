@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { NOME_FIRMA } from "../../app/estensioni-manifest.mjs";
 import { createHash, sign } from "node:crypto";
 import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { NOME_FIRMA } from "../../app/estensioni-manifest.mjs";
 import { prepara as preparaBase, verifica as verificaBase } from "./scenario-base.mjs";
 
 export async function prepara(contesto) {

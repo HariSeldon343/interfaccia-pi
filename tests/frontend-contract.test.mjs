@@ -291,7 +291,7 @@ test("P6 bis Ruoli spiega Automatico con il provider della conversazione di part
     bozza: { consiglieri: [{ roleId: "consigliere-1" }], scrittore: { roleId: "scrittore" } },
   }, {});
   assert.equal(contenitore.children[1].textContent,
-    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider.");
+    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider. Se il provider ha un solo modello, i due ruoli usano lo stesso modello.");
 });
 
 test("P6 bis la scheda del ruolo mostra il messaggio di credito o accesso dal canale esistente", () => {
@@ -360,13 +360,14 @@ test("P6 due righe: il nome ha line-clamp e il pulsante conserva il titolo inter
     const nome = riga.querySelector(".conversazione-nome").textContent;
     const pulsante = riga.querySelector(".conversazione-voce");
     assert.equal(pulsante.title, nome);
+    assert.ok(!riga.querySelector(".conversazione-nome").title, "il titolo intero compare solo sul pulsante");
     assert.ok(pulsante.getAttribute("aria-label").startsWith(nome));
   }
   assert.equal(DOM.listaConversazioni.querySelectorAll("[data-riga-id]")
     .find((riga) => riga.dataset.rigaId === "due").querySelector(".conversazione-nome").textContent, "Nuova conversazione");
 });
 
-test("P6 gruppi: l'intestazione si chiude con Invio e si riapre con Barra", () => {
+test("P6 gruppi: l'intestazione si chiude e si riapre con un clic", () => {
   const ambiente = ambienteNavigazioneP6();
   const { DOM, NAVIGAZIONE, memoria, localStorage } = ambiente;
   ambiente.salvaPreferenzaGruppi = () => funzioneProva("salvaPreferenzaGruppi", "", ambiente)();
@@ -380,19 +381,16 @@ test("P6 gruppi: l'intestazione si chiude con Invio e si riapre con Barra", () =
   assert.equal(pulsante.type, "button");
   assert.equal(pulsante.getAttribute("aria-controls"), elenco.id);
   assert.equal(pulsante.getAttribute("aria-expanded"), "true");
-  // L'albero simulato applica l'azione predefinita di Invio/Barra solo ai
-  // pulsanti nativi; la prova nel browser verifica anche gli eventi reali.
-  const premi = (tasto) => { assert.ok(["Enter", " "].includes(tasto)); if (pulsante.tag === "button" && !pulsante.disabled) pulsante.click(); };
-  premi("Enter");
+  pulsante.click();
   assert.equal(elenco.hidden, true);
   assert.equal(pulsante.getAttribute("aria-expanded"), "false");
   assert.equal(pulsante.textContent, "second Brain · 2");
   assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["c:/second brain"]);
-  premi(" ");
+  pulsante.click();
   assert.equal(elenco.hidden, false);
   assert.equal(pulsante.getAttribute("aria-expanded"), "true");
   assert.equal(pulsante.textContent, "second Brain");
-  premi("Enter");
+  pulsante.click();
   NAVIGAZIONE.ricerca = "Buongiorno"; disegna();
   assert.equal(DOM.listaConversazioni.querySelector(".conversazioni-cartella").hidden, false);
   NAVIGAZIONE.ricerca = ""; disegna();
@@ -409,12 +407,15 @@ test("P6 gruppi: l'intestazione si chiude con Invio e si riapre con Barra", () =
   assert.match(stile, /\[aria-expanded="false"\]::before/);
 });
 
-test("P6 gruppi: attivare una sessione riapre soltanto la sua cartella e salva la preferenza", () => {
+test("P6 gruppi: attivare una sessione riapre soltanto la sua cartella e conserva la preferenza fino al clic", () => {
   const ambiente = ambienteNavigazioneP6();
   const { APP, DOM, NAVIGAZIONE, memoria } = ambiente;
   NAVIGAZIONE.chiusi = ["c:/second brain", "d:/altra"];
+  memoria.set("pi-gui-gruppi-chiusi-v1", JSON.stringify(NAVIGAZIONE.chiusi));
   DOM.conversazione = ambiente.crea("div");
   const salvaPreferenzaGruppi = funzioneProva("salvaPreferenzaGruppi", "", ambiente);
+  ambiente.salvaPreferenzaGruppi = salvaPreferenzaGruppi;
+  ambiente.disegnaNavigazione = funzioneProva("disegnaNavigazione", "", ambiente);
   const attiva = funzioneProva("attivaSessione", "id", { ...ambiente, salvaPreferenzaGruppi,
     sessioneAttiva: () => null, chiudiPaletteComandi() {}, disegnaAllegati() {}, adattaAltezza() {},
     aggiornaInterfacciaAttiva() {}, aggiornaPaletteComandi() {}, inFondo() {},
@@ -423,6 +424,18 @@ test("P6 gruppi: attivare una sessione riapre soltanto la sua cartella e salva l
   APP.sessioni.get("uno").bozza = "";
   attiva("uno");
   assert.deepEqual(NAVIGAZIONE.chiusi, ["d:/altra"]);
+  assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["c:/second brain", "d:/altra"]);
+  const gruppi = DOM.listaConversazioni.querySelectorAll(".gruppo-conversazioni");
+  const corrente = gruppi.find((gruppo) => gruppo.querySelector(".conversazione-nome").textContent === "Buongiorno Jarvis");
+  const altra = gruppi.find((gruppo) => gruppo !== corrente);
+  assert.equal(corrente.querySelector(".conversazioni-cartella").hidden, false);
+  assert.equal(altra.querySelector(".conversazioni-cartella").hidden, true);
+  const intestazione = corrente.querySelector("h3").querySelector("button");
+  intestazione.click();
+  assert.equal(corrente.querySelector(".conversazioni-cartella").hidden, true);
+  assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["d:/altra", "c:/second brain"]);
+  intestazione.click();
+  assert.equal(corrente.querySelector(".conversazioni-cartella").hidden, false);
   assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["d:/altra"]);
 });
 
@@ -3820,8 +3833,24 @@ function ambienteTemaPannelloP6() {
     normalizzaSceltaTema: funzioneProva("normalizzaSceltaTema", "scelta", {}),
   };
   ambiente.inviaTemaPannello = (tema) => funzioneProva("inviaTemaPannello", "tema", ambiente)(tema);
+  ambiente.temaRisolto = () => funzioneProva("temaRisolto", "", ambiente)();
   return { ...ambiente, messaggi };
 }
+
+test("il tema risolto segue la scelta corrente e il sistema anche prima del caricamento delle preferenze", () => {
+  const ambiente = ambienteTemaPannelloP6();
+  const risolvi = funzioneProva("temaRisolto", "", ambiente);
+  for (const [scelta, scuro, atteso] of [
+    ["caldo", true, "caldo"], ["notte", false, "notte"],
+    ["automatico", true, "notte"], ["automatico", false, "caldo"],
+  ]) {
+    ambiente.TEMA_GUI.scelta = scelta;
+    ambiente.TEMA_GUI.media.matches = scuro;
+    assert.equal(risolvi(), atteso);
+  }
+  ambiente.TEMA_GUI.media = null;
+  assert.equal(risolvi(), "caldo");
+});
 
 test("P6 bis pannello: l'apertura conserva la destinazione e aggiunge soltanto il tema risolto", async () => {
   const ambiente = ambienteTemaPannelloP6();
