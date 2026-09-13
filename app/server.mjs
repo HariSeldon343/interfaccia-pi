@@ -48,7 +48,7 @@ import {
 import { creaGestoreLibreria, quotaOperazioneConsentita } from "./libreria.mjs";
 import LIBRERIA_CORE from "./public/library-core.js";
 import VISTA_CORE from "./public/view-core.js";
-import { titoloBreve } from "./testo-pulito.mjs";
+import { testoLeggibile, titoloBreve } from "./testo-pulito.mjs";
 
 const FILE_CORRENTE = fileURLToPath(import.meta.url);
 const QUI = dirname(FILE_CORRENTE);
@@ -5890,6 +5890,7 @@ async function metadatiSessione(percorso, info) {
     cwd: null,
     nome: null,
     primoMessaggio: null,
+    testoRicerca: "",
     modificataIl: info.mtime.toISOString(),
     dimensione: info.size,
   };
@@ -5901,6 +5902,7 @@ async function metadatiSessione(percorso, info) {
     analizzaRigheSessione(fine, meta);
   }
   if (meta.primoMessaggio) {
+    meta.testoRicerca = testoLeggibile(meta.primoMessaggio).slice(0, 2000);
     meta.primoMessaggio = titoloBreve(meta.primoMessaggio);
   }
   return meta;
@@ -5963,7 +5965,7 @@ export async function paginaSessioniSalvate(home, { cartella = null, ricerca = "
   }
   let salvate = (await elencaFileSessione(home)).filter((sessione) => (
     (!percorso || (sessione.cwd && resolve(sessione.cwd).toLowerCase() === percorso))
-    && (!testo || [sessione.nome, sessione.primoMessaggio, sessione.cwd]
+    && (!testo || [sessione.nome, sessione.testoRicerca, sessione.cwd]
       .some((valore) => String(valore || "").toLocaleLowerCase("it").includes(testo)))
   ));
   salvate.sort((a, b) => b.modificataIl.localeCompare(a.modificataIl)
@@ -8724,12 +8726,13 @@ $processo.WaitForExit()
         const cartella = valoreCli(corpo.cartella, "Cartella", 2000);
         const pagina = await paginaSessioniSalvate(home, { ...corpo, cartella: cartella || null });
         const salvate = pagina.sessioni.map((sessione) => {
+          const { testoRicerca, ...pubblica } = sessione;
           const senzaCartella = percorsoInRadiceSenzaCartella(
             sessione.cwd,
             radiceSenzaCartellaRisolta,
           );
           return {
-            ...sessione,
+            ...pubblica,
             cwd: senzaCartella ? null : sessione.cwd,
             senzaCartella,
           };
