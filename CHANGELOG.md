@@ -2,12 +2,76 @@
 
 ## 2.9.0 Pilot (non-production) — in lavorazione
 
-- P1 introduce pacchetti di estensioni verificati con firma Ed25519 e inventario SHA-256, installazione per utente, registro atomico e attivazione applicata alle sessioni ferme.
-- Skill e prompt entrano in Pi solo da percorsi espliciti verificati; le risorse personali restano intatte e quelle cambiate o assenti vengono escluse con un avviso.
-- Prepara la migrazione del Sistema Guidato con arresto del backend e copia di sicurezza verificata; separa le prove dei pacchetti opzionali dalla suite di base.
-- Aggiunge strumenti locali per generare le chiavi e firmare i pacchetti, controlli del Second Brain e paginazione delle conversazioni salvate dopo filtro e ricerca.
-- Limiti: chiave pubblica di produzione, pacchetti firmati e prova reale di migrazione restano al gate del titolare. Il Sistema Guidato rimane nel bundle fino al superamento del gate.
-- Il pannello Estensioni è predisposto come modulo e verrà montato in P3; durante P1 le operazioni sono disponibili tramite gli endpoint.
+- aggiunge le **estensioni** come pacchetti installati da cartella e verificati:
+  manifesto con firma Ed25519 sui byte originali e inventario SHA-256 chiuso,
+  portachiavi con revoca, registro atomico con lock a scadenza, staging e
+  pubblicazione per rinomina; il pannello **Estensioni** nel piede della barra
+  laterale mostra Attiva, Disattiva, Apri, Aggiorna da cartella e Rimuovi, e le
+  risorse personali di Pi sono elencate a parte e mai toccate;
+- avvia Pi con le sole risorse attive: skill, prompt e temi entrano solo da
+  percorsi espliciti verificati (`--no-skills`, `--no-prompt-templates`,
+  `--no-themes`), quelle cambiate o assenti vengono escluse con un avviso; il
+  Sistema Guidato ha una radice esplicita, un host a intervallo di porte, il
+  riconoscimento della 2.8 e una copia di sicurezza con il backend fermo;
+- lancia gli **Agenti** in un gesto: pulsante diviso nel composer con la
+  preimpostazione predefinita (Rapido, Tre consiglieri, e la migrazione dei ruoli
+  della 2.8 in "Il mio consiglio"), menu con tastiera, Ctrl più Maiusc più Invio,
+  assegnazioni, ordine, livelli e istruzioni congelati all'avvio del lavoro;
+  gli allegati del consiglio valgono solo come riferimenti a file nel workspace
+  e nella libreria;
+- ridisegna l'interfaccia in **tre zone**: barra laterale con le conversazioni
+  raggruppate per cartella e con lo stato scritto a parole (aperta, al lavoro,
+  in attesa, chiusa), ricerca e "Carica altre", chiusura sulla riga, Ctrl più K
+  per i comandi, menu "..." della conversazione; nessuna barra delle schede; un
+  solo composer con modello, livello di ragionamento, cartella, "+", Agenti,
+  Invia e Ferma; Aiuto con la versione dell'app ricevuta dal ponte; ogni finestra
+  sovrapposta trattiene il fuoco e lo restituisce, il menu si governa con frecce,
+  Invio ed Esc;
+- introduce il tema **Caldo** come predefinito (crema, sabbia, carta, ottone,
+  pesca e salvia dallo schema della guida), conserva lo stile precedente come
+  tema **Notte** e aggiunge **Automatico**, che segue l'aspetto del sistema; la
+  scelta sta in Impostazioni > Aspetto, si salva in `~/.pi/gui/impostazioni.json`
+  e viene ricordata localmente prima della prima pittura; tutte le coppie
+  testo e fondo del Caldo superano il contrasto 4,5; i colori vivono in gettoni
+  CSS e nessun colore letterale sta fuori dai due blocchi;
+- passa il tema ai pannelli delle estensioni: il parametro `tema=caldo` o
+  `tema=notte` nell'indirizzo del pannello all'apertura e un messaggio
+  `pi-gui-tema` a ogni cambio, documentati nella guida per chi scrive
+  estensioni; l'iframe resta sulla stessa origine tramite il proxy `/sistema/`
+  con il motivo scritto nel codice;
+- ripulisce i **titoli** delle conversazioni salvate: i blocchi tecnici delle
+  skill e i promemoria di sistema del primo messaggio non compaiono più, il
+  titolo sta su due righe con i puntini e il testo intero si legge al passaggio
+  del mouse; la ricerca continua a leggere il testo pulito completo;
+- fa **chiudere e aprire i gruppi per cartella** con un clic o con Invio,
+  ricorda la scelta per ogni cartella, mostra il numero di conversazioni quando
+  il gruppo è chiuso, riapre da solo il gruppo della conversazione attiva e apre
+  tutto mentre si cerca;
+- rende il **Testo fuso** del consiglio in Markdown come i messaggi della chat,
+  con i link che portano alla conversazione di partenza, e toglie dal testo
+  fuso e dalla bozza approvata le righe di metodo delle skill globali di Pi
+  (per esempio "[Skill stack]" o "ottimizzazione: OK"), con la stessa regola
+  del ponte e del client;
+- con **Automatico** nei ruoli del consiglio, lo scrittore usa il modello della
+  conversazione di partenza e il consigliere un modello dello stesso provider
+  (lo stesso modello se il provider ne ha uno solo); un rifiuto del provider per
+  credito o quota esauriti, o per accesso negato, diventa un messaggio leggibile
+  nella scheda del ruolo con il dettaglio tecnico sotto, senza ripetizioni; il
+  429 continua a ripetere una volta;
+- regge i runner di GitHub e i PC dei clienti: la guardia sui percorsi delle
+  estensioni ammette l'espansione dei nomi corti 8.3 sulla stessa radice e
+  continua a rifiutare collegamenti e giunzioni; la protezione della chiave
+  privata usa le API .NET, accetta il proprietario predefinito di un token
+  amministrativo e verifica sempre la DACL riletta; un test controlla che ogni
+  modulo importato dal ponte stia fra le risorse impacchettate;
+- limiti dichiarati: la chiave pubblica di produzione, il pacchetto Sistema
+  Guidato firmato e la prova reale di migrazione dalla 2.8 restano al gate del
+  titolare, e il Sistema Guidato rimane nel bundle fino ad allora (19 prove dei
+  pacchetti saltano per questo); l'avviso del browser sull'iframe dei pannelli è
+  accettato per scelta; la lettura del tema dentro il pannello Sistema Guidato è
+  a carico del pannello; un 401 che il provider descrive come `invalid_request`
+  mostra il testo grezzo del provider invece del messaggio di accesso;
+- resta un pilot non-production, updater-disabled e non firmato Authenticode.
 
 ## 2.8.0 Pilot (non-production) — 2026-09-11
 
