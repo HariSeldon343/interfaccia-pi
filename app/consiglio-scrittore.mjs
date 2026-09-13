@@ -2,6 +2,8 @@
 // lettura conservativa dell'uscita. Nessuna rete, nessun accesso al disco:
 // funzioni pure su stringhe, così il ponte può provarle da solo.
 
+import { RIGA_MARKER } from "./testo-pulito.mjs";
+
 export const INTESTAZIONI_USCITA = Object.freeze([
   "### RISULTATO",
   "### PROVENIENZA",
@@ -49,18 +51,12 @@ const INTESTAZIONI_SCARTATI = ["contributo", "cosa ho lasciato fuori", "perche"]
 const SEGNAPOSTO_VUOTO = new Set(["nessuno", "nessuna", "nessun contributo", "niente", "-", "--", "n/a"]);
 const LIMITE_CITAZIONE = 80;
 
-// Righe che alcune skill globali di Pi aggiungono in testa o in coda a ogni
-// risposta ("ottimizzazione: OK", "orchestrazione: OK", anche in grassetto o
-// in codice). Non sono contenuto: la GUI le toglie prima di mostrare una
-// risposta (view-core.js) e qui si tolgono prima di leggere le sezioni, altrimenti
-// una riga del genere dopo l'ultima casella EVAL bloccherebbe la bozza. La regola
-// accetta solo la riga intera, senza testo aggiunto: nessun contenuto può passare da qui.
-const RIGA_MARKER_METODO = /^\s*(?:`|\*\*|__)?(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:`|\*\*|__)?\s*$/i;
-
+// La regola condivisa toglie soltanto righe di metodo, prima del parser:
+// il Markdown e i marker citati dentro una frase restano contenuto.
 export function senzaRigheMarker(testo) {
   return String(testo ?? "")
     .split(/\r?\n/)
-    .filter((riga) => !RIGA_MARKER_METODO.test(riga))
+    .filter((riga) => !RIGA_MARKER.test(riga))
     .join("\n");
 }
 

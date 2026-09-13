@@ -280,6 +280,37 @@ function ambienteNavigazioneP6() {
   return { ...ambiente, memoria };
 }
 
+test("P6 testo fuso: Risultato e Bozza in composizione rendono Markdown nel div con lo stile dei messaggi", () => {
+  const { creaNodo } = alberoProva();
+  const core = require("../app/public/consiglio-core.js");
+  const lavoro = { lavoroId: "prova", stato: "bozza_valida", risultato: { testo: "## Titolo\n\n- Primo\n- Secondo\n\n```\ncodice\n```" } };
+  const sessione = { id: "consiglio:prova", vista: creaNodo("div") };
+  const renderMarkdown = funzioneProva("renderMarkdown", "contenitore, testo, { sessione = null } = {}", {
+    crea: creaNodo, aggiungiInline: (nodo, testo) => { nodo.textContent = testo; },
+  });
+  const disegna = funzioneProva("disegnaSchedaRisultato", "sessione", {
+    APP: { consiglio: {} }, CONSIGLIO_CORE: { ...core, lavoroDiScheda: () => lavoro }, crea: creaNodo,
+    sezioneConsiglio: funzioneProva("sezioneConsiglio", "titolo", { crea: creaNodo }), renderMarkdown,
+  });
+  for (const stato of ["bozza_valida", "fusione"]) {
+    lavoro.stato = stato;
+    const pannello = disegna(sessione);
+    const testo = pannello.querySelector(".consiglio-testo");
+    assert.equal(testo.tag, "div");
+    assert.equal(testo.classList.contains("markdown"), true);
+    assert.equal(testo.querySelector("h2").textContent, "Titolo");
+    assert.equal(testo.querySelectorAll("li").length, 2);
+    assert.equal(testo.querySelector("code").textContent, "codice");
+    assert.equal(testo.parentNode.querySelector("h3").textContent, stato === "fusione" ? "Bozza in composizione" : "Testo fuso");
+  }
+  lavoro.risultato.testo = "";
+  assert.equal(disegna(sessione).querySelector(".consiglio-testo").textContent, "Il testo fuso non è ancora disponibile.");
+  const regola = stile.match(/\.consiglio-testo\s*\{([^}]+)\}/)?.[1];
+  assert.doesNotMatch(regola, /font-family:\s*var\(--mono\)|white-space:\s*pre-wrap/);
+  assert.match(regola, /max-height:/);
+  assert.match(regola, /overflow:\s*auto/);
+});
+
 test("P6 due righe: il nome ha line-clamp e il pulsante conserva il titolo intero", () => {
   const regola = stile.match(/\.conversazione-nome\s*\{([^}]+)\}/)?.[1];
   assert.match(regola, /-webkit-line-clamp:\s*2\s*;/);

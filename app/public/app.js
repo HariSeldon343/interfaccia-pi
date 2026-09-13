@@ -10299,11 +10299,10 @@ function disegnaSchedaRisultato(sessione) {
   const sezioneTesto = sezioneConsiglio(
     vista.inComposizione ? "Bozza in composizione" : "Testo fuso",
   );
-  sezioneTesto.appendChild(crea(
-    "p",
-    "consiglio-testo",
-    vista.testo || "Il testo fuso non è ancora disponibile.",
-  ));
+  const testoFuso = crea("div", "consiglio-testo");
+  if (vista.testo) renderMarkdown(testoFuso, vista.testo, { sessione });
+  else testoFuso.textContent = "Il testo fuso non è ancora disponibile.";
+  sezioneTesto.appendChild(testoFuso);
   pannello.appendChild(sezioneTesto);
 
   const sezioneProvenienza = sezioneConsiglio("Cosa ho preso da chi");

@@ -201,3 +201,14 @@ test("le righe marker delle skill (ottimizzazione: OK, orchestrazione: OK) non b
   assert.equal(analizzaUscitaScrittore(conTestoAggiunto, CONTRIBUTI).ok, false);
   assert.equal(senzaRigheMarker("a\n`orchestrazione: ok.`\nb"), "a\nb");
 });
+
+test("P6 testo fuso: i marker globali non bloccano la bozza e non entrano nel risultato", () => {
+  const marcata = "**[Skill stack]** scrittura; verifica\n" + USCITA_COMPLETA
+    .replace("Secondo paragrafo", "[GOAL fino al gate] lavoro\n**[GSD passo]** verifica\n[Postura QI 190] metodo\n[Check finale] pronto\nSecondo paragrafo")
+    + "\norchestrazione: OK";
+  const esito = analizzaUscitaScrittore(marcata, CONTRIBUTI);
+  assert.equal(esito.ok, true, JSON.stringify(esito.motivi));
+  assert.deepEqual(esito.risultato, analizzaUscitaScrittore(USCITA_COMPLETA, CONTRIBUTI).risultato);
+  assert.doesNotMatch(esito.risultato.testo, /Skill stack|GOAL|GSD|Postura QI 190|Check finale|orchestrazione/);
+  assert.equal(senzaRigheMarker("Prima\n**[Skill stack]** metodo\n\nIl [GOAL] del cliente è chiaro"), "Prima\n\nIl [GOAL] del cliente è chiaro");
+});

@@ -387,11 +387,13 @@ function disegnaPannello(stato, idScheda = "consiglio:L1") {
     APP: { consiglio: stato },
     CONSIGLIO_CORE: CONSIGLIO,
     crea: creaNodo,
+    aggiungiInline: (contenitore, testo) => contenitore.appendChild(creaNodo("#text", null, testo)),
     approvaConsiglioDallaScheda: () => {},
     rifaiConsiglioDallaScheda: () => {},
     annullaConsiglioDallaScheda: () => {},
   };
   const interfaccia = ambienteFunzioni(ambiente, [
+    { nome: "renderMarkdown", firma: "contenitore, testo, { sessione = null } = {}" },
     { nome: "sezioneConsiglio", firma: "titolo" },
     { nome: "tabellaConsiglio", firma: "intestazioni, righe, celle" },
     { nome: "disegnaSchedaRisultato", firma: "sessione" },
