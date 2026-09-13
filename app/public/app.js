@@ -3407,7 +3407,10 @@ function disegnaNavigazione() {
     const statoVisibile = voce.aperta && voce.stato.testo !== "aperta"
       ? "già aperta · " + (voce.stato.testo === "al lavoro" ? "sta lavorando" : voce.stato.testo)
       : voce.stato.testo;
-    apri.append(crea("span", "conversazione-nome", voce.titolo), crea("small", "conversazione-stato", statoVisibile));
+    const nome = crea("span", "conversazione-nome", voce.titolo);
+    nome.title = voce.titolo;
+    apri.title = voce.titolo;
+    apri.append(nome, crea("small", "conversazione-stato", statoVisibile));
     apri.setAttribute("aria-label", voce.titolo + ", " + statoVisibile);
     if (voce.aperta && voce.id === APP.attivaId) apri.setAttribute("aria-current", "page");
     apri.onclick = () => {

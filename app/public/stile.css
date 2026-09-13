@@ -2572,7 +2572,7 @@ body {
 .riga-conversazione:focus-within { border-color: var(--accento); }
 .conversazione-voce { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 3px; padding: 7px; color: var(--testo-tenue); background: transparent; border: 0; border-radius: 7px; text-align: left; cursor: pointer; }
 .conversazione-voce:hover { background: var(--conversazione-hover); color: var(--testo); }
-.conversazione-nome { width: 100%; font-size: 12px; overflow-wrap: anywhere; }
+.conversazione-nome { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; width: 100%; font-size: 12px; overflow-wrap: anywhere; }
 .conversazione-stato { color: var(--testo-debole); font-size: 10px; }
 .riga-conversazione[data-stato="al-lavoro"] .conversazione-stato,
 .riga-conversazione[data-stato="in-attesa"] .conversazione-stato { color: var(--stato-lavoro-testo); }

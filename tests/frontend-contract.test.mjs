@@ -263,6 +263,41 @@ test("la barra laterale elenca le conversazioni aperte e salvate senza barra del
   assert.doesNotMatch(frontend, /function disegnaSchede\(/);
 });
 
+function ambienteNavigazioneP6() {
+  const { documento, creaNodo } = alberoProva();
+  const sessioni = [{ id: "uno", cartella: "C:/second Brain", primoMessaggio: "Buongiorno Jarvis" },
+    { id: "due", cartella: "C:/second Brain", primoMessaggio: "" },
+    { id: "tre", cartella: "D:/Altra", nomeSessione: "Altra conversazione" }];
+  const APP = { sessioni: new Map(sessioni.map((voce) => [voce.id, voce])), attivaId: "uno", consiglio: {} };
+  const DOM = { listaConversazioni: creaNodo("div"), input: creaNodo("textarea"), cercaConversazioni: creaNodo("input"),
+    btnCaricaAltre: creaNodo("button"), statoConversazioni: creaNodo("p") };
+  const NAVIGAZIONE = { salvate: [], ricerca: "", errore: "" };
+  const memoria = new Map();
+  const localStorage = { getItem: (chiave) => memoria.get(chiave) ?? null, setItem: (chiave, valore) => memoria.set(chiave, valore) };
+  const ambiente = { APP, DOM, NAVIGAZIONE, NAVIGAZIONE_CORE: navigazioneCore, document: documento, crea: creaNodo, localStorage,
+    attivaSessione() {}, chiudiRigaConversazione() {}, chiudiMenuLaterale() {}, apriConversazioneSalvata() {} };
+  ambiente.disegnaNavigazione = funzioneProva("disegnaNavigazione", "", ambiente);
+  return { ...ambiente, memoria };
+}
+
+test("P6 due righe: il nome ha line-clamp e il pulsante conserva il titolo intero", () => {
+  const regola = stile.match(/\.conversazione-nome\s*\{([^}]+)\}/)?.[1];
+  assert.match(regola, /-webkit-line-clamp:\s*2\s*;/);
+  assert.match(regola, /display:\s*-webkit-box\s*;/);
+  assert.match(regola, /-webkit-box-orient:\s*vertical\s*;/);
+  assert.match(regola, /overflow:\s*hidden\s*;/);
+  const { disegnaNavigazione, DOM } = ambienteNavigazioneP6();
+  disegnaNavigazione();
+  for (const riga of DOM.listaConversazioni.querySelectorAll("[data-riga-id]")) {
+    const nome = riga.querySelector(".conversazione-nome").textContent;
+    const pulsante = riga.querySelector(".conversazione-voce");
+    assert.equal(pulsante.title, nome);
+    assert.ok(pulsante.getAttribute("aria-label").startsWith(nome));
+  }
+  assert.equal(DOM.listaConversazioni.querySelectorAll("[data-riga-id]")
+    .find((riga) => riga.dataset.rigaId === "due").querySelector(".conversazione-nome").textContent, "Nuova conversazione");
+});
+
 test("chiudere una riga non tocca le altre e lo stato mostrato viene da statoAttivita", async () => {
   const { documento, creaNodo } = alberoProva();
   const prima = { id: "prima", nomeSessione: "Prima", attiva: true, inEsecuzione: true, bozza: "Uno", allegati: [{ id: "a" }] };
