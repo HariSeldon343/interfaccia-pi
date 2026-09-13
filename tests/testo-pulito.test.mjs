@@ -1,14 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { testoLeggibile, titoloBreve, RIGA_MARKER } from "../app/testo-pulito.mjs";
+import * as pulizia from "../app/testo-pulito.mjs";
 
 test("i blocchi tecnici chiusi lasciano soltanto il messaggio leggibile", () => {
   assert.equal(testoLeggibile('<skill name="a" location="b"> Refs </skill>\n\nBuongiorno Jarvis'), "Buongiorno Jarvis");
   assert.equal(testoLeggibile("<system-reminder>\nx\n</system-reminder>\nCiao"), "Ciao");
   assert.equal(testoLeggibile('<skill\n name="a"\n location="b">\nRefs\n</skill>'), "");
-  assert.equal(testoLeggibile("Prima <contesto><altro>x</altro></contesto> dopo"), "Prima dopo");
-  assert.equal(testoLeggibile("<contesto>uno<contesto>due</contesto>tre</contesto> Utile"), "Utile");
+  assert.equal(testoLeggibile("Prima <context><altro>x</altro></context> dopo"), "Prima dopo");
+  assert.equal(testoLeggibile("<context>uno<context>due</context>tre</context> Utile"), "Utile");
 });
+
+test("solo i nomi della lista tecnica esportata eliminano blocchi", () => {
+  const nomi = ["skill", "system-reminder", "system_reminder", "antml", "function_results", "function_calls", "invoke", "tool_result", "tool_use", "document", "documents", "attachment", "attachments", "context", "instructions"];
+  assert.deepEqual([...pulizia.TAG_TECNICI], nomi);
+  for (const nome of nomi) {
+    assert.equal(testoLeggibile(`Prima <${nome}\n tipo="a > b">uno<${nome}>due</${nome}>tre</${nome}> dopo`), "Prima dopo", nome);
+    assert.equal(testoLeggibile(`Prima <${nome} attributo="aperto`), "Prima", nome);
+  }
+  assert.equal(testoLeggibile("<document>...</document>"), "");
+});
+
+for (const testo of [
+  "a<b e c>d", "se x<y allora z", "Come uso Map<String, List<Integer>> in Java?",
+  "Sostituisci <cliente> con il nome vero", "<b>Importante</b>: fai X prima di Y",
+  "Spiega il tag <br> in HTML", "```html\n<div>ciao</div>\n```",
+  "Visita <https://example.test> e scrivi a <mario@example.com>",
+  "Prima <contesto><altro>x</altro></contesto> dopo",
+]) {
+  test(`il testo legittimo resta completo: ${JSON.stringify(testo)}`, () => {
+    assert.equal(testoLeggibile(testo), testo.replace(/\s+/g, " "));
+  });
+}
 
 test("un tag aperto anche incompleto elimina solo da quel punto alla fine", () => {
   assert.equal(testoLeggibile('<skill name="a"'), "");

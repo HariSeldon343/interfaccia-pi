@@ -2,15 +2,21 @@
 // dall'inizio della riga; le attestazioni OK devono occupare la riga intera.
 export const RIGA_MARKER = /^\s*(?:`|\*\*|__)?(?:\[(?:Skill stack\]|GOAL\b|GSD\b|Postura QI 190\b|Check finale\])[^\r\n]*|(?:ottimizzazione|orchestrazione)\s*:\s*ok[.!]?(?:`|\*\*|__)?\s*)$/i;
 
+export const TAG_TECNICI = Object.freeze([
+  "skill", "system-reminder", "system_reminder", "antml", "function_results",
+  "function_calls", "invoke", "tool_result", "tool_use", "document", "documents",
+  "attachment", "attachments", "context", "instructions",
+]);
+const TAG_TECNICO = new RegExp(`<(\\/?)(${TAG_TECNICI.join("|")})(?=\\s|\\/?>|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)`, "gi");
+
 export function testoLeggibile(grezzo) {
   const testo = String(grezzo ?? "");
   // Conta anche i tag annidati omonimi. Un'apertura incompleta conserva
   // la stessa regola: da quel punto alla fine resta soltanto testo tecnico.
-  const tag = /<(\/?)([a-z][\w:-]*)(?=\s|\/?>|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)/gi;
   const aperti = [];
   const parti = [];
   let fine = 0;
-  for (const voce of testo.matchAll(tag)) {
+  for (const voce of testo.matchAll(TAG_TECNICO)) {
     if (/\/>$/.test(voce[0])) continue;
     const nome = voce[2].toLowerCase();
     if (!voce[1]) {
