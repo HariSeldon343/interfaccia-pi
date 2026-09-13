@@ -29,7 +29,7 @@ for (const testo of [
   "Prima <contesto><altro>x</altro></contesto> dopo",
 ]) {
   test(`il testo legittimo resta completo: ${JSON.stringify(testo)}`, () => {
-    assert.equal(testoLeggibile(testo), testo.replace(/\s+/g, " "));
+    assert.equal(testoLeggibile(testo), testo);
   });
 }
 
@@ -63,6 +63,9 @@ test("spazi e testo vuoto si normalizzano", () => {
   assert.equal(testoLeggibile("  Ciao\n\t mondo  "), "Ciao mondo");
   for (const vuoto of [null, undefined, "", " \n\t"]) assert.equal(testoLeggibile(vuoto), "");
   assert.equal(titoloBreve("<skill>x</skill>"), "");
+  const codice = "```html\n  <div>ciao</div>\n```";
+  assert.equal(testoLeggibile(codice), codice);
+  assert.equal(titoloBreve(codice), "```html <div>ciao</div> ```");
 });
 
 test("un messaggio di 500 caratteri ha un titolo a parole intere entro 120 più ellissi", () => {

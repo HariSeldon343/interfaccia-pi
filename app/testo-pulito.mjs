@@ -28,13 +28,15 @@ export function testoLeggibile(grezzo) {
     }
   }
   if (!aperti.length) parti.push(testo.slice(fine));
-  return parti.join("")
-    .split(/\r?\n/).filter((riga) => !RIGA_MARKER.test(riga)).join("\n")
-    .replace(/\s+/g, " ").trim();
+  const leggibile = parti.join("")
+    .split(/\r?\n/).filter((riga) => !RIGA_MARKER.test(riga)).join("\n").trim();
+  // Nei messaggi con codice fenced gli a capo e l'indentazione sono contenuto.
+  return /^[ \t]*(?:`{3,}|~{3,})/m.test(leggibile)
+    ? leggibile : leggibile.replace(/\s+/g, " ");
 }
 
 export function titoloBreve(grezzo, { massimo = 120 } = {}) {
-  const testo = testoLeggibile(grezzo);
+  const testo = testoLeggibile(grezzo).replace(/\s+/g, " ");
   if (testo.length <= massimo) return testo;
   const inizio = testo.slice(0, massimo);
   const ultimoSpazio = inizio.lastIndexOf(" ");
