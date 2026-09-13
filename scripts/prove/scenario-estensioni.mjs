@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { NOME_FIRMA } from "../../app/estensioni-manifest.mjs";
 import { createHash, sign } from "node:crypto";
 import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -30,7 +31,7 @@ export async function prepara(contesto) {
     if (oltreTetti) manifesto.files[0].byte = 512 * 1024 * 1024 + 1;
     const byte = Buffer.from(JSON.stringify(manifesto, null, 2) + "\n");
     await writeFile(join(directory, "manifesto-estensione.json"), byte);
-    if (!senzaFirma) await writeFile(join(directory, "manifesto-estensione.firma"), sign(null, byte, contesto.chiavi[chiave].privateKey).toString("base64"));
+    if (!senzaFirma) await writeFile(join(directory, NOME_FIRMA), sign(null, byte, contesto.chiavi[chiave].privateKey).toString("base64"));
     if (extra) await writeFile(join(directory, "file-imprevisto.md"), "Contaminazione sintetica");
     cartelle[nome] = directory;
   }
@@ -63,7 +64,7 @@ export async function verifica(contesto) {
   const prima = await readFile(fileRegistro).catch((e) => { if (e.code === "ENOENT") return null; throw e; });
   const rifiuti = [
     ["file-in-piu", /Inventario divergente.*file-imprevisto\.md/u],
-    ["firma-assente", /File o cartella assente: .*manifesto-estensione\.firma/u],
+    ["firma-assente", /File o cartella assente: .*manifest\.sig/u],
     ["chiave-sconosciuta", /Chiave di firma sconosciuta: prova-sconosciuta/u],
     ["chiave-revocata", /Chiave di firma revocata: prova-revocata/u],
     ["oltre-tetti", /Pacchetto oltre il limite di byte/u],

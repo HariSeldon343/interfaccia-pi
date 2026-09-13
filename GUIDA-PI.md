@@ -195,6 +195,15 @@ senza inoltrare un comando grezzo. Una estensione puo infatti eseguire codice e
 cambiare conversazione fuori dal coordinamento della GUI. Prompt template e
 skill non sono estensioni e funzionano normalmente nella GUI.
 
+Per chi scrive estensioni con un pannello, l'host comunica il tema in due modi:
+all'apertura aggiunge all'URL il parametro `tema`, poi a ogni cambio invia
+`postMessage({ tipo: "pi-gui-tema", tema }, window.location.origin)` al pannello
+visibile. I valori sono soltanto `"caldo"` e `"notte"`: la scelta `"automatico"`
+viene risolta dall'host in base al tema del sistema. Il pannello deve leggere
+il parametro all'avvio e ascoltare i messaggi verificando l'origine della GUI;
+quando finisce di caricarsi riceve anche il tema corrente. La lettura e
+l'applicazione del tema dentro il pannello sono a carico dell'estensione.
+
 ## Avvio dal terminale
 
 | Cosa vuoi | Comando |

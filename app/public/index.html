@@ -253,6 +253,9 @@
           <strong>Caricamento del pannello…</strong>
           <small>Il servizio locale viene avviato soltanto quando serve.</small>
         </div>
+        <!-- Pannello di prima parte, sulla stessa origine tramite il proxy /sistema/.
+             allow-same-origin resta: la guardia Origin rifiuta l'origine opaca.
+             L'avviso del browser su questa combinazione sandbox è accettato. -->
         <iframe id="frame-pannello-ospite" title="Contenuto del pannello"
                 src="about:blank" hidden referrerpolicy="no-referrer"
                 sandbox="allow-same-origin allow-scripts allow-forms allow-downloads allow-modals"></iframe>

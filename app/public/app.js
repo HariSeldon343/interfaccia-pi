@@ -327,7 +327,12 @@ async function caricaPannelloSistemaGuidato(
     }
     if (generazione !== PANNELLO_SISTEMA_GUIDATO.generazione
       || DOM.pannelloOspite.hidden) return;
-    DOM.framePannelloOspite.src = destinazioneConsentita;
+    const tema = TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light");
+    DOM.framePannelloOspite.onload = () => inviaTemaPannello(
+      TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light"),
+    );
+    DOM.framePannelloOspite.src = destinazioneConsentita
+      + (destinazioneConsentita.includes("?") ? "&" : "?") + "tema=" + tema;
     DOM.framePannelloOspite.hidden = false;
     DOM.attesaPannelloOspite.hidden = true;
     DOM.statoPannelloOspite.textContent = salute.pi?.available
@@ -10959,9 +10964,17 @@ function normalizzaSceltaTema(scelta) {
   return ["caldo", "notte", "automatico"].includes(scelta) ? scelta : "caldo";
 }
 
+function inviaTemaPannello(tema) {
+  if (DOM.pannelloOspite.hidden || DOM.framePannelloOspite.hidden
+    || DOM.framePannelloOspite.src === "about:blank") return;
+  DOM.framePannelloOspite.contentWindow?.postMessage({ tipo: "pi-gui-tema", tema }, window.location.origin);
+}
+
 function applicaSceltaTema(scelta) {
   TEMA_GUI.scelta = normalizzaSceltaTema(scelta);
-  TEMA_CORE.applicaTema(document, TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light"));
+  const tema = TEMA_CORE.risolviTema(TEMA_GUI.scelta, TEMA_GUI.media?.matches ? "dark" : "light");
+  TEMA_CORE.applicaTema(document, tema);
+  inviaTemaPannello(tema);
   try { localStorage.setItem("pi-gui-tema", TEMA_GUI.scelta); } catch { /* Il ponte resta la fonte di verità. */ }
 }
 

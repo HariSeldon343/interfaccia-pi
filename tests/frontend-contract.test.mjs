@@ -3804,3 +3804,72 @@ test("gli identificativi statici nuovi del consiglio sono unici e usati", () => 
     assert.ok(frontend.includes(classe), `app.js non usa più la classe .${classe}`);
   }
 });
+
+function ambienteTemaPannelloP6() {
+  const { documento, creaNodo } = alberoProva();
+  documento.documentElement = creaNodo("html");
+  const messaggi = [];
+  const DOM = { pannelloOspite: creaNodo("section"), framePannelloOspite: creaNodo("iframe"),
+    attesaPannelloOspite: creaNodo("div"), statoPannelloOspite: creaNodo("p") };
+  DOM.framePannelloOspite.src = "about:blank";
+  DOM.framePannelloOspite.contentWindow = { postMessage: (dati, origine) => messaggi.push({ dati, origine }) };
+  const ambiente = { DOM, document: documento, TEMA_CORE: require("../app/public/tema-core.js"),
+    TEMA_GUI: { scelta: "caldo", media: { matches: false } },
+    window: { location: new URL("http://127.0.0.1:4680/") },
+    localStorage: { setItem() {} },
+    normalizzaSceltaTema: funzioneProva("normalizzaSceltaTema", "scelta", {}),
+  };
+  ambiente.inviaTemaPannello = (tema) => funzioneProva("inviaTemaPannello", "tema", ambiente)(tema);
+  return { ...ambiente, messaggi };
+}
+
+test("P6 bis pannello: l'apertura conserva la destinazione e aggiunge soltanto il tema risolto", async () => {
+  const ambiente = ambienteTemaPannelloP6();
+  const { DOM, TEMA_GUI, messaggi } = ambiente;
+  const destinazioni = ["/sistema/", "/sistema/?step=documents&content=1"];
+  const PANNELLO_SISTEMA_GUIDATO = { generazione: 0, controller: null, destinazione: "/sistema/" };
+  const carica = funzioneProva("caricaPannelloSistemaGuidato", "destinazione", {
+    ...ambiente, PANNELLO_SISTEMA_GUIDATO,
+    normalizzaDestinazioneSistemaGuidato: funzioneProva("normalizzaDestinazioneSistemaGuidato", "destinazione", {
+      DESTINAZIONI_SISTEMA_GUIDATO_CONSENTITE: new Set(destinazioni), DESTINAZIONE_SISTEMA_GUIDATO_PREDEFINITA: "/sistema/",
+    }),
+    nonceSistemaGuidato: () => "nonce-di-prova", statoAttesaSistemaGuidato() {}, requestAnimationFrame: (fn) => fn(),
+    fetch: async () => ({ ok: true, headers: { get: () => "nonce-di-prova" },
+      json: async () => ({ service: "sistema-guidato", status: "ok", pi: { available: false } }) }),
+  }, true);
+  for (const [scelta, scuro, atteso] of [["caldo", false, "caldo"], ["notte", false, "notte"], ["automatico", false, "caldo"], ["automatico", true, "notte"]]) {
+    TEMA_GUI.scelta = scelta; TEMA_GUI.media.matches = scuro;
+    for (const destinazione of destinazioni) {
+      await carica(destinazione);
+      const url = new URL(DOM.framePannelloOspite.src, ambiente.window.location.href);
+      assert.deepEqual(url.searchParams.getAll("tema"), [atteso]);
+      url.searchParams.delete("tema");
+      assert.equal(url.pathname + url.search, destinazione);
+      assert.equal(PANNELLO_SISTEMA_GUIDATO.destinazione, destinazione);
+    }
+  }
+  TEMA_GUI.scelta = "caldo";
+  DOM.framePannelloOspite.onload();
+  assert.deepEqual(messaggi.at(-1), { dati: { tipo: "pi-gui-tema", tema: "caldo" }, origine: "http://127.0.0.1:4680" },
+    "un tema cambiato durante il caricamento viene riallineato al load");
+});
+
+test("P6 bis pannello: ogni cambio tema invia il valore risolto all'origine della GUI, mai ad about:blank", () => {
+  const ambiente = ambienteTemaPannelloP6();
+  const { DOM, TEMA_GUI, messaggi } = ambiente;
+  const applica = funzioneProva("applicaSceltaTema", "scelta", ambiente);
+  applica("notte");
+  assert.equal(messaggi.length, 0);
+  DOM.framePannelloOspite.src = "http://127.0.0.1:4680/sistema/?tema=caldo";
+  for (const [scelta, scuro, tema] of [["notte", false, "notte"], ["caldo", false, "caldo"], ["automatico", true, "notte"], ["automatico", false, "caldo"]]) {
+    TEMA_GUI.media.matches = scuro; applica(scelta);
+    assert.deepEqual(messaggi.at(-1), { dati: { tipo: "pi-gui-tema", tema }, origine: "http://127.0.0.1:4680" });
+    assert.equal(ambiente.document.documentElement.getAttribute("data-tema"), tema);
+  }
+  const numero = messaggi.length;
+  DOM.pannelloOspite.hidden = true; applica("notte");
+  DOM.pannelloOspite.hidden = false; DOM.framePannelloOspite.hidden = true; applica("caldo");
+  DOM.framePannelloOspite.hidden = false; DOM.framePannelloOspite.src = "about:blank"; applica("notte");
+  assert.equal(messaggi.length, numero);
+  assert.ok(messaggi.every((voce) => voce.origine !== "*" && voce.dati.tema !== "automatico"));
+});
