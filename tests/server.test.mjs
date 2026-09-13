@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   creaPonte,
+  paginaSessioniSalvate,
   cartellePreferite,
   caricaAlberoCompattoDaPi,
   caricaCronologiaDaPi,
@@ -61,6 +62,33 @@ const PI_OSTINATO = join(QUI, "stubborn-pi.mjs");
 const PI_CON_ALBERO = join(QUI, "tree-pi.mjs");
 const RADICE = dirname(QUI);
 const CLI_PI_REALE = join(RADICE, "vendor", "pi-runtime", "pi", "dist", "cli.js");
+
+test("P6 titoli: il primo messaggio tecnico lascia il saluto ricercabile e il titolo lungo non spezza parole", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "pi-gui-titoli-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const cartella = join(home, ".pi", "agent", "sessions", "prova");
+  await mkdir(cartella, { recursive: true });
+  const messaggi = [
+    '<skill\n name="x" location="y">\nIstruzioni tecniche\n</skill>\n\nBuongiorno Jarvis',
+    "parola ".repeat(72).slice(0, 500),
+    "<skill>Soltanto istruzioni</skill>",
+  ];
+  for (const [indice, testo] of messaggi.entries()) {
+    await writeFile(join(cartella, indice + ".jsonl"), [
+      { type: "session", id: "titolo-" + indice, cwd: home, timestamp: "2026-09-13T10:00:00Z" },
+      { type: "message", message: { role: "user", content: [{ type: "text", text: testo }] } },
+    ].map((riga) => JSON.stringify(riga)).join("\n") + "\n");
+  }
+  const pagina = await paginaSessioniSalvate(home);
+  const titolo = (indice) => pagina.sessioni.find((voce) => voce.id === "titolo-" + indice).primoMessaggio;
+  assert.equal(titolo(0), "Buongiorno Jarvis");
+  assert.equal(titolo(1), Array(17).fill("parola").join(" ") + "…");
+  assert.ok(titolo(1).length <= 121);
+  assert.equal(titolo(2), "");
+  const ricerca = await paginaSessioniSalvate(home, { ricerca: "jarvis" });
+  assert.deepEqual(ricerca.sessioni.map((voce) => voce.id), ["titolo-0"]);
+  assert.equal((await paginaSessioniSalvate(home, { ricerca: "istruzioni tecniche" })).sessioni.length, 0);
+});
 
 function attendi(ms) {
   return new Promise((risolvi) => setTimeout(risolvi, ms));

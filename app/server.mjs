@@ -48,6 +48,7 @@ import {
 import { creaGestoreLibreria, quotaOperazioneConsentita } from "./libreria.mjs";
 import LIBRERIA_CORE from "./public/library-core.js";
 import VISTA_CORE from "./public/view-core.js";
+import { titoloBreve } from "./testo-pulito.mjs";
 
 const FILE_CORRENTE = fileURLToPath(import.meta.url);
 const QUI = dirname(FILE_CORRENTE);
@@ -5900,7 +5901,7 @@ async function metadatiSessione(percorso, info) {
     analizzaRigheSessione(fine, meta);
   }
   if (meta.primoMessaggio) {
-    meta.primoMessaggio = meta.primoMessaggio.replace(/\s+/g, " ").trim().slice(0, 180);
+    meta.primoMessaggio = titoloBreve(meta.primoMessaggio);
   }
   return meta;
 }
