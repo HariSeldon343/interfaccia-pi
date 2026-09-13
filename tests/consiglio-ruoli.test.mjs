@@ -93,6 +93,33 @@ test("default con due o più modelli separa scrittore e consigliere", () => {
   assert.notEqual(risolti.effettive.scrittore.modello, risolti.effettive.consiglieri[0].modello);
 });
 
+test("P6 bis Automatico preferisce il primo modello diverso dello stesso provider della sorgente", () => {
+  const catalogo = [
+    { provider: "fake-a", id: "modello-uno" },
+    { provider: "fake-b", id: "modello-estraneo" },
+    { provider: "fake-a", id: "modello-due" },
+  ];
+  const risolti = modelliPredefinitiConsiglio({
+    catalogo, modelloSorgente: { provider: "fake-a", modelId: "modello-uno" },
+  });
+  assert.equal(risolti.avvioPossibile, true);
+  assert.deepEqual([risolti.scrittore.provider, risolti.scrittore.modelId], ["fake-a", "modello-uno"]);
+  assert.deepEqual([risolti.consigliere.provider, risolti.consigliere.modelId], ["fake-a", "modello-due"]);
+});
+
+test("P6 bis Automatico riusa la sorgente se il suo provider ha un solo modello", () => {
+  const catalogo = [
+    { provider: "fake-a", id: "modello-uno" },
+    { provider: "fake-b", id: "modello-estraneo" },
+  ];
+  const risolti = modelliPredefinitiConsiglio({
+    catalogo, modelloSorgente: { provider: "fake-a", modelId: "modello-uno" },
+  });
+  assert.equal(risolti.avvioPossibile, true);
+  assert.deepEqual([risolti.scrittore.provider, risolti.scrittore.modelId], ["fake-a", "modello-uno"]);
+  assert.deepEqual(risolti.consigliere, risolti.scrittore);
+});
+
 test("un modello assegnato e sparito torna al default con avviso", () => {
   const configurazione = validaConfigurazioneConsiglio({
     schemaVersion: 1,

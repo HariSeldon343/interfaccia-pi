@@ -138,18 +138,20 @@ function nelCatalogo(catalogo, modello) {
 }
 
 // Regola di default dichiarata nel progetto: nessun modello, avvio disabilitato;
-// un modello, lo stesso per i due ruoli in sessioni distinte; due o più modelli,
-// lo scrittore prende quello della conversazione sorgente se c'è, il consigliere
-// il primo diverso dallo scrittore.
+// un modello, lo stesso per i due ruoli in sessioni distinte. Con una sorgente
+// nel catalogo, entrambi restano sul suo provider; senza sorgente, il consigliere
+// prende il primo modello diverso dallo scrittore.
 export function modelliPredefinitiConsiglio({ catalogo = [], modelloSorgente = null } = {}) {
   const elenco = normalizzaCatalogo(catalogo);
   if (!elenco.length) return { scrittore: null, consigliere: null, avvioPossibile: false };
   if (elenco.length === 1) {
     return { scrittore: elenco[0], consigliere: elenco[0], avvioPossibile: true };
   }
-  const scrittore = nelCatalogo(elenco, modelloSorgente) || elenco[0];
+  const sorgente = nelCatalogo(elenco, modelloSorgente);
+  const scrittore = sorgente || elenco[0];
   const consigliere = elenco.find(
-    (voce) => voce.provider + "/" + voce.modelId !== scrittore.provider + "/" + scrittore.modelId,
+    (voce) => (!sorgente || voce.provider === sorgente.provider)
+      && voce.provider + "/" + voce.modelId !== scrittore.provider + "/" + scrittore.modelId,
   ) || scrittore;
   return { scrittore, consigliere, avvioPossibile: true };
 }

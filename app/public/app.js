@@ -10787,7 +10787,7 @@ function disegnaPannelloRuoliConsiglio(contenitore, stato, azioni) {
   const vista = stato.vista;
   contenitore.appendChild(crea("h4", null, "Ruoli del consiglio"));
   contenitore.appendChild(crea("p", "nota",
-    "Un consigliere risponde alla richiesta, lo scrittore ne compone una risposta sola. Il modello Automatico lo sceglie il ponte."));
+    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider."));
   const righe = [
     ...stato.bozza.consiglieri.map((voce, indice) => ({ voce, tipo: "consigliere", ordine: indice + 1 })),
     { voce: stato.bozza.scrittore, tipo: "scrittore", ordine: stato.bozza.consiglieri.length + 1 },

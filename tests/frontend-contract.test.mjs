@@ -280,6 +280,43 @@ function ambienteNavigazioneP6() {
   return { ...ambiente, memoria };
 }
 
+test("P6 bis Ruoli spiega Automatico con il provider della conversazione di partenza", () => {
+  const { creaNodo } = alberoProva();
+  const contenitore = creaNodo("section");
+  const disegna = funzioneProva("disegnaPannelloRuoliConsiglio", "contenitore, stato, azioni", {
+    crea: creaNodo, CONSIGLIO_CORE: require("../app/public/consiglio-core.js"),
+  });
+  disegna(contenitore, {
+    vista: { righe: [], catalogo: [], avvisi: [], rigaSalvataggio: "" }, livelli: [],
+    bozza: { consiglieri: [{ roleId: "consigliere-1" }], scrittore: { roleId: "scrittore" } },
+  }, {});
+  assert.equal(contenitore.children[1].textContent,
+    "Automatico: lo scrittore usa il modello della conversazione di partenza, il consigliere un modello dello stesso provider.");
+});
+
+test("P6 bis la scheda del ruolo mostra il messaggio di credito o accesso dal canale esistente", () => {
+  const CONSIGLIO_CORE = require("../app/public/consiglio-core.js");
+  const { creaNodo } = alberoProva();
+  const DOM = { fasciaConsiglio: creaNodo("section") };
+  const messaggio = "Il provider fake non ha risposto per credito o accesso. Scegli un altro modello in Gestisci.";
+  const sessione = { id: "sessione-test", consiglio: { lavoroId: "lavoro-test", roleId: "consigliere-1" } };
+  const iniziale = CONSIGLIO_CORE.applicaSnapshotConsiglio(CONSIGLIO_CORE.statoIniziale(), [sessione]);
+  const { stato: consiglio } = CONSIGLIO_CORE.applicaEventoConsiglio(iniziale, {
+    type: "gui_consiglio_ruolo", lavoroId: "lavoro-test", revisione: 1, seq: 1,
+    roleId: "consigliere-1", guiSessionId: "sessione-test", stato: "errore", tentativo: 0, errore: messaggio,
+  });
+  const disegna = funzioneProva("disegnaFasciaConsiglio", "sessione", {
+    DOM, crea: creaNodo, APP: { consiglio }, CONSIGLIO_CORE,
+    livelloRigaRuolo: funzioneProva("livelloRigaRuolo", "riga, ruolo", { CONSIGLIO_CORE }),
+  });
+  disegna(sessione);
+  assert.equal(DOM.fasciaConsiglio.hidden, false);
+  const errore = DOM.fasciaConsiglio.children.find((nodo) => nodo.textContent === "Motivo: " + messaggio);
+  assert.ok(errore, "il testo del ponte deve essere leggibile nella scheda");
+  assert.match(errore.className, /livello-errore/);
+  assert.equal(DOM.fasciaConsiglio.children.some((nodo) => /Ripetizione del consiglio/.test(nodo.textContent)), false);
+});
+
 test("P6 testo fuso: Risultato e Bozza in composizione rendono Markdown nel div con lo stile dei messaggi", () => {
   const { creaNodo } = alberoProva();
   const core = require("../app/public/consiglio-core.js");

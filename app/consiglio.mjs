@@ -77,6 +77,12 @@ export function sembraLimiteRichieste(testo) {
     || /troppe richieste/iu.test(contenuto);
 }
 
+export function sembraErroreCreditoOAccesso(testo) {
+  const contenuto = String(testo ?? "");
+  return /\b(?:400|401|402|403)\b/u.test(contenuto)
+    && /credit|billing|insufficient|quota|unauthorized|authentication|forbidden/iu.test(contenuto);
+}
+
 export function ambienteRuolo({ ruolo, workspace, filePiano }) {
   return {
     [VARIABILE_RUOLO]: String(ruolo || ""),
@@ -596,12 +602,15 @@ export function creaGestoreConsiglio({
         emettiRuolo(lavoro, ruolo);
         return esito;
       }
-      const limite = sembraLimiteRichieste(esito.errore);
+      const creditoOAccesso = sembraErroreCreditoOAccesso(esito.errore);
+      const limite = !creditoOAccesso && sembraLimiteRichieste(esito.errore);
       if (!limite || tentativo === 1) {
         ruolo.stato = "errore";
-        ruolo.errore = esito.errore;
+        ruolo.errore = creditoOAccesso
+          ? `Il provider ${ruolo.provider} non ha risposto per credito o accesso. Scegli un altro modello in Gestisci.`
+          : esito.errore;
         emettiRuolo(lavoro, ruolo);
-        return esito;
+        return { ...esito, errore: ruolo.errore };
       }
       const secondi = secondiAttesaDaErrore(esito.errore);
       const millisecondi = secondi === null ? attesaPredefinita429Ms : Math.round(secondi * 1000);

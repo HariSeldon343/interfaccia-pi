@@ -917,6 +917,58 @@ test("una risposta con stopReason error non entra nella fusione", async (t) => {
   assert.match(finale.lavoro.motivo, /Nessun consigliere/);
 });
 
+test("credito o accesso richiede un codice del provider e una parola riconoscibile", async () => {
+  const { sembraErroreCreditoOAccesso } = await import("../app/consiglio.mjs");
+  for (const codice of [400, 401, 402, 403]) {
+    for (const parola of ["credit", "billing", "insufficient", "quota", "unauthorized", "authentication", "forbidden"]) {
+      const messaggio = `Errore del provider: ${codice} ${parola.toUpperCase()}`;
+      assert.equal(sembraErroreCreditoOAccesso(messaggio), true, messaggio);
+    }
+  }
+  for (const messaggio of [null, "", "insufficient credit", "1400 insufficient credit", "400 invalid request", "429 quota exceeded", "500 billing unavailable"]) {
+    assert.equal(sembraErroreCreditoOAccesso(messaggio), false, String(messaggio));
+  }
+});
+
+for (const messaggioProvider of [
+  "Errore del provider: 400 insufficient credit",
+  "Errore del provider: 403 forbidden, rate limit, retry after 3 seconds",
+]) {
+  test(`credito o accesso termina il ruolo senza ripetizione: ${messaggioProvider}`, async (t) => {
+    const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-429-sempre" });
+    const eventi = ascoltaEventi(t, ambiente);
+    const osserva = ambiente.ponte.consiglio.osservaEvento;
+    let erroriRicevuti = 0;
+    // Il fake produce un errore e agent_settled a ogni prompt. Sostituiamo
+    // soltanto il testo all'ingresso del canale reale degli eventi di ruolo.
+    ambiente.ponte.consiglio.osservaEvento = (guiSessionId, evento) => {
+      if (evento.type === "error") {
+        erroriRicevuti += 1;
+        evento = { ...evento, message: messaggioProvider };
+      }
+      osserva(guiSessionId, evento);
+    };
+    const { avvio, finale } = await avviaEAttendi(ambiente);
+    const consigliere = finale.ruoli.find((ruolo) => ruolo.tipo === "consigliere");
+    const atteso = "Il provider fake non ha risposto per credito o accesso. Scegli un altro modello in Gestisci.";
+    assert.equal(consigliere.stato, "errore");
+    assert.equal(consigliere.errore, atteso);
+    assert.equal(consigliere.tentativo, 0);
+    assert.equal(consigliere.attesaFinoA, null);
+    assert.equal(erroriRicevuti, 1, "il ponte invia un solo prompt al consigliere");
+    assert.deepEqual(ambiente.conf.attese, []);
+    assert.equal(finale.contributi[0].incluso, false);
+    assert.equal(finale.contributi[0].errore, atteso);
+    assert.equal(finale.lavoro.stato, "bozza_bloccata");
+    const eventoErrore = await attendiEvento(eventi, (evento) => evento.type === "gui_consiglio_ruolo"
+      && evento.lavoroId === avvio.lavoroId && evento.roleId === consigliere.roleId && evento.stato === "errore");
+    assert.equal(eventoErrore.errore, atteso, "la scheda riceve lo stesso messaggio dello stato");
+    assert.equal(eventoErrore.tentativo, 0);
+    assert.equal(eventi.some((evento) => evento.type === "gui_consiglio_ruolo"
+      && evento.lavoroId === avvio.lavoroId && evento.stato === "attesa_provider"), false);
+  });
+}
+
 test("una sola ripetizione dopo l'attesa indicata dal provider", async (t) => {
   const ambiente = await avviaPonteConsiglio(t, { cartella: "consiglio-429-testo" });
   const { finale } = await avviaEAttendi(ambiente);
