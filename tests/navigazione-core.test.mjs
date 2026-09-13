@@ -10,6 +10,27 @@ const vista = require("../app/public/view-core.js");
 const consiglioCore = require("../app/public/consiglio-core.js");
 const righe = (gruppi) => gruppi.flatMap((gruppo) => gruppo.voci.flatMap((voce) => voce.righe || [voce]));
 
+test("P6 gruppi: le chiusure salvate sono normalizzate e uno stato illeggibile apre tutto", () => {
+  assert.deepEqual(navigazione.leggiGruppiChiusi('["C:\\\\Progetto\\\\", "c:/progetto", ""]'), ["c:/progetto", ""]);
+  for (const grezzo of [null, "", "{rotto", "{}", '["valido", 9]']) {
+    assert.deepEqual(navigazione.leggiGruppiChiusi(grezzo), []);
+  }
+});
+
+test("P6 gruppi: ricerca temporanea e riapertura attiva conservano le altre preferenze", () => {
+  const gruppi = navigazione.raggruppaConversazioni({ aperte: [{ id: "a", cartella: "C:/Uno" }, { id: "b", cartella: "D:/Due" }] });
+  const chiusi = ["c:/uno", "d:/due"];
+  const vista = (ricerca = "", preferenze = chiusi) => navigazione.gruppiVisibili({ gruppi, chiusi: preferenze, ricerca });
+  assert.ok(vista().every((gruppo) => gruppo.chiuso));
+  assert.ok(vista("testo").every((gruppo) => !gruppo.chiuso));
+  assert.ok(vista().every((gruppo) => gruppo.chiuso));
+  const riaperti = navigazione.impostaGruppoChiuso(chiusi, "C:\\UNO\\", false);
+  assert.deepEqual(riaperti, ["d:/due"]);
+  assert.equal(vista("", riaperti).find((gruppo) => gruppo.cartella === "C:/Uno").chiuso, false);
+  assert.deepEqual(chiusi, ["c:/uno", "d:/due"]);
+  assert.deepEqual(navigazione.impostaGruppoChiuso(riaperti, null, true), ["d:/due", ""]);
+});
+
 test("le conversazioni si raggruppano per cartella, le omonime mostrano il percorso e le aperte non compaiono due volte", () => {
   const allegati = [{ id: "allegato-1" }];
   const aperte = [

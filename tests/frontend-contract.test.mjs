@@ -298,6 +298,66 @@ test("P6 due righe: il nome ha line-clamp e il pulsante conserva il titolo inter
     .find((riga) => riga.dataset.rigaId === "due").querySelector(".conversazione-nome").textContent, "Nuova conversazione");
 });
 
+test("P6 gruppi: l'intestazione si chiude con Invio e si riapre con Barra", () => {
+  const ambiente = ambienteNavigazioneP6();
+  const { DOM, NAVIGAZIONE, memoria, localStorage } = ambiente;
+  ambiente.salvaPreferenzaGruppi = () => funzioneProva("salvaPreferenzaGruppi", "", ambiente)();
+  const disegna = funzioneProva("disegnaNavigazione", "", ambiente);
+  disegna();
+  const gruppo = DOM.listaConversazioni.querySelectorAll(".gruppo-conversazioni")
+    .find((sezione) => sezione.querySelector(".conversazione-nome").textContent === "Buongiorno Jarvis");
+  const pulsante = gruppo.querySelector("h3").querySelector("button");
+  assert.ok(pulsante, "l'h3 deve contenere un pulsante nativo attivabile da tastiera");
+  const elenco = gruppo.querySelector(".conversazioni-cartella");
+  assert.equal(pulsante.type, "button");
+  assert.equal(pulsante.getAttribute("aria-controls"), elenco.id);
+  assert.equal(pulsante.getAttribute("aria-expanded"), "true");
+  // L'albero simulato applica l'azione predefinita di Invio/Barra solo ai
+  // pulsanti nativi; la prova nel browser verifica anche gli eventi reali.
+  const premi = (tasto) => { assert.ok(["Enter", " "].includes(tasto)); if (pulsante.tag === "button" && !pulsante.disabled) pulsante.click(); };
+  premi("Enter");
+  assert.equal(elenco.hidden, true);
+  assert.equal(pulsante.getAttribute("aria-expanded"), "false");
+  assert.equal(pulsante.textContent, "second Brain · 2");
+  assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["c:/second brain"]);
+  premi(" ");
+  assert.equal(elenco.hidden, false);
+  assert.equal(pulsante.getAttribute("aria-expanded"), "true");
+  assert.equal(pulsante.textContent, "second Brain");
+  premi("Enter");
+  NAVIGAZIONE.ricerca = "Buongiorno"; disegna();
+  assert.equal(DOM.listaConversazioni.querySelector(".conversazioni-cartella").hidden, false);
+  NAVIGAZIONE.ricerca = ""; disegna();
+  assert.equal(DOM.listaConversazioni.querySelectorAll(".conversazioni-cartella").find((nodo) => nodo.querySelectorAll("[data-riga-id]").length === 2).hidden, true);
+  localStorage.setItem = () => { throw new Error("Quota esaurita"); };
+  assert.doesNotThrow(() => DOM.listaConversazioni.querySelector("h3").querySelector("button").click());
+  const leggi = funzioneProva("leggiPreferenzaGruppi", "", ambiente);
+  localStorage.getItem = () => { throw new Error("Accesso negato"); };
+  assert.deepEqual(leggi(), []);
+  localStorage.getItem = () => "non JSON";
+  assert.deepEqual(leggi(), []);
+  assert.match(stile, /\.conversazioni-cartella\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(stile, /\.gruppo-conversazioni-pulsante::before/);
+  assert.match(stile, /\[aria-expanded="false"\]::before/);
+});
+
+test("P6 gruppi: attivare una sessione riapre soltanto la sua cartella e salva la preferenza", () => {
+  const ambiente = ambienteNavigazioneP6();
+  const { APP, DOM, NAVIGAZIONE, memoria } = ambiente;
+  NAVIGAZIONE.chiusi = ["c:/second brain", "d:/altra"];
+  DOM.conversazione = ambiente.crea("div");
+  const salvaPreferenzaGruppi = funzioneProva("salvaPreferenzaGruppi", "", ambiente);
+  const attiva = funzioneProva("attivaSessione", "id", { ...ambiente, salvaPreferenzaGruppi,
+    sessioneAttiva: () => null, chiudiPaletteComandi() {}, disegnaAllegati() {}, adattaAltezza() {},
+    aggiornaInterfacciaAttiva() {}, aggiornaPaletteComandi() {}, inFondo() {},
+  });
+  APP.sessioni.get("uno").vista = ambiente.crea("div");
+  APP.sessioni.get("uno").bozza = "";
+  attiva("uno");
+  assert.deepEqual(NAVIGAZIONE.chiusi, ["d:/altra"]);
+  assert.deepEqual(JSON.parse(memoria.get("pi-gui-gruppi-chiusi-v1")), ["d:/altra"]);
+});
+
 test("chiudere una riga non tocca le altre e lo stato mostrato viene da statoAttivita", async () => {
   const { documento, creaNodo } = alberoProva();
   const prima = { id: "prima", nomeSessione: "Prima", attiva: true, inEsecuzione: true, bozza: "Uno", allegati: [{ id: "a" }] };

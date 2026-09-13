@@ -3336,6 +3336,10 @@ function preparaRimozioneSessione(sessione, motivo) {
 function attivaSessione(id) {
   const sessione = APP.sessioni.get(id);
   if (!sessione) return;
+  NAVIGAZIONE.chiusi = NAVIGAZIONE_CORE.impostaGruppoChiuso(
+    NAVIGAZIONE.chiusi, NAVIGAZIONE_CORE.cartellaConversazione(sessione), false,
+  );
+  salvaPreferenzaGruppi();
   const precedente = sessioneAttiva();
   if (precedente && (precedente.bozzaSporca || precedente.bozza !== DOM.input.value)) {
     if (precedente.bozza !== DOM.input.value) ramificaLineageBozza(precedente);
@@ -3384,7 +3388,21 @@ function statoSchedaConsiglio(sessione) {
   };
 }
 
-const NAVIGAZIONE = { salvate: [], ricerca: "", prossimoCursore: null, generazione: 0, caricamento: false, errore: "" };
+function leggiPreferenzaGruppi() {
+  try {
+    return NAVIGAZIONE_CORE.leggiGruppiChiusi(localStorage.getItem("pi-gui-gruppi-chiusi-v1"));
+  } catch { return []; }
+}
+
+function salvaPreferenzaGruppi() {
+  try {
+    localStorage.setItem("pi-gui-gruppi-chiusi-v1", JSON.stringify(NAVIGAZIONE.chiusi));
+  } catch {
+    // La navigazione resta utilizzabile anche senza spazio per le preferenze.
+  }
+}
+
+const NAVIGAZIONE = { salvate: [], ricerca: "", prossimoCursore: null, generazione: 0, caricamento: false, errore: "", chiusi: leggiPreferenzaGruppi() };
 
 function disegnaNavigazione() {
   const contenitore = DOM.listaConversazioni;
@@ -3392,10 +3410,11 @@ function disegnaNavigazione() {
   const fuoco = document.activeElement?.closest?.("[data-riga-id]");
   const chiaveFuoco = fuoco?.dataset.rigaId;
   const eraChiusura = document.activeElement?.classList?.contains("conversazione-chiudi");
-  const gruppi = NAVIGAZIONE_CORE.raggruppaConversazioni({
+  const gruppoFuoco = document.activeElement?.dataset?.gruppoId;
+  const gruppi = NAVIGAZIONE_CORE.gruppiVisibili({ gruppi: NAVIGAZIONE_CORE.raggruppaConversazioni({
     aperte: [...APP.sessioni.values()], salvate: NAVIGAZIONE.salvate,
     ricerca: NAVIGAZIONE.ricerca, consiglio: APP.consiglio,
-  });
+  }), chiusi: NAVIGAZIONE.chiusi, ricerca: NAVIGAZIONE.ricerca });
   contenitore.replaceChildren();
   function disegnaRiga(voce, padre) {
     const riga = crea("div", "riga-conversazione");
@@ -3436,9 +3455,31 @@ function disegnaNavigazione() {
   }
   for (const gruppo of gruppi) {
     const sezione = crea("section", "gruppo-conversazioni");
-    sezione.appendChild(crea("h3", null, gruppo.nome));
+    const intestazione = crea("h3");
+    const pulsante = crea("button", "gruppo-conversazioni-pulsante");
+    pulsante.type = "button";
+    pulsante.dataset.gruppoId = gruppo.id;
+    pulsante.disabled = Boolean(NAVIGAZIONE.ricerca.trim());
+    intestazione.appendChild(pulsante);
+    sezione.appendChild(intestazione);
     if (gruppo.percorsoVisibile) sezione.appendChild(crea("small", "percorso-gruppo", gruppo.cartella));
     const elenco = crea("div", "conversazioni-cartella");
+    elenco.id = "conversazioni-cartella-" + encodeURIComponent(gruppo.id);
+    elenco.hidden = gruppo.chiuso;
+    pulsante.setAttribute("aria-controls", elenco.id);
+    const numeroVoci = gruppo.voci.reduce((totale, voce) => totale + (voce.righe?.length || 1), 0);
+    function aggiornaGruppo() {
+      pulsante.setAttribute("aria-expanded", String(!elenco.hidden));
+      pulsante.textContent = gruppo.nome + (elenco.hidden ? " · " + numeroVoci : "");
+    }
+    aggiornaGruppo();
+    pulsante.onclick = () => {
+      if (NAVIGAZIONE.ricerca.trim()) return;
+      elenco.hidden = !elenco.hidden;
+      NAVIGAZIONE.chiusi = NAVIGAZIONE_CORE.impostaGruppoChiuso(NAVIGAZIONE.chiusi, gruppo.cartella, elenco.hidden);
+      salvaPreferenzaGruppi();
+      aggiornaGruppo();
+    };
     for (const voce of gruppo.voci) {
       if (voce.tipo === "consiglio") {
         const lavoro = crea("section", "lavoro-consiglio");
@@ -3460,6 +3501,9 @@ function disegnaNavigazione() {
   if (chiaveFuoco) {
     const riga = [...contenitore.querySelectorAll("[data-riga-id]")].find((nodo) => nodo.dataset.rigaId === chiaveFuoco);
     (riga?.querySelector(eraChiusura ? ".conversazione-chiudi" : ".conversazione-voce") || DOM.cercaConversazioni).focus();
+  } else if (gruppoFuoco) {
+    ([...contenitore.querySelectorAll(".gruppo-conversazioni-pulsante")]
+      .find((nodo) => nodo.dataset.gruppoId === gruppoFuoco) || DOM.cercaConversazioni).focus();
   }
 }
 

@@ -24,6 +24,26 @@
     return testo(sessione?.cartella) || testo(sessione?.cwd) || null;
   }
 
+  function leggiGruppiChiusi(grezzo) {
+    try {
+      const chiusi = JSON.parse(grezzo);
+      if (!Array.isArray(chiusi) || chiusi.some((voce) => typeof voce !== "string")) return [];
+      return [...new Set(chiusi.map(chiavePercorso))];
+    } catch { return []; }
+  }
+
+  function impostaGruppoChiuso(chiusi = [], cartella, chiuso) {
+    const chiave = chiavePercorso(cartella);
+    const altre = chiusi.filter((voce) => voce !== chiave);
+    return chiuso ? [...altre, chiave] : altre;
+  }
+
+  function gruppiVisibili({ gruppi = [], chiusi = [], ricerca = "" } = {}) {
+    return gruppi.map((gruppo) => ({ ...gruppo,
+      chiuso: !testo(ricerca) && chiusi.includes(chiavePercorso(gruppo.cartella)),
+    }));
+  }
+
   function riferimentoConsiglio(sessione, consiglio) {
     const riferimento = sessione?.consiglio || consiglio?.ruoliPerSessione?.[sessione?.id];
     const lavoroId = testo(riferimento?.lavoroId);
@@ -190,5 +210,6 @@
     return gruppi;
   }
 
-  return { chiavePercorso, cartellaConversazione, statoConversazione, raggruppaConversazioni };
+  return { chiavePercorso, cartellaConversazione, statoConversazione, raggruppaConversazioni,
+    leggiGruppiChiusi, impostaGruppoChiuso, gruppiVisibili };
 });
