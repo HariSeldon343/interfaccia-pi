@@ -62,6 +62,7 @@
       "../app/consiglio-scrittore.mjs": "app/consiglio-scrittore.mjs",
       "../app/consiglio-guard.mjs": "app/consiglio-guard.mjs",
       "../app/consiglio-controlli.mjs": "app/consiglio-controlli.mjs",
+      "../app/testo-pulito.mjs": "app/testo-pulito.mjs",
       "../vendor/sistema-guidato": "app/sistema-guidato",
       "../vendor/estrazione": "app/estrazione",
       "../app/public/index.html": "app/public/index.html",
