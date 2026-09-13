@@ -10307,7 +10307,8 @@ function disegnaSchedaRisultato(sessione) {
     vista.inComposizione ? "Bozza in composizione" : "Testo fuso",
   );
   const testoFuso = crea("div", "consiglio-testo");
-  if (vista.testo) renderMarkdown(testoFuso, vista.testo, { sessione });
+  const sorgente = APP.sessioni.get(lavoro?.sourceSessionId) || null;
+  if (vista.testo) renderMarkdown(testoFuso, vista.testo, { sessione: sorgente });
   else testoFuso.textContent = "Il testo fuso non è ancora disponibile.";
   sezioneTesto.appendChild(testoFuso);
   pannello.appendChild(sezioneTesto);

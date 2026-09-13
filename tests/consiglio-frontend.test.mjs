@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const RADICE = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONSIGLIO = require(join(RADICE, "app", "public", "consiglio-core.js"));
 const ALLEGATI = require(join(RADICE, "app", "public", "attachment-core.js"));
+const LINK_CORE = require(join(RADICE, "app", "public", "link-core.js"));
 const frontend = await readFile(join(RADICE, "app", "public", "app.js"), "utf8");
 
 // Estrae il corpo di una funzione reale di app.js: le prove sul DOM girano sul
@@ -45,6 +46,7 @@ function creaNodo(tag, classe = "", contenuto = null) {
     textContent: contenuto == null ? "" : String(contenuto),
     children: [],
     attributi: {},
+    dataset: {},
     disabled: false,
     hidden: false,
     title: "",
@@ -425,18 +427,30 @@ function statoCompleto() {
   return CONSIGLIO.applicaDettaglioConsiglio(iniziale, DETTAGLIO).stato;
 }
 
-function disegnaPannello(stato, idScheda = "consiglio:L1") {
-  const sessione = { id: idScheda, schedaRisultato: true, vista: creaNodo("div") };
+function disegnaPannello(stato, idScheda = "consiglio:L1", { sessioni = new Map(), richieste = [] } = {}) {
+  const sessione = { id: idScheda, schedaRisultato: true, cartella: "C:\\finta\\progetto", vista: creaNodo("div") };
   const ambiente = {
-    APP: { consiglio: stato },
+    APP: { consiglio: stato, sessioni },
     CONSIGLIO_CORE: CONSIGLIO,
+    LINK_CORE,
     crea: creaNodo,
-    aggiungiInline: (contenitore, testo) => contenitore.appendChild(creaNodo("#text", null, testo)),
+    document: { createTextNode: (testo) => creaNodo("#text", null, testo), createElement: creaNodo },
+    destinazioneLinkGui: LINK_CORE.destinazioneLinkGui,
+    prossimaDestinazioneAutomatica: LINK_CORE.prossimaDestinazioneAutomatica,
+    chiedi: async (via, opzioni) => { richieste.push({ via, ...opzioni }); },
+    toast: (messaggio) => assert.fail(messaggio),
+    testoErrore: (errore) => errore.message,
     approvaConsiglioDallaScheda: () => {},
     rifaiConsiglioDallaScheda: () => {},
     annullaConsiglioDallaScheda: () => {},
   };
   const interfaccia = ambienteFunzioni(ambiente, [
+    { nome: "collegaBrowserSistema", firma: 'collegamento, href, { sessionId = null, tipo = "web", dopoApertura = null } = {}' },
+    { nome: "collegaDestinazioneGui", firma: "collegamento, valore, { sessionId = null, consentiRelativo = false, dopoApertura = null } = {}" },
+    { nome: "creaCollegamentoGui", firma: "etichetta, valore, contestoLink = {}" },
+    { nome: "aggiungiTestoAutolink", firma: "contenitore, testo, contestoLink" },
+    { nome: "aggiungiTestoConACapo", firma: "contenitore, testo, contestoLink = {}" },
+    { nome: "aggiungiInline", firma: "contenitore, testo, contestoLink = {}" },
     { nome: "renderMarkdown", firma: "contenitore, testo, { sessione = null } = {}" },
     { nome: "sezioneConsiglio", firma: "titolo" },
     { nome: "tabellaConsiglio", firma: "intestazioni, righe, celle" },
@@ -444,6 +458,38 @@ function disegnaPannello(stato, idScheda = "consiglio:L1") {
   ]);
   return interfaccia.disegnaSchedaRisultato(sessione);
 }
+
+test("i link locali del testo fuso aprono i file nella conversazione sorgente", async () => {
+  const stato = statoCompleto();
+  stato.lavori.L1.risultato = { ...stato.lavori.L1.risultato, testo: "[nota](./nota.md)" };
+  const sorgente = { id: "sorgente", cartella: "C:\\finta\\progetto" };
+  const richieste = [];
+  const pannello = disegnaPannello(stato, "consiglio:L1", {
+    sessioni: new Map([[sorgente.id, sorgente]]), richieste,
+  });
+  const nota = tutti(pannello).find((nodo) => nodo.className === "link-locale" && nodo.textContent === "nota");
+  assert.ok(nota, "il Markdown deve costruire un pulsante per il file relativo");
+  await nota.onclick({ preventDefault() {} });
+  assert.deepEqual(richieste, [{
+    via: "/api/apri-url", corpo: { url: "./nota.md", confirmed: true, sessionId: "sorgente" },
+  }], "l'apertura usa l'identità della conversazione pi, non della scheda Risultato");
+});
+
+test("senza sorgente aperta il testo fuso conserva il relativo come testo e apre gli assoluti senza sessionId", async () => {
+  const stato = statoCompleto();
+  stato.lavori.L1.risultato = {
+    ...stato.lavori.L1.risultato, testo: "[nota](./nota.md) e [assoluta](C:/finta/progetto/nota.md)",
+  };
+  const richieste = [];
+  const pannello = disegnaPannello(stato, "consiglio:L1", { richieste });
+  const collegamenti = tutti(pannello).filter((nodo) => nodo.className === "link-locale");
+  assert.deepEqual(collegamenti.map((nodo) => nodo.textContent), ["assoluta"]);
+  assert.ok(tutti(pannello).some((nodo) => nodo.tag === "#text" && nodo.textContent === "nota"));
+  await collegamenti[0].onclick({ preventDefault() {} });
+  assert.deepEqual(richieste, [{
+    via: "/api/apri-url", corpo: { url: "C:/finta/progetto/nota.md", confirmed: true },
+  }]);
+});
 
 test("la scheda risultato si disegna dalla voce di snapshot con il campo consiglio", () => {
   const stato = statoCompleto();

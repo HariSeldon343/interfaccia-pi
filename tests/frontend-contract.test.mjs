@@ -326,7 +326,7 @@ test("P6 testo fuso: Risultato e Bozza in composizione rendono Markdown nel div 
     crea: creaNodo, aggiungiInline: (nodo, testo) => { nodo.textContent = testo; },
   });
   const disegna = funzioneProva("disegnaSchedaRisultato", "sessione", {
-    APP: { consiglio: {} }, CONSIGLIO_CORE: { ...core, lavoroDiScheda: () => lavoro }, crea: creaNodo,
+    APP: { consiglio: {}, sessioni: new Map() }, CONSIGLIO_CORE: { ...core, lavoroDiScheda: () => lavoro }, crea: creaNodo,
     sezioneConsiglio: funzioneProva("sezioneConsiglio", "titolo", { crea: creaNodo }), renderMarkdown,
   });
   for (const stato of ["bozza_valida", "fusione"]) {
